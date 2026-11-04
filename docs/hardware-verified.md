@@ -1154,3 +1154,60 @@ setup: 80 06 03 03 09 04 ...      GET_DESCRIPTOR(String index 3 = 직렬번호)
 U-Boot 유령 TRB, TRB 슬롯·캐시·write-back 경합, 물리 주소 불일치,
 `SET_ADDRESS` 의 `DEVADDR` 시점). **실제 원인은 두 가지였고 그중 하나는
 우리가 켜 둔 진단 설정이었다.**
+
+## 🎯 USB 콘솔까지 동작 — 끝까지 확인 (2026-11-05)
+
+`apps/usbled` 는 콘솔을 CDC-ACM 으로 내보낸다
+(`chosen zephyr,console = &cdc_acm_uart0`). 즉 **드라이버가 자기가 올린
+USB 로 자기 로그를 보낸다.**
+
+```
+DT_CHOSEN_zephyr_console = DT_N_S_soc_S_usb_fcc00000_S_cdc_acm_uart0
+```
+
+Mac 쪽:
+
+```
++-o PiZZa dwc3 console@01100000  <IOUSBHostDevice, active>
+/dev/cu.usbmodem1101   (전원 투입 후 14초)
+```
+
+`cat /dev/cu.usbmodem1101` 로 18초간 **4,524 바이트**를 받았다:
+
+```
+*** Booting Zephyr OS build v4.4.0-3902-gfb0fa3dd488d ***
+<inf> udc_dwc3: DWC3 core 0x5533 release 0x300a
+<inf> udc_dwc3: PHY STATUS[init]=0x00384644 vbusvalid=1 bvalid=1 iddig=1 ...
+<inf> usbled: usbled alive 5
+<inf> udc_dwc3: ep 0x81 (phys 3) enabled: ...
+```
+
+**지연 로그 버퍼가 초기 메시지를 담아 두었다가 호스트가 포트를 열자
+쏟아냈다** — 그래서 init 구간까지 보인다. 콘솔이 USB 라서 호스트가 열기
+전의 출력은 원래 버려지는데, 지연 모드가 그것을 살렸다. 즉시 모드를 버린
+것이 열거를 고쳤고 덤으로 초기 로그까지 살렸다.
+
+### 이것이 증명하는 것
+
+- 열거 (SET_ADDRESS, GET_DESCRIPTOR, SET_CONFIGURATION)
+- 제어 엔드포인트 양방향
+- **벌크 IN 전송** (로그가 EP 0x82 로 흐른다)
+- 인터럽트 엔드포인트 설정 (EP 0x81)
+- 호스트 드라이버 바인딩 (macOS 가 `/dev/cu.*`, `/dev/tty.*` 를 만들었다)
+
+### apps/usbled 설정에서 중요한 점
+
+`apps/usbuart` 와 **같은 설정**을 써야 한다. 콘솔 목적지만 다르다.
+처음에는 `USBD_CDC_ACM_CLASS`, 지연 로그, 스택 4096 세 개,
+`MAX_XLAT_TABLES` 가 모두 빠져 있었다 — 그대로 올리면 실패한다.
+
+### 정리한 임시 계측
+
+- `XNR raw=...` 로그를 WRN -> DBG (해독이 끝났고 호스트 폴링마다 찍힌다)
+- `dwc3_ep0_purge_stale()` 삭제 (실기에서 역효과였다. 근거와 실패 기록은
+  이 문서와 git 이력에 남는다)
+
+남겨 둔 것:
+- `TRB still HW-owned` 경로의 TRB/버퍼 덤프 — 이제 발생하지 않으므로
+  다시 나타나면 경고로 쓸모가 있다
+- `PHY STATUS` 해독 로그 — PHY 문제를 다시 의심할 때 첫 번째 창

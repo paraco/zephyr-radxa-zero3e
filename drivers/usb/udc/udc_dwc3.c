@@ -287,7 +287,6 @@ static void dwc3_ep0_xfer_complete(const struct device *dev, uint8_t ep);
 static void dwc3_ep0_xfer_not_ready(const struct device *dev, uint8_t ep,
 				    uint32_t stage);
 static void dwc3_rk_log_phy_status(const struct device *dev, const char *when);
-static void dwc3_ep0_purge_stale(const struct device *dev);
 static void dwc3_handle_xfer_next(const struct device *dev,
 				  struct udc_ep_config *const ep_cfg);
 static void dwc3_ep0_kick(const struct device *dev);
@@ -1332,79 +1331,6 @@ static void dwc3_ep0_stall_and_restart(const struct device *dev, uint8_t ep)
  *
  * ⚠ 스레드 문맥에서만 불려야 한다 (udc_setup_received 가 UDC 락에 의존).
  */
-/*
- * 버스 리셋으로 무효가 된 제어 전송 버퍼를 스택에 돌려준다.
- *
- * ⚠ 이것이 없으면 상태 기계가 스택과 어긋난 채로 멈춘다.
- *
- *   USB 규격상 버스 리셋은 진행 중인 제어 전송을 무효로 만든다. 그런데
- *   리셋 처리에서 드라이버는 자기 ep0_state 만 SETUP 으로 되돌리고 스택의
- *   EP0 큐는 그대로 둔다. 스택은 "상태 단계 버퍼를 내려놨다" 고 믿고
- *   드라이버는 "SETUP 대기 중" 이라고 믿는다. 그 버퍼는
- *   dwc3_handle_xfer_next 의 `state != STATUS && state != TWO_STAGE`
- *   조건을 영원히 통과하지 못해 영구 보류된다.
- *
- *   실기 로그에 그대로 찍혔다:
- *     XNR stage=2 (STATUS)      호스트가 상태 단계를 요구
- *     STATUS  state=0           보류 (state 가 SETUP)
- *   그 결과 SET_ADDRESS 6회 중 STATUS done 은 1회뿐이었다.
- *
- *   udc_setup_received() 는 '새 SETUP 이 올 때' 같은 정리를 한다
- *   (udc_common.c 의 "Cancel obsolete data/status stage requests").
- *   리셋 경로에는 그에 대응하는 것이 없어 여기서 한다.
- *
- * ⚠⚠ 실기에서 역효과였다 — 지금은 호출하지 않는다.
- *
- *   리셋마다 이것을 돌리면 '아직 유효한' 상태 단계 버퍼까지 취소한다.
- *   그 버퍼는 낡은 것이 아니라 방금 전달한 SET_ADDRESS 의 것이었다.
- *   STATUS done 이 1 -> 0 으로 떨어졌다. 진짜 원인은 아래였다:
- *   로그(LOG_MODE_IMMEDIATE @115200)가 리셋 처리에 100 ms 넘게 쓰는 바람에
- *   SET_ADDRESS 의 50 ms 예산을 넘겨 호스트가 타임아웃·리셋을 반복했다.
- *
- *   진짜로 낡은 버퍼만 골라낼 근거가 생기면 다시 쓴다.
- *
- * ⚠ EP0 OUT 의 SETUP 그릇 버퍼(bi->setup)는 남긴다 — 스택이 다음 SETUP 을
- *   담으려고 미리 넣어 둔 것이고, udc_setup_received() 도 그것만 break 로
- *   건너뛴다. 이것까지 취소하면 다음 SETUP 을 받을 자리가 없어진다.
- *   그래서 udc_ep_cancel_queued() 를 쓰지 않고 직접 돈다.
- */
-static void dwc3_ep0_purge_stale(const struct device *dev)
-{
-	struct udc_ep_config *cfg_in = udc_get_ep_cfg(dev, USB_CONTROL_EP_IN);
-	struct udc_ep_config *cfg_out = udc_get_ep_cfg(dev, USB_CONTROL_EP_OUT);
-	struct net_buf *buf;
-	unsigned int n = 0;
-
-	if (cfg_in == NULL || cfg_out == NULL) {
-		return;
-	}
-
-	/* EP0 IN: 데이터/상태 단계 버퍼는 전부 무효다 */
-	while ((buf = udc_buf_get(cfg_in)) != NULL) {
-		udc_submit_ep_event(dev, buf, -ECONNRESET);
-		n++;
-	}
-	udc_ep_set_busy(cfg_in, false);
-
-	/* EP0 OUT: SETUP 그릇을 만나면 멈춘다 */
-	while ((buf = udc_buf_peek(cfg_out)) != NULL) {
-		struct udc_buf_info *bi = udc_get_buf_info(buf);
-
-		if (bi->setup) {
-			break;
-		}
-
-		(void)udc_buf_get(cfg_out);
-		udc_submit_ep_event(dev, buf, -ECONNRESET);
-		n++;
-	}
-	udc_ep_set_busy(cfg_out, false);
-
-	if (n != 0U) {
-		LOG_INF("리셋: 무효가 된 제어 전송 버퍼 %u개를 스택에 돌려줬다", n);
-	}
-}
-
 
 static void dwc3_ep0_setup_received(const struct device *dev, uint32_t raw)
 {
@@ -2474,7 +2400,7 @@ static void dwc3_handle_events(const struct device *dev)
 				 *   않고 DATA 만 54번 왔다 — 2단계 전송
 				 *   (SET_ADDRESS, wLength=0)에서는 설명되지 않는다.
 				 */
-				LOG_WRN("XNR raw=0x%08x ep=%u status[15:12]=0x%x stage=%u invaltrb=%u",
+				LOG_DBG("XNR raw=0x%08x ep=%u status[15:12]=0x%x stage=%u invaltrb=%u",
 					raw, (unsigned int)ep,
 					(unsigned int)((raw >> 12) & 0xFU),
 					(unsigned int)FIELD_GET(
