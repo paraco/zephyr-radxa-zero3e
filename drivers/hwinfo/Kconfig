@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: Apache-2.0
+
+config HWINFO_RK3566_PLACEHOLDER
+	bool "RK3566 장치 ID — 자리표 구현"
+	depends on HWINFO
+	depends on SOC_SERIES_RK3568 || SOC_RK3568
+	default y if HWINFO
+	help
+	  hwinfo_get_device_id() 를 제공한다. USB 직렬번호 문자열
+	  디스크립터가 이것을 쓴다 (usbd_ch9.c 의 get_sn_from_hwid).
+
+	  ⚠ 자리표다 — 보드마다 같은 값이 나온다. RK3566 의 실제 칩 고유
+	  ID 는 OTP(OTP_NS @0xFE38C000)에 있고, 읽으려면 OTP 컨트롤러
+	  시퀀스와 clk_otpc_ns 게이팅이 필요하다. RK3568 TRM Part1 에는 그
+	  레지스터 설명이 없다 (Part2 또는 미공개). 제품으로 쓰려면 그것을
+	  구현해 이 자리표를 대체해야 한다.

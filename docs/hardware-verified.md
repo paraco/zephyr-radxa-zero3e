@@ -1211,3 +1211,50 @@ Mac 쪽:
 - `TRB still HW-owned` 경로의 TRB/버퍼 덤프 — 이제 발생하지 않으므로
   다시 나타나면 경고로 쓸모가 있다
 - `PHY STATUS` 해독 로그 — PHY 문제를 다시 의심할 때 첫 번째 창
+
+## 직렬번호 디스크립터 — 오류 제거 (2026-11-05)
+
+### 왜 오류가 났는가
+
+Zephyr 의 usbd 는 직렬번호 문자열 디스크립터를 `hwinfo_get_device_id()`
+로 만든다 (`usbd_ch9.c` 의 `get_sn_from_hwid`). 구현이 없으면:
+
+```
+<err> usbd_ch9: HWINFO not implemented or enabled
+<inf> usbd_ch9: protocol error:
+<inf> usbd_ch9: setup: 80 06 03 03 09 04 02 00   GET_DESCRIPTOR(String, index 3)
+<inf> usbd_ch9: not supported
+```
+
+`CONFIG_HWINFO` 는 꺼져 있었는데도 났다 — 디바이스 디스크립터가
+`iSerialNumber` 를 광고하면서 그 문자열은 등록하지 않는 구조 때문이다.
+열거·동작에는 영향이 없지만 로그가 지저분하다.
+
+### 고친 방법
+
+`CONFIG_HWINFO=y` + `drivers/hwinfo/hwinfo_rk3566.c` 에 구현 제공.
+Zephyr 의 `z_impl_hwinfo_get_device_id()` 는 `__weak`
+(`drivers/hwinfo/hwinfo_weak_impl.c`) 이므로 강한 심볼로 정의하면 링크 때
+우리 것이 쓰인다. `CONFIG_HWINFO_RK3566_PLACEHOLDER` 로 켜고 끈다.
+
+결과 (실기):
+
+```
+USB Serial Number = "524B333536360001"   = "RK3566" + 0x00 0x01
+Device Speed      = 2                     = High Speed
+<err> 0건 · protocol error 0건 · not supported 0건
+```
+
+### ⚠ 자리표다 — 제품에는 쓸 수 없다
+
+보드마다 같은 값이 나온다. RK3566 의 실제 칩 고유 ID 는
+**OTP(`OTP_NS` @0xFE38C000)** 에 있고, 읽으려면:
+
+- OTP 컨트롤러 시퀀스 (레지스터 설명이 RK3568 TRM **Part1 에 없다** —
+  Part2 또는 미공개 문서가 필요)
+- `clk_otpc_ns` / `pclk_otpc_ns` 게이팅 (CRU 쪽 비트는 Part1 에 있다)
+- 칩 ID 의 OTP 내 오프셋
+
+한 대를 붙여 쓰는 bring-up 에서는 문제가 없다. 여러 대를 동시에 붙이거나
+제품으로 쓰려면 OTP 읽기를 구현해 이 파일을 대체해야 한다. 값에 의미를
+담아(`'R','K','3','5','6','6',0,1`) 로그에서 자리표임을 알아보기 쉽게 했다.
