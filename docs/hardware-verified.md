@@ -1081,3 +1081,76 @@ SETUP 을 놓치면 `ep0_state` 가 `SETUP` 에 머물고, 스택이 내려 준 
 `dwc3_ep0_xfer_complete` 가 EP0 OUT 의 XferComplete 를 SETUP 이 아닌 것으로
 처리할 때의 경로. 스택의 ch9 상태와 드라이버의 `ep0_state` 를 어떻게
 동기화할지가 설계 문제다.
+
+## 🎯 열거 성공 (2026-11-05)
+
+```
++-o PiZZa dwc3 bringup@01100000  <IOUSBHostDevice, registered, matched, active>
+USB Product Name = "PiZZa dwc3 bringup"   USB Vendor Name = "Zephyr Project"
+idVendor = 0x2FE3   idProduct = 0x0004
+/dev/cu.usbmodem1101  /dev/tty.usbmodem1101
+```
+
+보드 쪽 로그도 전 과정을 보여 준다:
+
+```
+DEPSTARTCFG(base=2) status=0x0
+ep 0x81 (phys 3) enabled: type=3 mps=16   CDC 알림 (인터럽트)
+ep 0x82 (phys 5) enabled: type=2 mps=64   CDC IN  (벌크)
+ep 0x01 (phys 2) enabled: type=2 mps=64   CDC OUT (벌크)
+usbd_cdc_acm: Configuration enabled       SET_CONFIGURATION 완료
+```
+
+### 마지막 두 수정이 결정적이었다
+
+**① `CONFIG_LOG_MODE_IMMEDIATE` 를 버렸다 — 이것이 가장 큰 원인이었다.**
+
+즉시 모드는 로그 한 줄을 그 자리에서 UART 로 밀어내며 스레드를 멈춘다.
+115200 에서 100자는 약 9 ms 이고, 리셋 처리 하나가 12줄 이상을 찍으니
+**100 ms 가 넘는다.** USB 규격은 `SET_ADDRESS` 가 **50 ms** 안에 완료되어야
+한다고 정하므로, 로그가 그 예산을 통째로 먹고 호스트가 타임아웃·리셋을
+반복했다 (실기에서 26~38회).
+
+**진단 도구가 진단 대상을 망가뜨린 두 번째 사례다** (첫 번째는 1024바이트
+LED 스레드가 크래시 원인이었던 것). 그리고 이것이 설명하는 범위가 넓다 —
+`PRTCAPDIR`·재무장 시점·배치 중단·RESET 순서·PHY 강제 등 **프로토콜 수정이
+전부 효과가 없었던 이유**가 원인이 프로토콜이 아니었기 때문이다.
+
+**② EP0 의 `DEPENDXFER` 구멍을 메웠다.**
+
+EP0 의 `DEPSTRTXFER` 에 `CMDIOC` 를 켜서 `CMD_CMPLT` 이벤트로 `rsrc_id` 를
+받아 두고, 리셋 때 EP0 양방향에 `DEPENDXFER` 를 낸다. Linux 의
+`dwc3_gadget_reset_interrupt()` 도 재무장 '전에'
+`dwc3_ep0_reset_state()` → `dwc3_ep0_end_control_data()` 로 같은 일을 한다.
+그 단계가 빠져 있어, 호스트가 부분 소비한 TRB 가 컨트롤러 시야에 `HWO=1`
+로 남았다 — `TRB still HW-owned` ×8 의 설명이다.
+
+주의점 둘:
+- `dwc3_ep_end_xfer()` 는 `rsrc_valid` 가 없으면 `dwc3_handle_events()` 를
+  되부르므로, 리셋 핸들러(그 함수 안)에서 쓰면 **재귀**가 된다 →
+  재귀하지 않는 `dwc3_ep0_end_xfer()` 를 따로 만들었다.
+- `memset(priv->ep, ...)` 가 `rsrc_id` 를 지우므로 **그보다 먼저** 끊어야
+  한다.
+
+### 남은 사소한 것 — 기능 문제 아님
+
+```
+<err> usbd_ch9: HWINFO not implemented or enabled
+setup: 80 06 03 03 09 04 ...      GET_DESCRIPTOR(String index 3 = 직렬번호)
+<inf> usbd_ch9: not supported
+```
+
+호스트가 **직렬번호 문자열 디스크립터**를 요청하는데, Zephyr 의 usbd 는
+그것을 HWINFO(하드웨어 고유 ID)로 만든다. 우리 빌드에 `CONFIG_HWINFO` 가
+없어 스택이 올바르게 STALL 하고 호스트는 넘어간다. 열거와 동작에는 영향이
+없다. 필요하면 `CONFIG_HWINFO=y` 로 없앨 수 있다.
+
+### 되돌아보면
+
+시작: "USB 포트가 아예 나타나지 않는다"
+끝:   macOS 가 `PiZZa dwc3 bringup` 을 열거하고 CDC-ACM 포트를 만든다
+
+중간에 배제한 가설이 많았다 (PHY 설정, VBUS/ID 감지, 전기적 불안정,
+U-Boot 유령 TRB, TRB 슬롯·캐시·write-back 경합, 물리 주소 불일치,
+`SET_ADDRESS` 의 `DEVADDR` 시점). **실제 원인은 두 가지였고 그중 하나는
+우리가 켜 둔 진단 설정이었다.**
