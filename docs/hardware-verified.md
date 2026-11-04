@@ -837,3 +837,82 @@ Linux 는 `1`(CONTROL_DATA), `2`(CONTROL_STATUS), `9`(DATA|INVALTRB),
 `GENMASK(13,12)` 로만 읽고 `XNR_REASON`(비트 15 = INVALTRB)은 정의만
 해 두고 **쓰지 않는다**. INVALTRB 가 서 있으면 "호스트가 요청한 단계에
 TRB 가 없다" 는 뜻이고 지금 증상에 직결된다.
+
+## 링크가 HS/FS 사이를 요동친다 — PHY OTG 포트 설정이 남았다 (2026-11-04)
+
+### 로그에 이미 있던 증거 (DSTS 해독)
+
+`DSTS` 의 `USBLNKST`(비트 21:18)와 `CONNECTSPD`(비트 2:0)를 집계:
+
+```
+USBLNKST=0 (ON)             31회
+USBLNKST=5 (EARLY_SUSPEND)   5회
+CONNECTSPD=0 (High Speed)   23회
+CONNECTSPD=1 (Full Speed)   13회
+```
+
+**리셋마다 HS 와 FS 사이를 왕복한다.** `DCFG.DEVSPD` 는 HS 로 고정해
+두었으므로, HS chirp 핸드셰이크가 불안정해 FS 로 떨어지는 것이다.
+
+그리고 결정적 관찰:
+
+```
+00.517  USB reset
+00.633  CONNECTION_DONE
+00.714  device address = 0     깨끗한 리셋, EP0 무장 완료
+03.581  USB reset              3초간 완전한 침묵, 그리고 다시 리셋
+```
+
+**깨끗한 리셋 뒤 호스트가 3초간 아무것도 보내지 않는다.** 지금까지 받은
+모든 SETUP 은 리셋 '전' 에 도착한 것이고, 정상적인 리셋 후 창에서 받은
+것은 한 번도 없다.
+
+### 왜 PHY 인가
+
+같은 보드·같은 케이블에서 **Linux 는 안정적인 HS 가젯**으로 동작했다
+(`OTG Utils` 등장, ADB `0123456789ABCDEF` 연결). 즉 하드웨어 경로는
+정상이다. 차이는 PHY 설정이다 — Linux 의 `phy-rockchip-inno-usb2` 가
+OTG 포트를 device 모드로 설정하지만, 우리는 **PLL suspend 해제 한 줄**
+(FreeBSD `rk_usb2phy.c` 의 `clk_ctl`, offset 0x08)만 했고 나머지는
+U-Boot 가 `preboot=usb start` 로 **호스트 모드**로 남겨 둔 값이다.
+
+**⚠ PHY 를 일찍 배제한 것이 잘못이었다.** `CONNECTION_DONE` 이 온다는
+이유로 "PHY 는 정상" 이라고 판단했는데, 링크가 올라오는 것과 안정적으로
+HS 를 유지하는 것은 다르다.
+
+### 다음 작업 — USB2PHY GRF 의 otg-port 레지스터
+
+필요한 것: RK3566/RK3568 `USB2PHY0_GRF`(`syscon@fdca0000`)의 otg-port
+설정 — 포트 suspend 해제, vbus/id 감지, device 모드 전환.
+
+출처 후보:
+- RK3568 TRM (공개 PDF, 전체 파싱은 시간 초과 — 장 단위 접근 필요)
+- FreeBSD `rk_usb2phy.c` 는 `"Only host is supported right now"` 라 없음
+- 허용 라이선스 베어메탈 프로젝트 (예: `4ms/rk3566-baremetal`) — 라이선스 확인 필요
+
+### 검토에서 배제한 가설 (Fable, 2026-11-04)
+
+**"SET_ADDRESS 의 DEVADDR 를 상태 단계 뒤로 미뤄야 한다"** — 틀렸다.
+
+인트리 드라이버를 확인한 결과:
+
+```
+udc_dwc2.c:2199   data->caps.addr_before_status = true;   형제 Synopsys 코어
+인트리 6개 중 5개가 true
+```
+
+Synopsys 코어는 **상태 단계 전에 DEVADDR 를 쓰는 것이 정상 패턴**이고
+Zephyr 가 `caps.addr_before_status` 로 명시 지원한다. 우리 설정이 맞다.
+적용 전에 확인한 것이 다행이었다.
+
+다만 같은 검토의 **관찰**("깨끗한 리셋 뒤 3초 침묵", "모든 SETUP 이
+리셋 전 도착")이 조사를 링크 계층으로 되돌려 준 결정적 기여였다.
+
+### 이번에 들어간 수정
+
+**리셋 처리 뒤 이벤트 배치를 끊는다.** Zephyr 의 usbd 스레드는 어떤
+이벤트를 꺼내든 맨 먼저 `event_handler_ep_request()` 로 `ep_events` 를
+비운다 (`usbd_core.c:161`). 그래서 RESET 과 SETUP 이 같은 큐에 함께 있으면
+**언제나** SETUP 이 먼저 처리되고 리셋이 나중에 처리된다 — 제출 순서를
+바꿔도 소용이 없다. 배치를 끊으면 usbd 가 리셋을 끝낸 뒤 다음 배치가
+올라간다. 첫 리셋의 순서 역전이 이것으로 해소됐다.

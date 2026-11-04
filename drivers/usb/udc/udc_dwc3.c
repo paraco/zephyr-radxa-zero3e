@@ -120,16 +120,6 @@ struct udc_dwc3_data {
 	 */
 	struct k_event drv_evt;
 
-	/*
-	 * ⚠ UDC_EVT_RESET 을 '실제 리셋이 있었을 때만' 올리기 위한 깃발.
-	 *
-	 *   속도(DSTS.CONNECTSPD)는 CONNECTION_DONE 뒤에야 유효하므로 RESET
-	 *   이벤트를 그 시점에 올린다. 그런데 CONNECTION_DONE 은 실제 버스
-	 *   리셋보다 자주 올 수 있어, 그대로 올리면 이벤트가 쌓인다. 실기에서
-	 *   8개가 쌓여 SET_ADDRESS(1) 직후 주소를 0 으로 되돌렸고, 호스트는
-	 *   장치가 주소 1 에 있다고 믿어 이후 요청이 모두 무응답이 됐다.
-	 */
-	bool usb_reset_seen;
 	struct k_thread thread_data;
 
 	/* 받은 SETUP 8바이트 사본. 스레드가 스택에 올려 준다. */
@@ -2032,11 +2022,35 @@ static void dwc3_handle_events(const struct device *dev)
 	 */
 	sys_cache_data_invd_range(dwc3_evt_buf, sizeof(dwc3_evt_buf));
 
+	/*
+	 * ⚠ 리셋을 처리한 뒤에는 이 배치를 끊는다 — 'done' 까지만 ack 하고
+	 *   남은 이벤트는 다음 호출에서 받는다.
+	 *
+	 *   이유: Zephyr 의 usbd 스레드는 어떤 이벤트를 꺼내든 맨 먼저
+	 *   event_handler_ep_request() 로 ep_events 리스트를 비운다
+	 *   (usbd_core.c). 그래서 우리가 한 배치에서 RESET 과 SETUP 을
+	 *   연달아 올리면, usbd 가 RESET 메시지를 꺼낼 때 '먼저' SETUP 을
+	 *   처리하고 '그 다음' 리셋 처리를 한다 — 순서가 뒤집힌다.
+	 *
+	 *   실기 첫 전송에서 정확히 그랬다:
+	 *     00.625  (우리가) UDC_EVT_RESET 제출
+	 *     00.650  (우리가) SETUP 제출
+	 *     00.669  device address = 1   <- SETUP 이 먼저 처리됨
+	 *     00.702  device address = 0   <- 리셋이 나중에
+	 *   호스트는 주소 1 로 말을 거는데 우리는 0 이 되어 무응답이 되고,
+	 *   1초 타임아웃마다 리셋이 반복됐다 (36번).
+	 *
+	 *   배치를 끊으면 usbd 스레드가 리셋을 끝낸 뒤에 SETUP 이 올라간다.
+	 */
+	bool stop_batch = false;
+	uint32_t done = 0;
+
 	for (uint32_t i = 0; i < cnt; i += sizeof(uint32_t)) {
 		uint32_t raw = dwc3_evt_buf[priv->evt_pos / sizeof(uint32_t)];
 
 		priv->evt_pos = (priv->evt_pos + sizeof(uint32_t)) %
 				DWC3_EVT_BUF_BYTES;
+		done = i + sizeof(uint32_t);
 
 		if ((raw & DWC3_EVT_NON_EP) != 0U) {
 			uint32_t type = FIELD_GET(DWC3_DEVT_TYPE, raw);
@@ -2131,7 +2145,34 @@ static void dwc3_handle_events(const struct device *dev)
 
 				(void)dwc3_ep0_configure(dev);
 				(void)dwc3_ep0_arm_setup(dev);
-				priv->usb_reset_seen = true;
+				/*
+				 * ⚠ RESET 이벤트를 '여기서' 올린다 —
+				 *   CONNECTION_DONE 이 아니다.
+				 *
+				 *   스택의 RESET 처리는 udc_set_address(0) 을
+				 *   부른다. 그런데 usbd 스레드는 비동기라, 우리가
+				 *   CONNECTION_DONE 에서 올리면 그 처리가 '우리가
+				 *   이미 SETUP 을 처리하고 주소를 적용한 뒤' 에
+				 *   도착해 주소를 0 으로 되돌린다.
+				 *
+				 *   실기 첫 전송에서 정확히 그랬다:
+				 *     00.649  SETUP 00 05 (SET_ADDRESS 1)
+				 *     00.669  device address = 1
+				 *     00.701  device address = 0   <- 스택의 RESET
+				 *     00.747  ep1 STATUS done
+				 *   호스트는 주소 1 로 말을 거는데 우리는 0 이어서
+				 *   이후 모든 요청이 무응답이 되고, 1초 타임아웃마다
+				 *   리셋이 반복됐다 (36번).
+				 *
+				 * ⚠ 속도(DSTS.CONNECTSPD)는 CONNECTION_DONE 뒤에야
+				 *   확실하다. 스택이 이 이벤트를 처리하며
+				 *   udc_device_speed() 를 읽으므로, 리셋 직후 값이
+				 *   유효하지 않으면 mps0 가 틀어질 수 있다. 실기에서
+				 *   확인할 사항으로 남긴다 — 순서가 틀리면 열거가
+				 *   아예 안 되므로 순서를 먼저 바로잡는다.
+				 */
+				udc_submit_event(dev, UDC_EVT_RESET, 0);
+				stop_batch = true;
 				break;
 			case DWC3_DEVT_CONNECTION_DONE: {
 				uint32_t dsts = dwc3_read32(dev, DWC3_DSTS);
@@ -2145,13 +2186,12 @@ static void dwc3_handle_events(const struct device *dev)
 				 * 이벤트를 처리하면서 udc_device_speed() 를 읽어
 				 * 속도를 확정한다 (위 USB_RESET 주석 참고).
 				 */
-				if (priv->usb_reset_seen) {
-					priv->usb_reset_seen = false;
-					udc_submit_event(dev, UDC_EVT_RESET, 0);
-				} else {
-					LOG_DBG("CONNECTION_DONE (리셋 없음)"
-						" — RESET 올리지 않는다");
-				}
+				/*
+				 * RESET 이벤트는 USB_RESET 에서 이미 올렸다
+				 * (위 주석 참고). 여기서는 속도만 남긴다 —
+				 * 이 시점의 CONNECTSPD 가 확정값이므로, 리셋
+				 * 시점에 스택이 읽은 값과 다르면 로그로 드러난다.
+				 */
 				break;
 			}
 			case DWC3_DEVT_DISCONNECT:
@@ -2166,6 +2206,10 @@ static void dwc3_handle_events(const struct device *dev)
 				LOG_INF("disconnected");
 				break;
 			default:
+				break;
+			}
+
+			if (stop_batch) {
 				break;
 			}
 			continue;
@@ -2245,6 +2289,26 @@ static void dwc3_handle_events(const struct device *dev)
 				}
 				break;
 			case DWC3_DEPEVT_XFER_NOT_READY:
+				/*
+				 * ⚠ [임시 계측] 원시 워드와 상태 필드 전체를 찍는다.
+				 *
+				 *   상태 필드는 비트 15:12 이고 Linux 는 네 값을
+				 *   구분한다: 1=CONTROL_DATA, 2=CONTROL_STATUS,
+				 *   9=DATA|INVALTRB, 0xa=STATUS|INVALTRB.
+				 *   INVALTRB(비트 15)는 "호스트가 요청한 단계에
+				 *   TRB 가 없다" 는 뜻이다. 우리는 XNR_STAGE 를
+				 *   GENMASK(13,12) 로만 읽어 그 비트를 버리고 있다.
+				 *
+				 *   실기에서 XferNotReady(STATUS) 가 한 번도 오지
+				 *   않고 DATA 만 54번 왔다 — 2단계 전송
+				 *   (SET_ADDRESS, wLength=0)에서는 설명되지 않는다.
+				 */
+				LOG_WRN("XNR raw=0x%08x ep=%u status[15:12]=0x%x stage=%u invaltrb=%u",
+					raw, (unsigned int)ep,
+					(unsigned int)((raw >> 12) & 0xFU),
+					(unsigned int)FIELD_GET(
+						DWC3_DEPEVT_XNR_STAGE, raw),
+					(raw & DWC3_DEPEVT_XNR_REASON) ? 1U : 0U);
 				dwc3_ep0_xfer_not_ready(dev, ep,
 					FIELD_GET(DWC3_DEPEVT_XNR_STAGE, raw));
 				break;
@@ -2259,7 +2323,18 @@ static void dwc3_handle_events(const struct device *dev)
 	}
 
 	/* ack 는 0 이 아니라 '처리한 바이트 수' 다. */
-	dwc3_write32(dev, DWC3_GEVNTCOUNT(DWC3_EVT_INTR_IDX), cnt);
+	/*
+	 * ack 는 '처리한 바이트 수' 다. 배치를 중간에 끊었으면 그만큼만
+	 * 올려야 남은 이벤트가 다음 호출에서 다시 읽힌다.
+	 */
+	dwc3_write32(dev, DWC3_GEVNTCOUNT(DWC3_EVT_INTR_IDX), done);
+
+	/* 남은 이벤트가 있으면 스레드를 다시 깨운다 */
+	if (done < cnt) {
+		LOG_DBG("배치 중단: %u/%u 바이트 처리, 나머지는 다음에",
+			done, cnt);
+		k_event_post(&priv->drv_evt, BIT(DWC3_DRV_EVT_EVENTS));
+	}
 
 }
 
