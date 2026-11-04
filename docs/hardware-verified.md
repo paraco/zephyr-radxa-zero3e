@@ -640,3 +640,75 @@ fatload  ext4load  bootm  booti  source  usb
 - **내장 SD 슬롯은 `internal` 로 보고된다.** "external 인지"로 안전을 가리는 방법이
   통하지 않는다. 크기와 파티션 이름(`config` + `boot`)으로 확인한다.
 - 디스크 번호는 꽂을 때마다 바뀐다. 매번 다시 확인한다.
+
+## EP0 SETUP 수신 — 미해결 (2026-11-04)
+
+### 증상
+
+컨트롤러는 "정상 완료" 를 보고하는데 메모리에는 아무 일도 일어나지 않았다.
+
+```
+depevt=0x0000c040
+trb0 ctl=0x00000823 st=0x00000008
+trb1 ctl=0x00000000 st=0x00000000
+buf =00 00 00 00 00 00 00 00
+```
+
+`depevt` 해독 (Linux `struct dwc3_event_depevt` 배치):
+
+| 필드 | 비트 | 값 | 뜻 |
+|---|---|---|---|
+| one_bit | 0 | 0 | 엔드포인트 이벤트 |
+| endpoint_number | 5:1 | 0 | 물리 EP0 (OUT) |
+| endpoint_event | 9:6 | 1 | **XferComplete** |
+| status | 15:12 | 0xC | **LST=1 IOC=1 BUSERR=0 SHORT=0** |
+
+즉 "IOC·LST 를 세운 그 TRB 가 오류 없이 완료됐다". 그런데 우리가 읽는
+TRB 는 무장한 그대로다 — `ctl=0x823` (HWO=1, TRBCTL=2 SETUP, IOC, LST),
+`st=0x8` (BUFSIZ 8 이 줄지 않음), 버퍼 전부 0.
+
+그래서 `dwc3_ep0_setup_received` 가 조기 반환하고 SETUP 이 스택에
+전달되지 않는다. 호스트는 데이터 단계에서 `XferNotReady(DATA)` 를
+반복하다 포기하고 버스 리셋을 되풀이한다. **반복되는 `set_address = 0`
+과 리셋 고리는 이 문제의 하류 증상이지 별개 문제가 아니다.**
+
+### 배제한 가설 (실기 데이터로)
+
+| 가설 | 근거 |
+|---|---|
+| TRB 슬롯 오독 | `trb1` 이 `ctl=0 st=0` — 쓰인 적 없음. EP0 링은 TRB 2개(`DWC3_EP0_TRB_COUNT`)지만 슬롯 0 만 쓰인다 |
+| 캐시 미무효화 | `CONFIG_CACHE_MANAGEMENT=y`, `DCACHE=y`, 라인 64 B. `dwc3_trb_reclaim` 이 읽기 전 매번 `invd` |
+| TRB 채우기 순서 | ptr/status 쓰고 flush, control(HWO) 쓰고 다시 flush. `BUILD_ASSERT` 로 캐시 라인 공유도 막음 |
+| `DEPSTRTXFER` PAR 순서 | PAR0=상위 32비트, PAR1=하위 32비트. Fuchsia `dwc3-commands.cc` (BSD-2) 와 일치 |
+| write-back 경합 | 200 µs 폴링(10 µs 간격, 매번 `invd`)에도 HWO 가 내려가지 않음 |
+
+### 다음에 확인할 것
+
+**컨트롤러에 넘긴 물리 주소와 우리가 읽는 주소가 같은가.** 지금까지
+가상 포인터(`%p` = `0x4002b440`)만 봤고 `k_mem_phys_addr(trb)` 의
+반환값을 확인한 적이 없다. `dwc3_ep0_start` 에 `trb_phys` 를 찍는
+`LOG_DBG` 가 들어가 있다.
+
+다르면 그것이 답이다 — DMA 는 다른 물리 주소에 쓰고 우리는 가상
+주소를 읽는 것이다. 같으면 이웃 링(`ep1ring[0]`) 덤프를 본다.
+
+### 임시로 남겨 둔 진단 코드
+
+걷어낼 대상:
+
+- `dwc3_ep0_setup_received` 의 HWO 경로 — TRB/버퍼/이웃 링 덤프
+- `dwc3_trb_reclaim` 폴링 루프 (`DWC3_TRB_WB_TIMEOUT_US`)
+- `dwc3_ep0_setup_received(dev, raw)` 의 `raw` 인자 (덤프용)
+
+### 진단 설정에 대한 교훈
+
+| 설정 | 결과 |
+|---|---|
+| `CONFIG_STACK_SENTINEL` + `CONFIG_THREAD_NAME` | ✅ **필수.** 스택 넘침을 "쓰레기 주소 점프" 가 아니라 `FATAL ERROR 2: Stack overflow` + 스레드 이름으로 보여 준다. 이 둘이 없어 두 번 헤맸다 |
+| `CONFIG_FRAME_POINTER` + `CONFIG_EXCEPTION_STACK_TRACE` | ❌ **쓸 수 없다.** 켜면 Zephyr 가 기동조차 못 한다 (LED·콘솔 모두 무음). 역추적을 쫓느라 돌아간 것이 낭비였다 |
+| `CONFIG_LOG_MODE_IMMEDIATE` | 유용하지만 호출자 스택을 많이 쓴다. arm64 에서 1024 기본 스택은 거의 전부 부족하다 |
+
+**진단 도구가 진단 대상을 망가뜨린 사례도 있었다** — LED 생존 신호
+스레드를 1024 바이트로 선언해 그 스레드가 크래시의 원인이 됐다.
+드라이버 스택을 4배로 늘려도 증상이 그대로였던 이유가 이것이다
+(엉뚱한 스레드를 늘렸다).
