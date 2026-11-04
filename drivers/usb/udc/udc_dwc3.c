@@ -120,6 +120,13 @@ struct udc_dwc3_data {
 	 */
 	struct k_event drv_evt;
 
+	/*
+	 * USBPHY_U3_GRF 매핑. init 에서 한 번 매핑해 두고 STATUS(0x00C0)를
+	 * 나중에도 읽는다 — PHY 가 실제로 보고 있는 linestate/vbusvalid/
+	 * bvalid/iddig 를 확인하는 유일한 창이다.
+	 */
+	mm_reg_t phy_grf;
+
 	struct k_thread thread_data;
 
 	/* 받은 SETUP 8바이트 사본. 스레드가 스택에 올려 준다. */
@@ -233,6 +240,20 @@ static inline void dwc3_write32(const struct device *dev, uint32_t off, uint32_t
 #define DWC3_RK_CON2_BV_SEL	BIT(15)	/* 1=GRF 값을 bvalid/vbusvalid 로 */
 #define DWC3_RK_CON2_BV_GRF	BIT(14)	/* 컨트롤러에 줄 bvalid/vbusvalid 값 */
 
+/*
+ * STATUS (0x00C0): PHY 가 실제로 보고 있는 상태. 전부 RO.
+ * OTG 쪽 비트만 적는다 (HOST 쪽은 12~22).
+ */
+#define DWC3_RK_PHY_STATUS	0x00C0
+#define DWC3_RK_ST_LS_FS_RCV	BIT(11)		/* usbotg_phy_ls_fs_rcv */
+#define DWC3_RK_ST_AVALID	BIT(10)		/* usbotg_utmi_avalid */
+#define DWC3_RK_ST_BVALID	BIT(9)		/* usbotg_utmi_bvalid */
+#define DWC3_RK_ST_HOSTDISC	BIT(7)		/* usbotg_utmi_hostdisconnect */
+#define DWC3_RK_ST_IDDIG	BIT(6)		/* usbotg_utmi_iddig */
+#define DWC3_RK_ST_LINESTATE	GENMASK(5, 4)	/* usbotg_utmi_linestate */
+#define DWC3_RK_ST_SESSEND	BIT(3)		/* usbotg_utmi_sessend */
+#define DWC3_RK_ST_VBUSVALID	BIT(2)		/* usbotg_utmi_vbusvalid */
+
 /* 상위 16비트 쓰기 허용 + 하위 값을 한 번에 만든다 */
 #define DWC3_RK_HIWORD(bits)	(((uint32_t)(bits) << 16) | (uint32_t)(bits))
 
@@ -265,6 +286,7 @@ static void dwc3_ep0_setup_received(const struct device *dev, uint32_t raw);
 static void dwc3_ep0_xfer_complete(const struct device *dev, uint8_t ep);
 static void dwc3_ep0_xfer_not_ready(const struct device *dev, uint8_t ep,
 				    uint32_t stage);
+static void dwc3_rk_log_phy_status(const struct device *dev, const char *when);
 static void dwc3_handle_xfer_next(const struct device *dev,
 				  struct udc_ep_config *const ep_cfg);
 static void dwc3_ep0_kick(const struct device *dev);
@@ -2205,6 +2227,7 @@ static void dwc3_handle_events(const struct device *dev)
 					(unsigned int)FIELD_GET(
 						DWC3_DSTS_CONNECTSPD, dsts),
 					dsts);
+				dwc3_rk_log_phy_status(dev, "conn");
 				/*
 				 * 이제 DSTS.CONNECTSPD 가 유효하다. 스택이 이
 				 * 이벤트를 처리하면서 udc_device_speed() 를 읽어
@@ -2441,6 +2464,37 @@ static int dwc3_core_soft_reset(const struct device *dev)
  * 아직 건드리지 않는다. U-Boot 가 이미 PHY 를 올려 두었을 가능성이 크고,
  * 잘못 건드리면 열거 자체를 못 보게 된다. [4] 이후로 미룬다.
  */
+/*
+ * PHY 가 보고 있는 상태를 해독해 찍는다.
+ * 출처: RK3568 TRM Part1 V1.3 3.9절 USBPHY_U3_GRF_STATUS (0x00C0).
+ *
+ * linestate 는 D+/D- 의 전기 상태다 — HS/FS 문제를 PHY 수준에서 본다.
+ *   0=SE0, 1=J, 2=K, 3=SE1
+ * 디바이스가 호스트에 붙어 있으면 vbusvalid/bvalid 가 서고 sessend 는
+ * 내려가 있어야 한다. iddig=1 이 B-device(주변장치)다.
+ */
+static void dwc3_rk_log_phy_status(const struct device *dev, const char *when)
+{
+	struct udc_dwc3_data *priv = udc_get_private(dev);
+	uint32_t st;
+
+	if (priv->phy_grf == 0U) {
+		return;
+	}
+
+	st = sys_read32(priv->phy_grf + DWC3_RK_PHY_STATUS);
+	LOG_INF("PHY STATUS[%s]=0x%08x linestate=%u vbusvalid=%u bvalid=%u avalid=%u sessend=%u iddig=%u hostdisc=%u lsfsrcv=%u",
+		when, st,
+		(unsigned int)FIELD_GET(DWC3_RK_ST_LINESTATE, st),
+		(st & DWC3_RK_ST_VBUSVALID) ? 1U : 0U,
+		(st & DWC3_RK_ST_BVALID) ? 1U : 0U,
+		(st & DWC3_RK_ST_AVALID) ? 1U : 0U,
+		(st & DWC3_RK_ST_SESSEND) ? 1U : 0U,
+		(st & DWC3_RK_ST_IDDIG) ? 1U : 0U,
+		(st & DWC3_RK_ST_HOSTDISC) ? 1U : 0U,
+		(st & DWC3_RK_ST_LS_FS_RCV) ? 1U : 0U);
+}
+
 static int udc_dwc3_init(const struct device *dev)
 {
 	const struct udc_dwc3_config *config = dev->config;
@@ -2596,6 +2650,7 @@ static int udc_dwc3_init(const struct device *dev)
 
 		device_map(&grf, DWC3_RK_USB2PHY_GRF, 0x100,
 			   K_MEM_CACHE_NONE);
+		priv->phy_grf = grf;
 
 		/* B-device 로 못 박는다 */
 		sys_write32(DWC3_RK_HIWORD(DWC3_RK_CON0_IDDIG |
@@ -2614,6 +2669,7 @@ static int udc_dwc3_init(const struct device *dev)
 				       DWC3_RK_CON2_BV_GRF),
 			sys_read32(grf + DWC3_RK_PHY_CON0),
 			sys_read32(grf + DWC3_RK_PHY_CON2));
+		dwc3_rk_log_phy_status(dev, "init");
 	}
 
 	/*

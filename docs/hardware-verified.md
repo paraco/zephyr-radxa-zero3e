@@ -1024,3 +1024,60 @@ SETUP 을 놓치면 `ep0_state` 가 `SETUP` 에 머물고, 스택이 내려 준 
 
 읽어 볼 것: `USBPHY_U3_GRF_STATUS` (0x00C0) — PHY 가 실제로 무엇을 보고
 있는지. 아직 한 번도 읽지 않았다.
+
+## PHY 는 정상이다 — STATUS 실측으로 확정 (2026-11-04)
+
+`USBPHY_U3_GRF_STATUS` (0x00C0) 를 `init` 과 매 `CONNECTION_DONE` 에서 읽어
+해독했다 (TRM Part1 V1.3 3.9절).
+
+```
+PHY STATUS[init]=0x00384644 linestate=0 vbusvalid=1 bvalid=1 avalid=1
+                            sessend=0 iddig=1 hostdisc=0 lsfsrcv=0
+PHY STATUS[conn]=0x00384e55 linestate=1 ... lsfsrcv=1
+PHY STATUS[conn]=0x00384656 linestate=1 ...
+PHY STATUS[conn]=0x00384644 linestate=0 ...
+```
+
+| 비트 | 값 | 판정 |
+|---|---|---|
+| `vbusvalid` | 1 | VBUS 인식 ✅ |
+| `bvalid` | 1 | 세션 유효 ✅ |
+| `sessend` | 0 | 세션 종료 아님 ✅ |
+| `iddig` | 1 | **B-device(주변장치)로 인식** ✅ |
+| `hostdisc` | 0 | 호스트 분리 아님 ✅ |
+| `linestate` | 0↔1 | SE0(리셋 중)과 J(유휴) 교대 |
+
+**PHY 는 호스트 연결을 완전히 정상으로 인식한다.** `linestate` 가 오가는
+것은 버스 리셋이 반복되기 때문이며 원인이 아니라 결과다. 따라서
+**CONNECTSPD 의 HS/FS 요동도 PHY 문제가 아니다** — 열거 실패에 따른 호스트의
+재시도다.
+
+### 이로써 닫힌 조사선
+
+- USB2 PHY 설정 부족 → **아님** (STATUS 가 정상)
+- VBUS/ID 감지 실패 → **아님** (vbusvalid=1, iddig=1)
+- 전기적 불안정 → **아님** (sessend=0, hostdisc=0)
+- U-Boot xhci 유령 TRB → 아님 (앞서 배제)
+- TRB 슬롯/캐시/write-back 경합 → 아님 (앞서 배제)
+- 물리 주소 불일치 → 아님 (trb_virt == trb_phys == 0x4002b440)
+
+### 남은 하나 — EP0 상태 기계와 리셋의 상호작용
+
+```
+XNR stage=2 (STATUS)                        호스트가 상태 단계를 요구
+STATUS  state=0                             보류 (state 가 SETUP)
+EP0 XferComplete but TRB still HW-owned     그 직전에 SETUP 을 놓쳤다
+```
+
+SETUP 을 놓치면 `ep0_state` 가 `SETUP` 에 머물고, 스택이 내려 준 상태 단계
+버퍼는 `dwc3_handle_xfer_next` 의 `state != STATUS && state != TWO_STAGE`
+조건으로 **영구 보류**된다. 스택은 제어 전송이 진행 중이라고 믿고 드라이버는
+아니라고 믿는 불일치다.
+
+측정값: SETUP 6개(전부 `00 05` SET_ADDRESS), `device address = 1` 6회,
+**`STATUS done` 1회**, GET_DESCRIPTOR 0회, 리셋 36~38회.
+
+다음에 볼 것: `dwc3_handle_xfer_next` 의 상태 단계 보류 조건과,
+`dwc3_ep0_xfer_complete` 가 EP0 OUT 의 XferComplete 를 SETUP 이 아닌 것으로
+처리할 때의 경로. 스택의 ch9 상태와 드라이버의 `ep0_state` 를 어떻게
+동기화할지가 설계 문제다.
