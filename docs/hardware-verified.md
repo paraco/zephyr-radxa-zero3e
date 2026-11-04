@@ -769,3 +769,71 @@ HWO 가 1 이면 받은 것이 없으니 그냥 재무장해도 된다. 이 한 
 `TRB still HW-owned` 을 핵심 증상으로 보고 여러 번 추적했으나 전체
 로그에서는 36번 중 2번이었다. 빈도를 확인하지 않은 채 한 줄에 매달렸다.
 `tio -L --log-file` 로 전체를 받아 집계하는 것이 비교할 수 없이 빠르다.
+
+## SETUP 수신 해결 — 리셋이 받아 둔 SETUP 을 지우고 있었다 (2026-11-04)
+
+### 측정
+
+리셋 핸들러 **진입 시점**(덮어쓰기 직전)의 TRB 상태를 36번 집계:
+
+```
+32번  ctl=0x00000823 st=0x00000008 HWO=1 state=0 buf=00 00 00 00   받은 것 없음
+ 4번  ctl=0x00000822 st=0x00000000 HWO=0 state=0 buf=00 05 01 00   SETUP 이 있다
+```
+
+`st=0` 은 BUFSIZ 가 8→0, 즉 **8바이트 전부 전송됨**. `ctl` 의 HWO 가
+내려갔고 버퍼에 유효한 `SET_ADDRESS(1)` 가 담겨 있다. 그런데
+`dwc3_ep0_configure()`+`dwc3_ep0_arm_setup()` 의 `memset` 이 이 4번을
+매번 파괴했다 — 그래서 `setup_received` 가 0 이었다.
+
+**왜 리셋 이벤트가 먼저 오는가:** SETUP 은 리셋보다 먼저 도착했지만
+컨트롤러가 그 완료 이벤트를 리셋 이벤트 **뒤에** 올린다. 링 순서는 바꿀
+수 없으므로 리셋 핸들러에서 거둬들여야 한다.
+
+### 고친 뒤
+
+```
+리셋 전에 받아 둔 SETUP 처리   5
+setup_received: SETUP          5   (이전 0)
+device address = 1             5   (이전 0)
+```
+
+### 틀렸던 전제 — SET_ADDRESS 가 먼저 오는 것은 정상이다
+
+"GET_DESCRIPTOR(`80 06`) 가 먼저 와야 한다" 고 보고 그것이 없는 것을
+이상 신호로 해석했다. **xHCI 호스트(macOS)는 Address Device 명령으로
+`SET_ADDRESS` 를 먼저 보내고 그 뒤에 `GET_DESCRIPTOR` 를 한다.**
+`00 05` 가 첫 요청인 것은 정상이며, 이 전제 착오가 "U-Boot 유령 TRB" 라는
+잘못된 가설로 이어졌다 (CRU 클럭 작업까지 검토했으나 불필요했다).
+
+### 다음 벽 — 상태 단계가 완료되지 않는다
+
+```
+STATUS done            0
+XferNotReady(DATA)    54
+XferNotReady(STATUS)   0   ← 한 번도 없다
+device address = 0    36   ← 리셋마다 되돌아간다
+```
+
+로그 순서:
+
+```
+22.838  device address = 1 (DCFG=0x00080808)   SET_ADDRESS 적용
+22.856  Queue ep 0x80 len 0                    상태 단계 버퍼 내려옴
+22.998  STATUS  state=0                        보류 — state 가 SETUP 으로 되돌아감
+```
+
+`SET_ADDRESS` 는 `wLength=0` 인 2단계 전송이라 다음은 STATUS 단계인데
+`XferNotReady(STATUS)` 가 한 번도 오지 않는다. 그리고 상태 단계 버퍼가
+`dwc3_handle_xfer_next` 에서 `state != STATUS && state != TWO_STAGE` 로
+보류된다 — 같은 이벤트 배치의 다음 리셋이 state 를 SETUP 으로 되돌리기
+때문으로 보인다.
+
+### 측정할 것
+
+**`XferNotReady` 의 원시 이벤트 워드.** 상태 필드는 비트 15:12 이고
+Linux 는 `1`(CONTROL_DATA), `2`(CONTROL_STATUS), `9`(DATA|INVALTRB),
+`0xa`(STATUS|INVALTRB) 를 구분한다. 우리 헤더는 `XNR_STAGE` 를
+`GENMASK(13,12)` 로만 읽고 `XNR_REASON`(비트 15 = INVALTRB)은 정의만
+해 두고 **쓰지 않는다**. INVALTRB 가 서 있으면 "호스트가 요청한 단계에
+TRB 가 없다" 는 뜻이고 지금 증상에 직결된다.

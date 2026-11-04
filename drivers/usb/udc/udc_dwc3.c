@@ -2093,6 +2093,42 @@ static void dwc3_handle_events(const struct device *dev)
 				 *   실기에서 36번 중 2번이고, 그때는 조기 반환으로
 				 *   무해하게 흘린다 (호스트가 재시도한다).
 				 */
+				/*
+				 * ⚠ 받아 둔 SETUP 이 있으면 '지우기 전에' 처리한다.
+				 *
+				 *   실기 측정 (리셋 36번):
+				 *     32번  HWO=1, buf=00 00 00 00   받은 것 없음
+				 *      4번  HWO=0, buf=00 05 01 00   SET_ADDRESS(1) 가
+				 *                                   들어와 있다
+				 *            (st=0 → BUFSIZ 8→0, 8바이트 전부 전송)
+				 *
+				 *   아래 dwc3_ep0_configure()+dwc3_ep0_arm_setup() 은
+				 *   버퍼를 memset 하고 HWO 를 다시 세우므로, 이 4번을
+				 *   매번 파괴했다. 그래서 setup_received 가 0 이었고
+				 *   호스트는 응답을 못 받아 리셋을 되풀이했다.
+				 *
+				 *   왜 리셋 이벤트가 먼저 오는가: SETUP 은 리셋보다
+				 *   먼저 도착했지만, 컨트롤러가 그 완료 이벤트를 리셋
+				 *   이벤트 뒤에 올린다. 링 순서는 바꿀 수 없으므로
+				 *   여기서 거둬들인다.
+				 *
+				 *   참고: SET_ADDRESS 가 첫 요청인 것은 정상이다.
+				 *   xHCI 호스트(macOS)는 Address Device 명령으로
+				 *   SET_ADDRESS 를 먼저 보내고 그 뒤에 GET_DESCRIPTOR
+				 *   를 한다.
+				 */
+				{
+					struct dwc3_trb *t =
+						DWC3_EP0_TRB(DWC3_EP0_OUT, 0);
+
+					sys_cache_data_invd_range(t, sizeof(*t));
+					if ((t->control & DWC3_TRB_HWO) == 0U &&
+					    priv->ep0_state == DWC3_EP0_SETUP) {
+						LOG_INF("리셋 전에 받아 둔 SETUP 을 먼저 처리한다");
+						dwc3_ep0_setup_received(dev, raw);
+					}
+				}
+
 				(void)dwc3_ep0_configure(dev);
 				(void)dwc3_ep0_arm_setup(dev);
 				priv->usb_reset_seen = true;
