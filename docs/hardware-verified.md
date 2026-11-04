@@ -1245,7 +1245,9 @@ Device Speed      = 2                     = High Speed
 <err> 0건 · protocol error 0건 · not supported 0건
 ```
 
-### ⚠ 자리표다 — 제품에는 쓸 수 없다
+### (아래 자리표 내용은 2026-11-05 OTP 읽기 구현으로 대체됐다)
+
+### ⚠ (옛 기록) 자리표였다
 
 보드마다 같은 값이 나온다. RK3566 의 실제 칩 고유 ID 는
 **OTP(`OTP_NS` @0xFE38C000)** 에 있고, 읽으려면:
@@ -1258,3 +1260,53 @@ Device Speed      = 2                     = High Speed
 한 대를 붙여 쓰는 bring-up 에서는 문제가 없다. 여러 대를 동시에 붙이거나
 제품으로 쓰려면 OTP 읽기를 구현해 이 파일을 대체해야 한다. 값에 의미를
 담아(`'R','K','3','5','6','6',0,1`) 로그에서 자리표임을 알아보기 쉽게 했다.
+
+## OTP 칩 고유 ID 읽기 — 구현 완료 (2026-11-05)
+
+자리표를 실제 OTP 읽기로 대체했다.
+
+```
+USB Serial Number = "4D425737333500000000000000032106"
+
+원시: 4D 42 57 37 33 35 00 00 00 00 00 00 00 03 21 06
+ASCII: M  B  W  7  3  5                       (개체 구분값)
+```
+
+앞 6바이트가 ASCII `MBW735` — Rockchip 칩 ID 의 로트/웨이퍼 코드 형식이다.
+자리표(`524B333536360001` = "RK3566\x00\x01")가 아니므로 OTP 경로가 실제로
+동작했음이 확정된다. 오류·시간 초과·ECC 오류 모두 0건.
+
+### 출처와 라이선스 판단
+
+| 필요한 사실 | 출처 |
+|---|---|
+| CRU_NS 0xFDD20000 · OTP_NS 0xFE38C000 | RK3568 TRM Part1 V1.3 메모리맵 |
+| 클럭 게이트 `CRU_GATE_CON26`(0x0368) 비트 11·10·9, `CON34`(0x0388) 비트 13 | TRM Part1 — "When high, disable clock" |
+| 소프트리셋 `CRU_SOFTRST_CON22`(0x0458) 비트 14·13·12, `CON28`(0x0470) 비트 15·14 | TRM Part1 — "When high, reset relative logic" |
+| **OTP 컨트롤러 레지스터·읽기 절차** | ⚠ **공개 TRM 양쪽에 없다.** Part2 의 33개 장을 모두 확인했고 OTP 장이 없다. Linux `drivers/nvmem/rockchip-otp.c` (GPL-2.0) 에서 사실로 확인 |
+| 칩 ID 위치 (바이트 0x0A, 16바이트 → 워드 5번지 8워드) | Linux `arch/arm64/boot/dts/rockchip/rk356x-base.dtsi` 의 `otp_id: id@a { reg = <0x0a 0x10>; }` |
+
+**레지스터 오프셋·비트 위치·절차만 사실로 확인하고 코드는 직접 작성했다.**
+하드웨어 레지스터 번호는 저작 표현이 아니라 사실이라는 판단이다. 이
+프로젝트는 그 외에는 BSD-2/Apache 와 벤더 문서만 인용한다. 판단이 바뀌면
+`CONFIG_HWINFO_RK3566_OTP=n` 으로 끄거나 자리표 판으로 되돌릴 수 있다
+(git 이력에 있다).
+
+### 동작 방식
+
+```
+클럭 게이트 해제 (CRU)  →  소프트리셋 펄스 (CRU)  →  SBPI 로 ECC 켜기
+→  USER 모드 전환  →  워드 5~12 를 하나씩 읽고 USER_QP 로 ECC 검사
+→  USER 모드 해제
+```
+
+OTP 는 한 번만 읽고 캐시한다 — 값이 변하지 않는다.
+
+읽기에 실패하면 자리표 ID 를 쓰고 `LOG_WRN` 을 남긴다. USB 열거를 깨끗하게
+유지하되 실패를 숨기지는 않기 위한 선택이다.
+
+### 참고 — 측정 중 주의
+
+콘솔이 USB 인 빌드에서 `cat /dev/cu.usbmodem*` 가 `Resource busy` 로 실패할
+수 있다 (다른 프로세스가 포트를 쥔 경우). 그때도 `ioreg` 의
+`USB Serial Number` 는 hwinfo 결과를 그대로 반영하므로 판정에 쓸 수 있다.
