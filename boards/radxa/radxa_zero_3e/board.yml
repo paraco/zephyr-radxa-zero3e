@@ -1,0 +1,13 @@
+# Radxa ZERO 3E (Rockchip RK3566) — out-of-tree Zephyr 보드
+#
+# SoC 는 인트리 rk3568 정의를 재사용한다. RK3566 과 RK3568 은 같은 RK356x
+# 다이 계열이고, 이번 스코프(UART·GIC·ARM generic timer)에서 쓰는 블록은
+# 주소·인터럽트까지 동일하다 (Linux rk356x-base.dtsi 가 두 칩 공용).
+# GPU·PCIe·GMAC 개수 등 실제 차이가 문제되는 시점(CRU/pinctrl 도입 시)에
+# RK3566 SoC 정의를 따로 분리한다.
+board:
+  name: radxa_zero_3e
+  full_name: Radxa ZERO 3E
+  vendor: radxa
+  socs:
+    - name: rk3568

@@ -1,0 +1,62 @@
+# Copyright (c) 2026 paraco
+# SPDX-License-Identifier: Apache-2.0
+#
+# Zephyr 에 snps,dwc3 바인딩이 없어 새로 작성한다 (인트리에는 snps,dwc2 만 존재).
+#
+# 작성 근거는 Zephyr 자체 관례(usb-ep.yaml, snps,dwc2.yaml)와, Linux 메인라인
+# *디바이스트리 소스*(SPDX: GPL-2.0+ OR MIT — MIT 로 사용)에서 확인한 RK356x
+# 노드의 실제 속성뿐이다.
+#   arch/arm64/boot/dts/rockchip/rk356x-base.dtsi : usb_host0_xhci @0xfcc00000
+#
+# ⚠ Linux 의 Documentation/devicetree/bindings/usb/snps,dwc3.yaml 은 GPL-2.0
+#   단독이라 참조하지 않았다. 드라이버 C 코드(drivers/usb/dwc3/*)도 마찬가지다.
+
+description: |
+  DesignWare USB 3.x (DWC3) controller in device (peripheral) mode.
+
+  dwc2 와 달리 FIFO 직접 접근이 아니라 TRB 링 + 이벤트 버퍼 + DEPCMD 명령
+  인터페이스로 동작한다. 이 바인딩은 device 모드만 기술한다 — host/OTG 역할
+  전환은 범위 밖이다.
+
+compatible: "snps,dwc3"
+
+include: usb-ep.yaml
+
+properties:
+  reg:
+    required: true
+
+  interrupts:
+    required: true
+
+  clocks:
+    description: |
+      코어 동작에 필요한 클럭들. 부트로더가 이미 켜 두었다면 드라이버가
+      쓰지 않을 수 있다.
+
+  clock-names:
+    description: 위 clocks 에 대응하는 이름 (예 "ref_clk", "suspend_clk", "bus_clk").
+
+  phys:
+    type: phandles
+    description: |
+      USB2(UTMI+) / USB3(PIPE3) PHY. SuperSpeed 를 쓰지 않는 구성에서는
+      USB2 PHY 하나만 연결한다.
+
+  phy-names:
+    type: string-array
+    description: 위 phys 에 대응하는 이름 (예 "usb2-phy", "usb3-phy").
+
+  snps,dis-u2-susphy-quirk:
+    type: boolean
+    description: |
+      USB2 suspend PHY 기능을 끈다. 일부 SoC 통합에서 서스펜드 진입 후
+      복귀하지 못하는 문제를 피하기 위해 필요하다.
+
+  num-bidir-endpoints:
+    required: true
+    description: |
+      컨트롤러의 물리 엔드포인트 개수(EP0 포함). DWC3 는 물리 엔드포인트를
+      번호로 다루며 EP0 OUT/IN 이 0/1 번을 차지한다. 실제 값은 런타임에
+      GHWPARAMS3 에서도 읽을 수 있으나, Zephyr UDC 는 pre-init 단계에서
+      엔드포인트 설정 배열을 정적으로 잡아야 하므로 DT 로 받는다.

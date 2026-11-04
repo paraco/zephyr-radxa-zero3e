@@ -1,0 +1,95 @@
+/*
+ * RK356x USB 노드 — 인트리 rk3568.dtsi 에 없어서 보강한다.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * 주소·인터럽트 출처: Linux 메인라인 arch/arm64/boot/dts/rockchip/rk356x-base.dtsi
+ * (SPDX: GPL-2.0+ OR MIT — MIT 로 사용). RK3566 과 RK3568 이 공유하는 파일이다.
+ *
+ * ✅ 2026-11-03 실기 검증 완료 — Radxa Zero 3E 에서 Debian 11 / 커널
+ *    5.10.160-26-rk356x 를 띄우고 ADB 로 라이브 디바이스트리를 직접 읽었다.
+ *    아래 값은 추측이 아니라 동작하는 하드웨어에서 읽은 것이다.
+ *    자세한 내용은 docs/hardware-verified.md.
+ *
+ * RK356x 의 USB 구성 (라이브 DT 실측):
+ *   usbdrd/dwc3 @0xfcc00000  snps,dwc3  dr_mode="otg"   ← device 가능한 유일한 것
+ *   usbdrd/dwc3 @0xfd000000  snps,dwc3  (xhci-hcd 자식) ← host 전용
+ *   usb@fd800000/fd840000/fd880000/fd8c0000             ← ehci/ohci, host 전용
+ *   usb2-phy@fe8a0000 / @fe8b0000  rockchip,rk3568-usb2phy
+ * dwc2 는 이 SoC 에 존재하지 않는다.
+ *
+ * 이 파일은 device 모드로 쓸 0xfcc00000 컨트롤러만 기술한다.
+ * SoC 정의를 RK3566 으로 분리하는 시점에 그쪽으로 옮긴다.
+ */
+
+/ {
+	soc {
+		/*
+		 * Radxa ZERO 3E 의 "USB 2.0 Type-C OTG" 포트가 이 컨트롤러다.
+		 *
+		 * ✅ 이 컨트롤러가 동작한다는 것은 직접 확인했다 —
+		 *    Linux 의 /sys/class/udc/fcc00000.dwc3 가 state=configured 로
+		 *    gadget 을 돌리고 있었고, 우리가 그 gadget(ADB)을 통해
+		 *    보드와 대화하면서 이 값들을 읽어 왔다.
+		 *
+		 * 라이브 DT 가 이 노드에 준 값 (Linux 쪽 참고):
+		 *   dr_mode       = "otg"
+		 *   phy_type      = "utmi_wide"   (16비트 UTMI)
+		 *   maximum-speed = "high-speed"  ← 아래와 일치
+		 *   phy-names     = "usb2-phy"    (usb2-phy@fe8a0000)
+		 *   부모 노드 usbdrd = "rockchip,rk3568-dwc3", "rockchip,rk3399-dwc3"
+		 *     (단순 래퍼 + 클럭 4개. Zephyr 는 래퍼가 필요 없어 생략한다)
+		 */
+		/*
+		 * zephyr_udc0 라벨은 Zephyr 관행이다 — USB 클래스 샘플과
+		 * 오버레이가 이 이름으로 UDC 노드를 찾는다 (예: CDC-ACM 을
+		 * &zephyr_udc0 아래에 붙인다). DTS 는 노드에 라벨을 여럿
+		 * 붙일 수 있으므로 기존 이름을 그대로 두고 추가한다.
+		 */
+		usb_host0_xhci: zephyr_udc0: usb@fcc00000 {
+			compatible = "snps,dwc3";
+
+			/* ✅ 검증: reg = <0x0 0xfcc00000 0x0 0x00400000> */
+			reg = <0xfcc00000 0x400000>;
+
+			/* ✅ 검증: interrupts = <0x00 0xa9 0x04> = SPI 169, level-high */
+			interrupts = <GIC_SPI 169 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+
+			/*
+			 * ✅ 검증: 라이브 DT 도 "high-speed", 그리고 호스트 쪽
+			 *    Device Speed = 2 (High Speed) 로 열거됐다.
+			 *    보드가 USB3 combphy 를 연결하지 않아 SuperSpeed 경로를
+			 *    드라이버에서 통째로 뺄 수 있다.
+			 */
+			maximum-speed = "high-speed";
+
+			/*
+			 * ⚠ 아직 미확정 — 라이브 DT 에는 엔드포인트 수 속성이 없다.
+			 *   Linux 드라이버는 GHWPARAMS3 에서 읽는다. 레지스터를 읽으려면
+			 *   root 가 필요했고 adbd 가 production build 라 거부했다.
+			 *   udc_dwc3.c 의 init 이 GHWPARAMS3 를 읽어 이 값과 비교하므로,
+			 *   Zephyr 가 처음 뜨는 순간 불일치가 로그로 드러난다.
+			 *   그때까지는 DWC3 일반 구성에서 흔한 값을 둔다.
+			 */
+			num-bidir-endpoints = <8>;
+
+			/*
+			 * PHY suspend 를 막는 quirk. Zephyr 바인딩이 우리 것이라
+			 * Zephyr 관행대로 하이픈 표기를 쓴다 — Linux 라이브 DT 는
+			 * 같은 뜻을 snps,dis_u2_susphy_quirk (밑줄)로 적는다.
+			 *
+			 * 참고로 라이브 DT 는 quirk 를 훨씬 많이 켜 둔다:
+			 *   dis-del-phy-power-chg · dis-tx-ipgap-linecheck ·
+			 *   dis-u1-entry · dis-u2-entry · dis-u2-freeclk-exists ·
+			 *   dis_enblslpm · dis_rxdet_inp3 · parkmode-disable-ss ·
+			 *   usb2-lpm-disable · xhci-trb-ent · quirk-skip-phy-init
+			 * 대부분 SuperSpeed·LPM·xHCI 전용이라 High Speed device 모드인
+			 * 우리에게는 해당이 없다. 실기에서 열거가 불안정하면
+			 * dis_enblslpm 과 dis_rxdet_inp3 를 먼저 검토한다.
+			 */
+			snps,dis-u2-susphy-quirk;
+
+			status = "disabled";
+		};
+	};
+};

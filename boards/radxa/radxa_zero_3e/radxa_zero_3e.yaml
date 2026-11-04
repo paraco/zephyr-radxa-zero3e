@@ -1,0 +1,9 @@
+identifier: radxa_zero_3e
+name: Radxa ZERO 3E (RK3566)
+type: mcu
+arch: arm64
+toolchain:
+  - zephyr
+  - cross-compile
+supported:
+  - serial

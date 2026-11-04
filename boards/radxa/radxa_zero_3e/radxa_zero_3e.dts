@@ -1,0 +1,102 @@
+/*
+ * Radxa ZERO 3E (Rockchip RK3566) — Zephyr 보드 정의
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * 하드웨어 사실 출처
+ *   - Radxa 공식 사양 https://docs.radxa.com/en/zero/zero3?model=zero-3e
+ *   - Linux 메인라인 디바이스트리 (SPDX: GPL-2.0+ OR MIT — MIT 로 사용)
+ *   - ✅ 2026-11-03 실기 검증 — 이 보드에 Debian 11 / 커널 5.10.160-26-rk356x
+ *     를 띄우고 USB gadget(ADB)으로 라이브 디바이스트리와 sysfs 를 직접 읽었다.
+ *     검증된 값과 아직 미확정인 값의 구분은 docs/hardware-verified.md.
+ *
+ * ⚠ Linux 의 드라이버 C 코드는 참조하지 않는다 (GPL-2.0 ↔ Apache-2.0).
+ *   디바이스트리는 MIT 선택지가 있어 레지스터 주소·인터럽트 번호를 쓸 수 있다.
+ */
+
+/dts-v1/;
+
+#include <arm64/rockchip/rk3568.dtsi>
+#include <common/mem.h>
+
+/* 인트리 rk3568.dtsi 에 USB 노드가 없어 따로 보강한 것 (1단계 산출물) */
+#include <arm64/rockchip/rk3566-usb.dtsi>
+
+/ {
+	model = "Radxa ZERO 3E";
+	/* RK3566 임을 먼저 선언하되, SoC 정의는 rk3568 것을 쓴다 (board.yml 주석 참고) */
+	compatible = "radxa,zero-3e", "rockchip,rk3566", "rockchip,rk3568";
+
+	chosen {
+		zephyr,console = &uart2;
+		zephyr,shell-uart = &uart2;
+		zephyr,sram = &sram0;
+	};
+
+	/*
+	 * Zephyr 가 실행될 DRAM 영역.
+	 *
+	 * ✅ 검증: 라이브 DT 의 memory 노드는
+	 *      reg = <0x0 0x00200000 0x0 0x7fe00000>
+	 *    즉 DRAM 은 0x00200000 ~ 0x80000000 (2 GB) 이다.
+	 *    0x40000000 은 그 한가운데라 유효한 주소다 — 처음엔 인트리 Firefly
+	 *    보드의 관행을 따른 추측이었지만 실기에서 유효함이 확인됐다.
+	 *
+	 * ⚠ 여전히 U-Boot 가 `go` 하는 주소와 일치시켜야 한다.
+	 *    U-Boot 는 자신을 DRAM 최상단(0x80000000 근처)으로 재배치하므로
+	 *    0x40000000 은 U-Boot·TF-A 와 겹치지 않는다.
+	 *    적재 절차가 확정되면 이 주석을 갱신한다.
+	 */
+	sram0: memory@40000000 {
+		device_type = "memory";
+		compatible = "mmio-sram";
+		reg = <0x40000000 DT_SIZE_M(1)>;
+	};
+};
+
+&uart2 {
+	status = "okay";
+
+	/*
+	 * ✅ 클럭을 24 MHz 로 고친다 — 인트리 rk3568.dtsi 의 12000000 은
+	 *    이 SoC 에 맞지 않는다. 근거는 분주비 계산이다
+	 *    (NS16550 divisor = clk / (16 * baud), 정수여야 한다):
+	 *
+	 *      12 MHz, 1500000 -> 0.5  -> 1  -> 실제 750000  (오차 50%, 깨짐)
+	 *      12 MHz,  115200 -> 6.51 -> 7  -> 실제 107142  (오차 7%, 깨짐)
+	 *      24 MHz, 1500000 -> 1.0        -> 실제 1500000 (오차 0%)
+	 *      24 MHz,  115200 -> 13.02 -> 13 -> 실제 115384 (오차 0.16%)
+	 *
+	 *    Linux 가 이 하드웨어에서 1500000 을 실제로 쓰고 있고(라이브 DT 의
+	 *    stdout-path, 그리고 보드가 그 보율로 송신하는 것을 실측) 그것은
+	 *    정수 분주를 요구하므로 실제 클럭은 24 MHz 다.
+	 */
+	clock-frequency = <24000000>;
+
+	/*
+	 * Zephyr 콘솔 보율은 115200 으로 한다. Rockchip 디버그 콘솔 관행은
+	 * 1500000 이지만 그 값은 Linux 의 선택이고, Zephyr 쪽은 우리가 정한다.
+	 *
+	 * 115200 을 고른 이유:
+	 *   - 흔한 USB-TTL 어댑터가 모두 낸다. 1500000 은 못 내는 칩이 많다 —
+	 *     이 프로젝트에서 쓴 Silicon Labs CP2102 (idProduct 0xEA60) 가
+	 *     최대 1 Mbps 라 1500000 에서 한 바이트도 받지 못했다.
+	 *     CP2102N·CH343·FT232H 는 1500000 을 낸다.
+	 *   - 24 MHz 클럭에서 오차 0.16% 로 안전하다.
+	 * 1500000 이 되는 어댑터를 쓴다면 이 값을 1500000 으로 바꿔도 된다
+	 * (위 표대로 오차 0%).
+	 *
+	 * 40핀 헤더 배선 (핀 이름은 보드 기준이므로 어댑터와 교차한다):
+	 *   어댑터 RXD -> 보드 8번 (보드 TX) · TXD -> 10번 (보드 RX) · GND -> 6번
+	 */
+	current-speed = <115200>;
+};
+
+/*
+ * USB device 컨트롤러.
+ * [2] 드라이버 뼈대부터 켠다 — disabled 면 DT_INST_FOREACH_STATUS_OKAY 가
+ * 인스턴스를 만들지 않아 드라이버가 컴파일조차 되지 않는다.
+ */
+&usb_host0_xhci {
+	status = "okay";
+};

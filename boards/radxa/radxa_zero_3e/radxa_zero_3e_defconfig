@@ -1,0 +1,33 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# 최소 구성: UART 콘솔까지만. GPIO·SD·USB 는 드라이버가 없어 아직 못 켠다
+# (Zephyr 에 Rockchip 전용 드라이버가 하나도 없음 — UART 는 범용 ns16550 재사용).
+
+CONFIG_ARM_ARCH_TIMER=y
+CONFIG_ARMV8_A_NS=y
+CONFIG_CACHE_MANAGEMENT=y
+CONFIG_TICKLESS_KERNEL=y
+
+CONFIG_SERIAL=y
+CONFIG_UART_NS16550=y
+CONFIG_UART_INTERRUPT_DRIVEN=y
+CONFIG_CONSOLE=y
+CONFIG_UART_CONSOLE=y
+
+CONFIG_CLOCK_CONTROL=y
+
+# USB device 컨트롤러 — [2] 뼈대부터. 아직 하드웨어 접근은 없다.
+CONFIG_UDC_DRIVER=y
+CONFIG_LOG=y
+
+# 캐시 라인 크기 — Cortex-A55 는 64 바이트.
+#
+# USB 버퍼 정렬(USB_BUF_ALIGN)이 이 값을 그대로 쓴다. 기본값 0 이면
+# __aligned(0) 과 0 나눗셈 경고가 나고 [6] TRB 링의 캐시 관리가 조용히
+# 깨진다.
+#
+# DCACHE_LINE_SIZE_DETECT=y (CTR_EL0 런타임 확인) 는 쓸 수 없다 —
+# 그 경우 CONFIG_DCACHE_LINE_SIZE 가 아예 정의되지 않는데
+# include/zephyr/drivers/usb/usb_buf.h:44 가 무조건 참조해서 빌드가 깨진다.
+# 실기에서 CTR_EL0 로 64 가 맞는지 한 번 확인해 두면 좋다.
+CONFIG_DCACHE_LINE_SIZE=64

@@ -1,0 +1,38 @@
+# SPDX-License-Identifier: Apache-2.0
+
+config UDC_DWC3
+	bool "DWC3 USB device controller driver"
+	default y
+	depends on DT_HAS_SNPS_DWC3_ENABLED
+	select UDC_DRIVER_HAS_HIGH_SPEED_SUPPORT
+	select EVENTS
+	help
+	  Synopsys DesignWare USB 3.x (DWC3) 컨트롤러를 device 모드로 쓴다.
+
+	  이 드라이버는 USB 2.0 High Speed device 동작만 대상으로 한다.
+	  SuperSpeed · host/OTG 역할 전환 · hibernation 은 범위 밖이다
+	  (대상 보드 Radxa ZERO 3E 가 USB3 combphy 를 연결하지 않음).
+
+	  EVENTS 가 필요하다 — ISR 이 이벤트 처리 스레드를 깨우는 데
+	  k_event 를 쓴다.
+
+if UDC_DWC3
+
+config UDC_DWC3_STACK_SIZE
+	int "DWC3 driver internal thread stack size"
+	default 1024
+	help
+	  이벤트 처리 스레드(아래쪽 절반)의 스택 크기.
+
+	  udc_setup_received() 가 UDC 락에 의존해 스레드 문맥에서만 부를
+	  수 있으므로 ISR 에서 이벤트를 처리할 수 없다. ISR 은 인터럽트를
+	  마스크하고 깃발만 올리고, 이 스레드가 이벤트 링을 비운다.
+
+config UDC_DWC3_THREAD_PRIORITY
+	int "DWC3 driver internal thread priority"
+	default 8
+	help
+	  이벤트 처리 스레드의 협조적(cooperative) 우선순위.
+	  USB 호스트의 열거 타임아웃 안에 응답해야 하므로 낮지 않게 둔다.
+
+endif # UDC_DWC3

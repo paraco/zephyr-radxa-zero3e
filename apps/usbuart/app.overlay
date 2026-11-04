@@ -1,0 +1,12 @@
+/*
+ * CDC-ACM 클래스 노드만 만든다. chosen zephyr,console 은 건드리지 않아
+ * 보드 DTS 의 &uart2 (115200) 가 그대로 콘솔로 쓰인다.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+&zephyr_udc0 {
+	cdc_acm_uart0: cdc_acm_uart0 {
+		compatible = "zephyr,cdc-acm-uart";
+	};
+};
