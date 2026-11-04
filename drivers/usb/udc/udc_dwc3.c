@@ -208,9 +208,33 @@ static inline void dwc3_write32(const struct device *dev, uint32_t off, uint32_t
  * 제대로 하려면 PHY 드라이버와 DT 참조로 빼야 한다. 자세한 근거는
  * udc_dwc3_init 의 주석.
  */
-#define DWC3_RK_USB2PHY_GRF	0xfdca0000UL	/* syscon@fdca0000 */
-#define DWC3_RK_PHY_CLK_CTL	0x0008
-#define DWC3_RK_PHY_CLK_ENABLE	0x00100000U	/* bit20=we, bit4=0 → PLL on */
+/*
+ * Rockchip USBPHY_U3_GRF — OTG PHY 의 GRF. [임시] 보드 고유 값.
+ *
+ * 출처: Rockchip RK3568 TRM Part1 V1.3, 3.9절 "USBPHY_U3_GRF_Register
+ * Description" (419쪽). 메모리맵에 USBPHY_U3_GRF = 0xFDCA0000 (32KB) 이고,
+ * 보드의 라이브 DT 에서도 usb2-phy@fe8a0000 의 rockchip,usbgrf 가 이것을
+ * 가리킨다.
+ *
+ * 모든 레지스터가 hiword-mask 다 — "Write enable for lower 16bits, each
+ * bit is individual" (상위 16비트가 비트별 쓰기 허용). GPIO 와 같은 규약.
+ *
+ * ⚠ 제대로 하려면 PHY 드라이버로 빼야 한다. 지금은 bring-up 임시 조치다.
+ */
+#define DWC3_RK_USB2PHY_GRF	0xfdca0000UL
+
+/* CON0 (0x0000): OTG 포트 UTMI 제어 */
+#define DWC3_RK_PHY_CON0	0x0000
+#define DWC3_RK_CON0_IDDIG	BIT(10)	/* GRF OTG plug iddig 지시자 (1=B-device) */
+#define DWC3_RK_CON0_IDDIG_SEL	BIT(9)	/* 1=GRF 지시자를 컨트롤러에 */
+
+/* CON2 (0x0008): bvalid/vbusvalid 와 PLL */
+#define DWC3_RK_PHY_CON2	0x0008
+#define DWC3_RK_CON2_BV_SEL	BIT(15)	/* 1=GRF 값을 bvalid/vbusvalid 로 */
+#define DWC3_RK_CON2_BV_GRF	BIT(14)	/* 컨트롤러에 줄 bvalid/vbusvalid 값 */
+
+/* 상위 16비트 쓰기 허용 + 하위 값을 한 번에 만든다 */
+#define DWC3_RK_HIWORD(bits)	(((uint32_t)(bits) << 16) | (uint32_t)(bits))
 
 /* USB 엔드포인트 주소(0x81 등) -> 물리 번호 */
 #define DWC3_PHYS_EP(addr)	\
@@ -2534,7 +2558,7 @@ static int udc_dwc3_init(const struct device *dev)
 	 */
 
 	/*
-	 * ⚠ Rockchip USB2 PHY 의 480 MHz PLL 을 깨운다 — 임시 조치다.
+	 * ⚠ PHY 를 peripheral 전용으로 못 박는다 — 임시 조치다.
 	 *
 	 *   이 PHY 는 dwc3 와 '별개의 장치' 이고 GRF(General Register File)
 	 *   레지스터로 제어된다. Zephyr 에는 Rockchip PHY 드라이버가 없고
@@ -2542,32 +2566,54 @@ static int udc_dwc3_init(const struct device *dev)
 	 *   참조하지 않는다. PLL 이 suspend 상태면 dwc3 코어를 device 로
 	 *   돌려놔도 버스를 구동하지 못해 열거가 일어나지 않는다.
 	 *
-	 *   값의 출처: FreeBSD sys/arm64/rockchip/rk_usb2phy.c
-	 *   (SPDX: BSD-2-Clause, Copyright (c) 2019 Emmanuel Vadot) 의
-	 *   rk3568_regs.clk_ctl — offset 0x08, enable 0x100000,
-	 *   disable 0x100010. GPIO 와 같은 hiword-mask 형식이라 상위 16비트가
-	 *   write-enable 이다: 비트 20 을 세우고 비트 4(PLL suspend)를 0 으로
-	 *   쓰면 PLL 이 깨어난다.
+	 *   USB 디바이스로 동작하려면 컨트롤러가 두 가지를 알아야 한다:
 	 *
-	 *   GRF 주소는 보드의 라이브 디바이스트리에서 확인했다 —
-	 *   usb2-phy@fe8a0000 의 rockchip,usbgrf 가 phandle 0x100 을 가리키고
-	 *   그것이 syscon@fdca0000 이다.
+	 *   1) VBUS 가 유효하다 (bvalid/vbusvalid)
+	 *      없으면 호스트에 붙었다는 것을 모르고 D+ 풀업과 HS 협상을
+	 *      끝내지 못한다. reset 상태(CON2 비트15=0)에서는 PHY 의 자체
+	 *      VBUS 감지에 의존하는데, 이 보드의 USB-C 포트에서는 그 경로가
+	 *      연결되지 않은 것으로 보인다 — 실기에서 CONNECTSPD 가 HS(0)와
+	 *      FS(1) 사이를 23:13 으로 요동쳤다.
+	 *      → CON2 비트15(sel)=1, 비트14(값)=1 로 강제한다.
 	 *
-	 * ⚠ 이것으로 충분한지는 모른다. FreeBSD 드라이버는 host-port 만
-	 *   지원한다고 명시하고 있어 OTG 포트 전용 비트(포트 suspend 해제,
-	 *   vbus/id 감지)는 그 출처에 없다. 열거가 여전히 안 되면 RK3566 TRM
-	 *   에서 USB2PHY GRF 의 otg-port 레지스터를 찾아야 한다.
+	 *   2) 자신이 B-device(주변장치)다 (iddig)
+	 *      reset 상태(CON0 비트9=0)에서는 PHY 의 물리 ID 핀을 본다.
+	 *      USB-C 에는 ID 핀이 없어 그 값이 떠 있거나 A-device(호스트)로
+	 *      읽힐 수 있다.
+	 *      → CON0 비트9(sel)=1, 비트10(iddig)=1 로 강제한다.
+	 *
+	 *   출처: RK3568 TRM Part1 V1.3 3.9절 (419쪽). 비트 이름 그대로:
+	 *     CON0: usbotg_utmi_iddig / usbotg_utmi_iddig_sel
+	 *     CON2: bvalid_vbusvalid_grf / bvalid_vbusvalid_sel
+	 *
+	 * ⚠ 이전에 여기서 CON2 에 0x00100000 을 썼다 (FreeBSD rk_usb2phy.c 의
+	 *   clk_ctl). TRM 을 보니 그것은 비트4 usbphy_commononn 을 0 으로 쓰는
+	 *   것이고 reset 값이 이미 0 이라 사실상 무동작이었다. PHY PLL 은
+	 *   애초에 suspend 가 아니었다.
 	 */
 	{
 		mm_reg_t grf;
 
 		device_map(&grf, DWC3_RK_USB2PHY_GRF, 0x100,
 			   K_MEM_CACHE_NONE);
-		sys_write32(DWC3_RK_PHY_CLK_ENABLE,
-			    grf + DWC3_RK_PHY_CLK_CTL);
-		LOG_INF("USB2 PHY PLL 깨움: GRF 0x%lx + 0x%x <- 0x%08x",
-			(unsigned long)DWC3_RK_USB2PHY_GRF,
-			DWC3_RK_PHY_CLK_CTL, DWC3_RK_PHY_CLK_ENABLE);
+
+		/* B-device 로 못 박는다 */
+		sys_write32(DWC3_RK_HIWORD(DWC3_RK_CON0_IDDIG |
+					   DWC3_RK_CON0_IDDIG_SEL),
+			    grf + DWC3_RK_PHY_CON0);
+
+		/* VBUS 유효를 컨트롤러에 강제로 알린다 */
+		sys_write32(DWC3_RK_HIWORD(DWC3_RK_CON2_BV_SEL |
+					   DWC3_RK_CON2_BV_GRF),
+			    grf + DWC3_RK_PHY_CON2);
+
+		LOG_INF("PHY peripheral 고정: CON0=0x%08x CON2=0x%08x (읽기: 0x%08x / 0x%08x)",
+			DWC3_RK_HIWORD(DWC3_RK_CON0_IDDIG |
+				       DWC3_RK_CON0_IDDIG_SEL),
+			DWC3_RK_HIWORD(DWC3_RK_CON2_BV_SEL |
+				       DWC3_RK_CON2_BV_GRF),
+			sys_read32(grf + DWC3_RK_PHY_CON0),
+			sys_read32(grf + DWC3_RK_PHY_CON2));
 	}
 
 	/*

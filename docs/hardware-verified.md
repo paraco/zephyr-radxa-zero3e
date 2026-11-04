@@ -916,3 +916,111 @@ Zephyr 가 `caps.addr_before_status` 로 명시 지원한다. 우리 설정이 �
 **언제나** SETUP 이 먼저 처리되고 리셋이 나중에 처리된다 — 제출 순서를
 바꿔도 소용이 없다. 배치를 끊으면 usbd 가 리셋을 끝낸 뒤 다음 배치가
 올라간다. 첫 리셋의 순서 역전이 이것으로 해소됐다.
+
+## USB2PHY GRF 레지스터 — 출처 확보 (2026-11-04)
+
+### 출처
+
+**Rockchip RK3568 TRM Part1 V1.3, 3.9절 "USBPHY_U3_GRF_Register
+Description" (419쪽).** 벤더 공식 문서이므로 라이선스 제약이 없다.
+
+`rockchip.fr/Rockchip%20RK3568%20TRM%20V1.3%20Part1.pdf` (11.3 MB).
+
+**⚠ 조사 방법 교훈: 큰 벤더 PDF 는 내려받아 `pdftotext -layout` 으로
+추출하고 `grep` 하는 것이 압도적으로 빠르다.** firecrawl 의 질의 추출로
+852쪽을 두 번 시도했으나 한 번은 타임아웃, 한 번은 빈 결과였다. 로컬
+처리는 몇 초였고 컨텍스트 비용도 없다.
+
+### 메모리맵 (TRM 확인)
+
+```
+USBPHY_U3_GRF   0xFDCA0000   32KB   <- OTG PHY 의 GRF (우리가 쓰는 것)
+USBPHY_U2_GRF   0xFDCA8000   32KB
+USB2PHY_U3OTG   0xFE8A0000   64KB   <- PHY 자체 (DT 의 usb2-phy@fe8a0000)
+USB2PHY_U2HOST  0xFE8B0000   64KB
+```
+
+### 레지스터 요약
+
+| 이름 | offset | reset | 용도 |
+|---|---|---|---|
+| `USBPHY_U3_GRF_CON0` | 0x0000 | 0x0C52 | **OTG 포트 UTMI 제어** |
+| `USBPHY_U3_GRF_CON1` | 0x0004 | 0x01D2 | HOST 포트 UTMI 제어 |
+| `USBPHY_U3_GRF_CON2` | 0x0008 | 0x0000 | **bvalid/vbusvalid, PLL, 충전 감지** |
+| `USBPHY_U3_GRF_CON3` | 0x000C | 0x0019 | drvvbus, fs 신호, HOST pulldown |
+| `USBPHY_U3_GRF_CON4` | 0x0010 | 0x0000 | **OTG suspend 제어 (write_enable 없음!)** |
+| `..._LS_CON` | 0x0040 | 0x30100 | linestate 필터 시간 |
+| `..._DIS_CON` | 0x0044 | 0x30100 | disconnect 필터 시간 |
+| `..._BVALID_CON` | 0x0048 | 0x30100 | bvalid 필터 시간 |
+| `..._ID_CON` | 0x004C | 0x30100 | id 필터 시간 |
+| `..._INT_MASK` | 0x0080 | 0x0000 | 인터럽트 마스크 (bvalid/id/disconnect 에지) |
+| `..._INT_STATUS` | 0x0084 | 0x0000 | 인터럽트 상태 |
+| `..._STATUS` | 0x00C0 | 0x0000 | **PHY 상태 (아직 읽어 보지 않음)** |
+
+CON0~CON3 과 INT_MASK 는 hiword-mask ("Write enable for lower 16bits,
+each bit is individual"). **CON4 는 예외로 write_enable 이 없다** (31:7 이 RO).
+
+### device 모드에 필요한 비트 (TRM 비트 이름 그대로)
+
+```
+CON0 비트 10  usbotg_utmi_iddig      reset 1   GRF OTG plug iddig 지시자
+CON0 비트  9  usbotg_utmi_iddig_sel  reset 0   1=GRF 지시자를 컨트롤러에
+CON2 비트 15  bvalid_vbusvalid_sel   reset 0   1=GRF 값을 bvalid/vbusvalid 로
+CON2 비트 14  bvalid_vbusvalid_grf   reset 0   컨트롤러에 줄 값
+```
+
+USB 디바이스는 **bvalid(VBUS 유효)** 없이는 D+ 풀업과 HS 협상을 끝낼 수
+없다. reset 상태에서는 PHY 의 자체 VBUS 감지에 의존하는데, 이 보드의
+USB-C 포트에서는 그 경로가 연결되지 않은 것으로 보인다. iddig 도 마찬가지로
+USB-C 에는 ID 핀이 없다.
+
+### 적용 결과 — 반영됐지만 해결되지 않았다
+
+```
+PHY peripheral 고정: CON0=0x06000600 CON2=0xc000c000
+                     읽기: CON0=0x00000e52  CON2=0x0000c000
+```
+
+읽기값에 비트 9·10(CON0)과 14·15(CON2)가 모두 서 있다 — **쓰기는 성공**.
+그러나 리셋 36회, CONNECTSPD 22:14 요동, STATUS done 1 로 변화가 없다.
+이 두 비트만으로는 부족하다.
+
+### 이전 PHY "수정" 은 무동작이었다
+
+`CON2` 에 쓰던 `0x00100000` (FreeBSD `rk_usb2phy.c` 의 `clk_ctl` enable
+마스크)은 비트 4 `usbphy_commononn` 을 0 으로 쓰는 것이고 **reset 값이 이미
+0** 이다. PHY PLL 은 애초에 suspend 가 아니었고, 그래서 그 수정이 아무
+변화를 만들지 못했다. 다른 SoC(rk3399)용 값을 그대로 가져온 결과다.
+
+## 로그 분석 방법의 치명적 결함 (2026-11-04)
+
+부팅 구간을 **배너(`PiZZa — Radxa Zero 3E dwc3 bringup`) 부터** 잘라
+분석했는데, 그 배너는 `main()` 이 찍고 **`init` 로그는 `main()` 보다 먼저
+나온다.** 즉 `DWC3 core 0x5533`, `PHY peripheral 고정`, `core+PHY reset`,
+`GCTL PRTCAPDIR` 같은 **초기화 로그를 매번 잘라 버리고 있었다.**
+
+그 결과 PHY 수정이 적용됐는지조차 확인하지 못해 "코드가 안 올라갔다" 고
+오판했다. 올바른 방법:
+
+```
+N=$(grep -an "Radxa Zero 3E dwc3 bringup" "$LOG" | tail -1 | cut -d: -f1)
+sed -n "$((N-140)),\$p" "$LOG"      # 배너 앞 140줄을 포함한다
+```
+
+## 다음 벽 — EP0 상태 기계와 리셋의 상호작용
+
+```
+XNR stage=2 (STATUS)                 호스트가 상태 단계를 요구
+STATUS  state=0                      보류 (state 가 SETUP)
+EP0 XferComplete but TRB still HW-owned   그 직전에 SETUP 을 놓쳤다
+```
+
+SETUP 을 놓치면 `ep0_state` 가 `SETUP` 에 머물고, 스택이 내려 준 상태 단계
+버퍼는 `state != STATUS && state != TWO_STAGE` 로 **영구 보류**된다. 스택은
+제어 전송이 진행 중이라고 믿고 드라이버는 아니라고 믿는 불일치다.
+
+측정값: SETUP 6개(전부 `00 05`), `device address = 1` 6회,
+**`STATUS done` 1회**, GET_DESCRIPTOR 0회.
+
+읽어 볼 것: `USBPHY_U3_GRF_STATUS` (0x00C0) — PHY 가 실제로 무엇을 보고
+있는지. 아직 한 번도 읽지 않았다.
