@@ -121,19 +121,6 @@ struct udc_dwc3_data {
 	struct k_event drv_evt;
 
 	/*
-	 * ⚠ USB_RESET 에서 EP0 재무장을 '미루기' 위한 깃발.
-	 *
-	 *   리셋 처리에서 즉시 재무장하면, 리셋 '전' 에 이미 받아 둔 SETUP 의
-	 *   XferComplete 가 아직 이벤트 링에 남아 있는데 그 TRB 와 버퍼를
-	 *   덮어써 버린다 (dwc3_ep0_arm_setup 이 버퍼를 memset 하고
-	 *   dwc3_trb_fill 이 HWO 를 다시 세운다). 그러면 그 낡은 이벤트를
-	 *   처리할 때 TRB 가 '하드웨어 소유' 로 보여 SETUP 이 스택에
-	 *   전달되지 않는다. 호스트는 데이터 단계에서 기다리다 포기하고
-	 *   리셋을 반복한다 — 실기에서 이 고리를 봤다.
-	 */
-	bool ep0_rearm_pending;
-
-	/*
 	 * ⚠ UDC_EVT_RESET 을 '실제 리셋이 있었을 때만' 올리기 위한 깃발.
 	 *
 	 *   속도(DSTS.CONNECTSPD)는 CONNECTION_DONE 뒤에야 유효하므로 RESET
@@ -225,9 +212,6 @@ static inline void dwc3_write32(const struct device *dev, uint32_t off, uint32_t
 #define DWC3_EP0_OUT		0U
 #define DWC3_EP0_IN		1U
 #define DWC3_EP0_MPS	64U	/* High Speed 제어 엔드포인트는 64바이트 */
-
-/* TRB write-back 이 이벤트보다 늦게 보일 때 기다리는 한도 */
-#define DWC3_TRB_WB_TIMEOUT_US	200
 
 /*
  * Rockchip USB2 PHY GRF — [임시] 보드 고유 값.
@@ -1277,27 +1261,12 @@ static void dwc3_ep0_setup_received(const struct device *dev, uint32_t raw)
 	int rc;
 
 	/*
-	 * ⚠ 짧게 폴링한다 — XferComplete 이벤트와 TRB write-back 이 경합한다.
-	 *
-	 *   실기에서 depevt=0x0000c040 (XferComplete, IOC=1 LST=1, BUSERR=0,
-	 *   SHORT=0) 즉 '정상 완료' 를 받는데도 TRB 는 손대지 않은 상태
-	 *   (ctl=0x823 HWO=1, st=0x8 BUFSIZ 그대로) 로 읽혔다. 이벤트 링과
-	 *   TRB write-back 이 서로 다른 AXI 경로로 오므로, 이벤트가 먼저
-	 *   보일 수 있다. 캐시 무효화는 매번 다시 한다 (dwc3_trb_reclaim).
-	 *
-	 *   슬롯 오독은 배제했다 — trb1 은 ctl=0 st=0 으로 쓰인 적이 없다.
+	 * ⚠ 200 us 폴링을 시도했으나 무용했다 — write-back 경합이 아니다.
+	 *   실기에서 이 경로는 36번 중 2번만 타고, 그때는 리셋 처리가
+	 *   TRB 를 재무장해 덮어쓴 '낡은 이벤트' 다. 흘려보내면 호스트가
+	 *   재시도한다.
 	 */
-	for (int us = 0; us < DWC3_TRB_WB_TIMEOUT_US; us += 10) {
-		rc = dwc3_trb_reclaim(trb, &trbsts);
-		if (rc == 0) {
-			if (us > 0) {
-				LOG_DBG("TRB write-back %d us 늦게 도착", us);
-			}
-			break;
-		}
-		k_busy_wait(10);
-	}
-
+	rc = dwc3_trb_reclaim(trb, &trbsts);
 	if (rc != 0) {
 		/*
 		 * ⚠ [임시 계측] 두 가능성을 가린다:
@@ -2104,13 +2073,28 @@ static void dwc3_handle_events(const struct device *dev)
 				priv->ep0_state = DWC3_EP0_SETUP;
 				priv->ep0_nrdy_status = false;
 				/*
-				 * ⚠ 여기서 재무장하지 않는다 — 링에 남은 낡은
-				 *   SETUP XferComplete 를 덮어쓴다. 링을 비운 뒤
-				 *   이 함수 끝에서 한다.
+				 * ⚠ 반드시 '즉시' 재무장한다.
+				 *
+				 *   dwc3_ep0_configure() 의 DEPSTARTCFG 가 전송
+				 *   리소스를 초기화하므로, 이 시점에 기존에 무장된
+				 *   SETUP TRB 는 이미 무효다. 재무장을 미루면 그
+				 *   사이에 SETUP 을 받을 그릇이 없다.
+				 *
+				 *   한때 "링을 비운 뒤" 로 미뤘다가 더 큰 구멍을
+				 *   만들었다: 한 이벤트 배치에 리셋이 여러 개 오면
+				 *   configure 는 매번 실행되는데 재무장은 배치 끝에
+				 *   한 번뿐이어서, 그 배치 내내 TRB 가 없었다.
+				 *   실기 로그에서 리셋 36번 / configure 37번 /
+				 *   무장 22번으로 드러났고, 231 ms 동안 무장이 없는
+				 *   창에서 호스트의 GET_DESCRIPTOR 가 버려졌다
+				 *   (전체 로그에 SETUP 80 06 이 한 번도 없었다).
+				 *
+				 *   낡은 XferComplete 를 덮어쓰는 문제는 남지만
+				 *   실기에서 36번 중 2번이고, 그때는 조기 반환으로
+				 *   무해하게 흘린다 (호스트가 재시도한다).
 				 */
-				if (dwc3_ep0_configure(dev) == 0) {
-					priv->ep0_rearm_pending = true;
-				}
+				(void)dwc3_ep0_configure(dev);
+				(void)dwc3_ep0_arm_setup(dev);
 				priv->usb_reset_seen = true;
 				break;
 			case DWC3_DEVT_CONNECTION_DONE: {
@@ -2241,14 +2225,6 @@ static void dwc3_handle_events(const struct device *dev)
 	/* ack 는 0 이 아니라 '처리한 바이트 수' 다. */
 	dwc3_write32(dev, DWC3_GEVNTCOUNT(DWC3_EVT_INTR_IDX), cnt);
 
-	/*
-	 * 링을 모두 처리한 '뒤에' EP0 을 재무장한다. 리셋 처리에서 바로
-	 * 하면 같은 링에 남아 있던 SETUP XferComplete 를 덮어쓴다.
-	 */
-	if (priv->ep0_rearm_pending) {
-		priv->ep0_rearm_pending = false;
-		(void)dwc3_ep0_arm_setup(dev);
-	}
 }
 
 static void dwc3_thread_handler(void *const arg)
