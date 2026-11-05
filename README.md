@@ -218,6 +218,81 @@ Linux 에서 **사실로서** 확인하고 코드는 직접 작성했다 — 하
 `CONFIG_HWINFO_RK3566_OTP=n` 으로 끄거나 자리표 판으로 되돌릴 수 있다
 (git 이력에 있다).
 
+## 현재 작업 상태 — 관리 셸 (2026-11-05)
+
+`apps/moru` 가 **UART2 에 `Moru > ` 셸을 띄우는 단계까지 동작한다.** 계획은
+`~/.claude/plans/twinkly-doodling-frog.md`, 실기 기록은
+[docs/hardware-verified.md](docs/hardware-verified.md) 에 있다.
+
+### 동작 확인된 것
+
+```
+[00:00:00.457,000] <inf> hwinfo_rk3566: OTP 칩 ID: 4d4257373335...
+[00:00:00.465,000] <inf> usbd_cdc_acm: Configuration enabled
+Moru > help
+Available commands:
+  app · clear · device · help · history · kernel · rem · resize · retval · shell
+```
+
+UART2 셸 + USB CDC-ACM 열거(HS) + OTP 직렬번호가 동시에 살아 있고 `<err>` 0줄.
+
+### ⛔ 이 보드에서 쓸 수 없는 것
+
+**`CONFIG_INIT_STACKS=y` 를 켜면 보드가 완전히 무음이 된다** (실기 3회 확인).
+U-Boot 는 정상이고 `go` 까지 가지만 Zephyr 가 한 글자도 못 찍는다.
+기전은 설명되지 않았다 — 자세한 내용과 수치는 `docs/hardware-verified.md`.
+
+그래서 **`kernel thread list` 와 `kernel thread stacks` 를 쓸 수 없다**
+(둘 다 `INIT_STACKS` 를 요구한다). `kernel thread suspend`/`resume`/`kill` 과
+`uptime`/`cycles`/`version` 은 쓴다.
+
+⚠ `CONFIG_SHELL=y` 는 `KERNEL_SHELL` 을 통해 `INIT_STACKS` 를 **imply** 한다.
+그래서 `apps/moru/prj.conf` 가 명시적으로 `CONFIG_INIT_STACKS=n` 을 쓴다.
+**이 줄을 지우면 보드가 부팅하지 않는다.**
+
+### 다음에 이어서 할 일
+
+```bash
+./build.sh "$(pwd)/apps/moru" && cp /tmp/claude-501/rz3e-build/zephyr/zephyr.bin sdcard/
+```
+
+그 뒤 SD 카드 복사(위 "보드에 올리기") → 전원. `tio` 는 **115200**
+(U-Boot 구간은 1.5 Mbps 라 쓰레기로 보이고, 그 뒤 Zephyr 출력이 읽힌다).
+
+남은 묶음 — 각각 실기 1회:
+
+| 묶음 | 내용 | 위험 |
+|---|---|---|
+| B1 | Linux 형식 부팅 메시지 · `moru_boot.c` 되살리기 · MoruLab 제품 문자열/PID | 낮음 |
+| B2 | `moru info` · `VERSION` · 셸 모듈(`hwinfo`·`log`·`heap`) | 낮음 |
+| B3 | `moru usb` · 드라이버 진단 API·카운터 | 중간 — 열거 회귀 시험 필수 |
+| B4 | `moru reboot` (셸에서 직접 SMC) | 낮음 — BL31 확인됨, Kconfig 변경 0 |
+
+B4 의 근거: U-Boot 로그에서 `BL31 v2.3` 이 EL3 에서 GICv3 를 초기화하고
+런타임 서비스를 올리는 것을 확인했다. 단 **`CONFIG_PM_CPU_OPS` 는 켜지 말 것** —
+`psci_init` 이 `PRE_KERNEL_1` 에서 SMC 를 쏘고 그건 콘솔보다 먼저라, BL31 이
+응답하지 않으면 원인 구분이 불가능한 무음이 된다.
+
+### 측정 방법 (비싸게 배운 것)
+
+- **기준점을 먼저 확인한다.** 검증된 `apps/usbuart` 를 같은 카드로 구워
+  LED 가 깜박이는지 본다. 이것 하나로 보드·카드·배선·전원·부팅 사슬이
+  한꺼번에 검증된다. 이걸 건너뛰어 왕복 네 번을 낭비했다.
+- **`prj.conf` 의 줄 수는 실제 변경량이 아니다.** 2줄을 더했는데 `.config`
+  차이가 70개였다. 반드시 비교한다:
+  `diff <(grep ^CONFIG_ A/.config|sort) <(grep ^CONFIG_ B/.config|sort)`
+- **U-Boot 를 읽으려면 1.5 Mbps.** 그래야 `fatload` 결과와 `go` 주소가 보인다.
+- `tio --log-file` 은 버퍼링돼 실시간이 아니다. 판단은 터미널 화면으로.
+  `--log-strip` 은 쓰레기를 버려서 로그가 비어 보인다.
+- 보율이 틀린 구간의 쓰레기에서 문자열을 grep 하면 안 된다 (거짓 양성·음성).
+- `diskutil list` 에 카드가 없는 것은 복사 성공의 증거가 아니다. `mdir` 을 본다.
+- `sudo -v` 를 먼저 돌린다. 비밀번호 오류로 `&&` 사슬이 끊기면 조용히 실패한다.
+- **진단 장치가 피검체를 죽인 사례가 두 번 있었다** — `PRE_KERNEL_1` 에서
+  `device_map()` 호출, LED 스레드 스택 1024. 계측을 추가할 때도 같은 규칙을
+  지킨다.
+
+---
+
 ## 다음에 할 만한 것
 
 - 일반 엔드포인트 실사용 검증 (CDC 벌크는 동작하지만 대량 전송·ZLP·짧은 패킷
