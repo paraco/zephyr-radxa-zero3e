@@ -1359,9 +1359,44 @@ Device Speed 2(HS), Serial Number = OTP 칩 ID. `<err>` 0줄.
    끌 수 있다. **prj.conf 에 쓴 줄 수가 실제 변경량이 아니다 — 반드시
    `.config` 를 비교해야 한다.**
 
-### 아직 모르는 것
+### ⛔ 범인 확정: `CONFIG_INIT_STACKS` (2026-11-05, 실기 3회)
 
-넷 중 **어느 것이 범인인지는 특정되지 않았다**. 상관관계로는 `INIT_STACKS`
+| 설정 조합 | 결과 |
+|---|---|
+| 넷 다 끔 (`777091b`) | 부팅 ✅ `Moru >` · `help` 동작 |
+| `INIT_STACKS`+`THREAD_MONITOR` 켬 (`464a4ce`) | **무음** ❌ |
+| `INIT_STACKS` 만 끔, `THREAD_MONITOR` 켬 (`fc0d8eb`) | 부팅 ✅ |
+
+- `DEVMEM_SHELL`·`DATE_SHELL` — 무죄 (성공·실패 두 판 모두 꺼져 있었다)
+- `THREAD_MONITOR` — 무죄 (성공한 판에 켜져 있다)
+- **`INIT_STACKS` — 유죄.** 켜면 무음, 끄면 부팅.
+
+**증상.** U-Boot 는 정상 진행하고 `go 0x40001084` 까지 간다. 그 뒤 Zephyr 가
+읽을 수 있는 출력을 **한 글자도** 내지 않는다. `uart_poll_out` 으로 직접 찍는
+동기 마커조차 안 나온다. 즉 `PRE_KERNEL_2` 보다 앞에서 죽는다.
+
+**기전은 설명되지 않았다.** `arch/arm64/core/reset.S:204-215` 가 MMU·콘솔보다
+먼저 ISR 스택을 0xAA 로 칠하는데, 이 보드 수치로는 그 루프가 정상이다:
+`CONFIG_ISR_STACK_SIZE=4096` = `__z_interrupt_stack_SIZEOF` 0x1000,
+`z_interrupt_stacks` 가 0x…200 정렬, 시작·끝 차이 0xFF8(8의 배수)이므로
+`beq` 종료 조건이 정확히 맞는다. 영역을 벗어나 쓰지도 않는다.
+**왜 죽는지는 모른다** — 정적 분석으로는 결함을 찾지 못했다. 캐시·MMU 가
+꺼진 상태에서의 4 KiB 쓰기가 이 SoC 에서 다른 영향을 주는지는 미확인이다.
+
+**영향 — 잃는 기능.** `kernel thread list` 와 `kernel thread stacks` 가 둘 다
+`INIT_STACKS` 를 요구한다 (`thread/Kconfig:16-18,26-28`). 그래서 이 보드에서는
+쓸 수 없다. `THREAD_MONITOR` 는 쓸 수 있으므로 `kernel thread suspend`·
+`resume`·`kill` 은 남는다. 스택 사용량을 보려면 `CONFIG_STACK_SENTINEL`
+(넘침 감지)과 `west build` 의 정적 보고로 대신한다.
+
+**장래 조사 거리.** 이것이 Zephyr arm64 의 문제인지 RK3566 특정 문제인지
+가려 볼 가치가 있다. 다른 arm64 보드에서 `INIT_STACKS=y` 가 동작하는지,
+그리고 `reset.S` 의 그 루프를 지우면 `INIT_STACKS=y` 로도 부팅하는지가
+다음 단계다. 후자가 참이면 Zephyr 쪽에 보고할 거리다.
+
+### 넷 중 어느 것인지 좁히는 과정에서 쓴 방법
+
+ 상관관계로는 `INIT_STACKS`
 가 가장 유력하다 — 동작하는 `usbuart` 에 없고 실패한 모든 빌드에 있었으며,
 `usbuart/prj.conf:61-62` 가 "기동 실패 원인 가리려고 껐다" 고 적어 둔 바로
 그 설정이다. arm64 리셋 경로(`reset.S:204-215`)에서 MMU·콘솔보다 먼저 ISR
