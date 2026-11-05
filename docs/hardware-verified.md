@@ -1310,3 +1310,86 @@ OTP 는 한 번만 읽고 캐시한다 — 값이 변하지 않는다.
 콘솔이 USB 인 빌드에서 `cat /dev/cu.usbmodem*` 가 `Resource busy` 로 실패할
 수 있다 (다른 프로세스가 포트를 쥔 경우). 그때도 `ioreg` 의
 `USB Serial Number` 는 hwinfo 결과를 그대로 반영하므로 판정에 쓸 수 있다.
+
+---
+
+## ✅ 2026-11-05 — UART2 셸 동작 (apps/moru 1단계)
+
+`Moru > ` 프롬프트가 UART2 에서 동작하고, 동시에 USB CDC-ACM 이 열거되며
+OTP 칩 ID 가 USB 직렬번호로 나간다.
+
+```
+[00:00:00.053,000] <inf> main: MoruLab Zephyr RTOS is up
+[00:00:00.223,000] <inf> hwinfo_rk3566: OTP 칩 ID: 4d425737333500000000000000032106
+[00:00:00.228,000] <inf> usbd_cdc_acm: Configuration enabled
+Moru > help
+Available commands:
+  app · clear · device · help · history · kernel · rem · resize · retval · shell
+```
+
+호스트 쪽: `PiZZa dwc3 bringup@02131000`, idVendor 0x2FE3, idProduct 4,
+Device Speed 2(HS), Serial Number = OTP 칩 ID. `<err>` 0줄.
+
+### 어떻게 찾았나 — 방법이 결론을 좌우했다
+
+셸을 켠 첫 빌드부터 보드가 **완전히 무음**이었다 (LED 도 안 깜박임).
+왕복 여섯 번을 썼고 그중 네 번은 내가 기준점 없이 추측으로 움직여서
+낭비했다. 결정적이었던 세 가지:
+
+1. **기준점(control) 확인.** 검증된 `apps/usbuart` 를 같은 카드·같은
+   `boot.scr` 로 구워 LED 가 깜박이는 것을 확인했다. 이것으로 보드·카드·
+   배선·전원·부팅 사슬이 전부 정상임이 증명되고 탐색 범위가 절반이 됐다.
+   **이걸 처음에 하지 않은 것이 가장 큰 실수였다.**
+
+2. **U-Boot 를 1.5 Mbps 로 읽기.** 지금까지 쓰레기로만 보여서 보드가
+   무엇을 하는지 전혀 몰랐다. 열어 보니 U-Boot 는 할 일을 정확히 하고
+   있었다 — `boot.scr` 실행, `fatload` 성공, 진입점 0x40001084 일치.
+   덤으로 BL31 v2.3 이 EL3 에서 GICv3 를 초기화한다는 것과 U-Boot 가
+   EL2(SPSR 0x3c9)에서 돈다는 것도 확인했다.
+
+3. **`.config` 를 직접 비교하기 (왕복 0회).** prj.conf 에 2줄만 더했는데
+   실제 차이는 **70개**였다:
+   - `CONFIG_SHELL=y` → `KERNEL_SHELL`·`DEVICE_SHELL`·`DEVMEM_SHELL`·
+     `DATE_SHELL` 이 기본 y
+   - `KERNEL_SHELL` → `INIT_STACKS`·`THREAD_MONITOR` 를 **imply**
+   - `SHELL_BACKEND_SERIAL=y` → `LOG_BACKEND_UART` 가 자동으로 **사라진다**
+     (`Kconfig.uart:7`)
+
+   이 넷을 명시적으로 `n` 으로 끄자 부팅했다. imply 는 강제가 아니라
+   끌 수 있다. **prj.conf 에 쓴 줄 수가 실제 변경량이 아니다 — 반드시
+   `.config` 를 비교해야 한다.**
+
+### 아직 모르는 것
+
+넷 중 **어느 것이 범인인지는 특정되지 않았다**. 상관관계로는 `INIT_STACKS`
+가 가장 유력하다 — 동작하는 `usbuart` 에 없고 실패한 모든 빌드에 있었으며,
+`usbuart/prj.conf:61-62` 가 "기동 실패 원인 가리려고 껐다" 고 적어 둔 바로
+그 설정이다. arm64 리셋 경로(`reset.S:204-215`)에서 MMU·콘솔보다 먼저 ISR
+스택을 0xAA 로 칠한다. 다만 이 보드 수치로는 그 루프가 정상 종료한다
+(`ISR_STACK_SIZE=4096` = `__z_interrupt_stack_SIZEOF` 0x1000,
+`z_interrupt_stacks` 가 0x…200 정렬, 시작·끝 차이 0xFF8 = 8의 배수).
+즉 **입증된 결함이 아니다.**
+
+이것이 중요한 이유: `INIT_STACKS` 는 `kernel thread stacks` 명령에
+필요하다. 범인이 그것이면 그 명령을 포기해야 한다.
+
+### 진단 장치가 피검체를 죽인 사례 (이 세션에서 두 번)
+
+- `moru_stage.c` 가 `SYS_INIT(..., PRE_KERNEL_1, 1)` 에서 `device_map()` 을
+  불렀다. 불법이다 — `z_mem_manage_init()`(`kernel/init.c:293`)이
+  `PRE_KERNEL_1`(`:560`)·`PRE_KERNEL_2`(`:564`)보다 뒤, `POST_KERNEL`(`:300`)
+  바로 앞에서 돈다. `device_map` 은 스레드 문맥에서, 또는 `POST_KERNEL`
+  이후에만 부른다.
+- 앞서 LED 스레드 스택을 1024 로 두어 크래시한 것과 같은 종류다.
+
+### 측정 방법에 대한 교훈
+
+- **`tio --log-file` 은 실시간이 아니다** (버퍼링). 판단은 터미널 화면으로.
+  `--log-strip` 은 출력 불가 문자를 버려서 U-Boot 쓰레기가 로그에 안 남는다.
+- **보율이 틀린 구간의 쓰레기에서 문자열을 grep 하면 안 된다.** 무작위
+  바이트에 찾는 글자가 섞여 거짓 양성·음성이 둘 다 난다.
+- U-Boot 는 **1.5 Mbps**, Zephyr 는 **115200**. 한 번에 둘 다 읽을 수 없다.
+- `diskutil list` 에 카드가 안 보이는 것은 **복사 성공의 증거가 아니다**
+  (손으로 빼도 같다). `mdir` 출력을 실제로 확인해야 한다.
+- `sudo` 비밀번호 오류로 `&&` 사슬이 끊기면 복사가 조용히 안 된다.
+  `sudo -v` 로 먼저 받아 두면 피할 수 있다.
