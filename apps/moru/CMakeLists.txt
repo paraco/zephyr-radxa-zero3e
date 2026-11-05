@@ -27,5 +27,5 @@ target_compile_definitions(app PRIVATE MORU_BUILD_TIME="${MORU_BUILD_TIME} UTC")
 #
 #   src/moru_boot.c 도 빼둔다 — PRE_KERNEL_1/0 에서 로그 타임스탬프를
 #   바꾸므로 역시 후보다. 셸이 먼저 뜨는 것을 확인한 뒤 되돌려 넣는다.
-target_sources(app PRIVATE src/main.c)
+target_sources(app PRIVATE src/main.c src/moru_mark.c)
 # target_sources(app PRIVATE src/moru_boot.c src/moru_stage.c)
