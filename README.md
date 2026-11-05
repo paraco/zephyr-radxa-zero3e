@@ -248,11 +248,17 @@ UART2 셸 + USB CDC-ACM 열거(HS) + OTP 직렬번호가 동시에 살아 있고
 
 **`CONFIG_INIT_STACKS=y` 를 켜면 보드가 완전히 무음이 된다** (실기 3회 확인).
 U-Boot 는 정상이고 `go` 까지 가지만 Zephyr 가 한 글자도 못 찍는다.
-기전은 설명되지 않았다 — 자세한 내용과 수치는 `docs/hardware-verified.md`.
+기전은 아직 설명되지 않았다 — 자세한 내용과 수치는
+`docs/hardware-verified.md`.
 
-그래서 **`kernel thread list` 와 `kernel thread stacks` 를 쓸 수 없다**
+그래서 지금은 **`kernel thread list` 와 `kernel thread stacks` 를 쓸 수 없다**
 (둘 다 `INIT_STACKS` 를 요구한다). `kernel thread suspend`/`resume`/`kill` 과
 `uptime`/`cycles`/`version` 은 쓴다.
+
+**다만 이 포기는 조건부다.** EL2 데이터 캐시 가설이 서 있고, 그것이 맞으면
+`CONFIG_ARM64_DCACHE_ALL_OPS=y` + `CONFIG_ARM64_BOOT_DISABLE_DCACHE=y` 로
+두 명령을 되찾는다 — **실기 1회**로 가린다. 근거와 실험 설계는
+[docs/trm-grounding.md](docs/trm-grounding.md) §7.
 
 ⚠ `CONFIG_SHELL=y` 는 `KERNEL_SHELL` 을 통해 `INIT_STACKS` 를 **imply** 한다.
 그래서 `apps/moru/prj.conf` 가 명시적으로 `CONFIG_INIT_STACKS=n` 을 쓴다.

@@ -22,6 +22,12 @@ Part1: `rockchip.fr/Rockchip%20RK3568%20TRM%20V1.3%20Part1.pdf` (11.3 MB)
 | `clock-frequency = <12000000>` | **24000000** | 분주비 계산 + 실측. 12 MHz 면 115200 에서 오차 7%, 1500000 에서 50% — 한 바이트도 못 받는다. **실기로 오류 입증** |
 | `interrupts = <GIC_SPI 118 IRQ_TYPE_EDGE ...>` | **IRQ_TYPE_LEVEL** (`apps/moru/app.overlay`) | Linux 메인라인 DT. **TRM 미확인** |
 
+⚠ 두 번째 줄에 단서를 하나 달아야 한다 — **TRM 의 인터럽트 요약표가 트리거
+타입까지 적는지는 확인하지 않았다.** INTID 와 소스 이름만 적을 수도 있다.
+그렇다면 그 사실의 정본은 TRM 이 아니라 해당 주변장치 장의 인터럽트 서술이거나,
+없을 경우 Linux DT 가 최상위 출처로 남는다. §5 의 2번 항목은 그 전제까지
+포함해 확인한다.
+
 하나가 실측으로 틀렸음이 확인된 파일의 다른 값도 의심해야 한다. 그리고
 **트리거 타입은 TRM 인터럽트 표만이 정본**이다 — Linux DT 도 2차 출처다.
 
@@ -58,7 +64,7 @@ TRM 을 확보하는 것이 bring-up 삽질의 해답이 아니다. 이 착각�
 | 실패 | TRM 판정 | 설명 |
 |---|---|---|
 | `CONFIG_INIT_STACKS` 로 부팅 불가 (왕복 3회) | **무관** | Zephyr arm64 리셋 경로 문제. TRM 에 Zephyr 는 없다 |
-| `IRQ_TYPE_EDGE` 를 원인으로 오판 | **막을 수 있었다** | TRM 인터럽트 표가 트리거 타입을 확정한다. 가설을 바로 버릴 수 있었다 |
+| `IRQ_TYPE_EDGE` 를 원인으로 오판 | **막을 수 있었을 것** | TRM 이 트리거 타입을 적는다면 가설을 바로 버릴 수 있었다. 단 §1 의 단서 — TRM 이 그것을 적는지 자체가 미확인이다 |
 | `DW8250` busy-detect 를 원인으로 오판 | **부분** | TRM UART 장이 USR/busy-detect 레지스터 존재를 답한다. 원인은 아니었지만 **빨리 버릴 수 있었다** |
 | `moru_stage.c` 의 `device_map()` @ `PRE_KERNEL_1` | **무관** | Zephyr init 순서 |
 | LED 스레드 스택 1024 로 크래시 | **무관** | Zephyr 스택 요구량 |
@@ -135,17 +141,52 @@ TRM 을 확보하는 것이 bring-up 삽질의 해답이 아니다. 이 착각�
 - 그 루프는 이 보드 수치로 정상이다: `ISR_STACK_SIZE=4096` =
   `__z_interrupt_stack_SIZEOF` 0x1000, 시작·끝 차이 0xFF8(8의 배수)이므로
   `beq` 가 정확히 종료하고 영역을 벗어나 쓰지 않는다.
-- 같은 성질의 쓰기(`__reset_prep_c` 의 .bss 지우기)는 **성공한다.**
+즉 **루프 자체에는 정적 결함이 없다.**
 
-즉 **정적 분석으로는 결함이 없다.** 다음 실험은 TRM 이 아니라 이 셋이다:
+### 유력한 가설 — EL2 데이터 캐시 (미검증, 2026-11-06)
 
-1. **다른 arm64 보드에서 `INIT_STACKS=y` 가 되는지** — Zephyr 일반 문제인지
-   이 보드 특정 문제인지 가른다 (실기 0회, QEMU 로 가능).
-2. **`reset.S` 의 그 루프만 지우고 `INIT_STACKS=y`** — 참이면 범인이 그
-   루프로 확정되고 **Zephyr 쪽에 보고할 거리**가 된다 (실기 1회).
-3. **`reset.S` 통과 여부를 GPIO raw MMIO 로** — MMU 가 꺼진 상태에서도 물리
-   주소 직접 쓰기는 된다. UART 는 못 쓴다 (Zephyr 가 115200 으로 재설정하기
-   전이라 U-Boot 의 1.5 Mbps 로 나가고, 쓰는 CP2102 는 1 Mbps 한계다).
+루프가 아니라 **그 루프가 도는 시점의 캐시 상태**가 문제라는 가설이다.
+근거는 셋 다 확인된 사실이다:
+
+| 근거 | 확인 |
+|---|---|
+| Zephyr 가 **EL2 에서 부팅**한다 | 실측 — U-Boot 가 EL2(SPSR 0x3c9)에서 `go` 한다 (hardware-verified.md:1348) |
+| `arch/arm64/core/reset.c:158` 의 dcache clean+disable 블록이 **컴파일되지 않는다** | `CONFIG_ARM64_DCACHE_ALL_OPS` 가 n → 의존하는 `ARM64_BOOT_DISABLE_DCACHE` 는 선택조차 안 된다 (`build/zephyr/.config` 확인) |
+| 그 Kconfig 의 help 가 **정확히 이 위험을 기술**한다 | `arch/arm64/core/Kconfig:446` — "To make it safe, **if data cache is enabled in case of Zephyr is booting from EL2**, enable this option, it will clean and invalidate all data cache and then disable data cache" |
+
+기전(가설): U-Boot `go` 는 `booti` 와 달리 캐시를 정리하지 않으므로 EL2 의
+MMU·dcache 가 켜진 채 진입한다 → `reset.S:199-215` 의 0xAA 칠하기가 ISR 스택
+4 KiB(64바이트 줄 64개)를 **dcache 에 dirty 로** 남긴다 → `switch_el` 로 EL1 에
+내려가면 EL1 SCTLR 이 초기값이라 MMU·C 가 꺼져 이후 스택 접근은 캐시를
+우회해 DRAM 으로 간다 → 나중에 그 dirty 줄이 evict 되며 **EL1 이 DRAM 에 써
+둔 값을 0xAA 로 덮는다** → 복귀 주소나 지역 변수 손상 → `PRE_KERNEL_1` 전에
+무음으로 죽는다.
+
+`INIT_STACKS=n` 이면 EL2 구간에서 더럽혀지는 것이 함수 프레임 몇백 바이트뿐
+이고 그 영역은 EL1 이 곧 다시 쓰므로 증상이 드러나지 않는다 — **4 KiB 를
+칠할 때만 "EL1 이 아직 쓰지 않은 깊은 영역"에 stale dirty 줄이 남는다.**
+이것이 "루프는 정상인데 켜면 죽는" 모순을 설명한다.
+
+⚠ **가설이다.** 실기로 가르지 않았다. 아래 실험 1이 가른다.
+
+### 다음 실험 — TRM 이 아니라 이 순서
+
+| | 실험 | 비용 | 가리는 것 |
+|---|---|---|---|
+| **1** | `prj.conf` 에 `CONFIG_ARM64_DCACHE_ALL_OPS=y` + `CONFIG_ARM64_BOOT_DISABLE_DCACHE=y` 와 함께 `CONFIG_INIT_STACKS=y` | **실기 1회** | 부팅하면 **기전 확정 + `kernel thread list`·`stacks` 복구**. 안 되면 캐시 가설 탈락 |
+| 2 | 위 대신 `sdcard/boot.cmd` 의 `go` 앞에 `dcache off` 한 줄 (바이너리는 기존 `464a4ce` 그대로) | 실기 1회 | 같은 가설을 U-Boot 쪽에서 가른다. 1이 안 될 때의 교차 확인 |
+| 3 | 다른 arm64 보드(QEMU)에서 `INIT_STACKS=y` | **실기 0회** | Zephyr 일반 문제인지 이 보드 특정인지 |
+| 4 | `reset.S` 의 루프만 삭제하고 `INIT_STACKS=y` | 실기 1회 | ⚠ **"루프 결함"과 "캐시 상태"를 가르지 못한다** — 둘 다 삭제로 고쳐진다. 1·2 뒤에만 의미가 있다 |
+
+실험 1이 맞으면 README 의 "`kernel thread list`/`stacks` 를 포기한다" 는
+**조건부**가 된다. 그리고 Zephyr 쪽에 보고할 거리는 "루프 결함" 이 아니라
+"EL2 부팅 시 `ARM64_BOOT_DISABLE_DCACHE` 가 기본으로 꺼져 있어 조용히
+죽는다" 가 된다.
+
+**초기 단계 출력 수단의 제약** (실험을 설계할 때): `reset.S` 구간은 UART 로
+찍을 수 없다. Zephyr 가 115200 으로 재설정하기 전이라 U-Boot 의 1.5 Mbps 로
+나가고, 쓰는 CP2102 는 1 Mbps 한계다. 그 구간을 보려면 GPIO raw MMIO 를
+쓴다 (MMU 가 꺼진 상태에서도 물리 주소 직접 쓰기는 된다).
 
 TRM 이 간접적으로 관련될 수 있는 유일한 지점은 §5 의 7번(DRAM 하단 예약
 영역)이다. 그것이 `z_interrupt_stacks` 와 겹칠 가능성은 낮지만 — 이미지는

@@ -1389,10 +1389,18 @@ Device Speed 2(HS), Serial Number = OTP 칩 ID. `<err>` 0줄.
 `resume`·`kill` 은 남는다. 스택 사용량을 보려면 `CONFIG_STACK_SENTINEL`
 (넘침 감지)과 `west build` 의 정적 보고로 대신한다.
 
-**장래 조사 거리.** 이것이 Zephyr arm64 의 문제인지 RK3566 특정 문제인지
-가려 볼 가치가 있다. 다른 arm64 보드에서 `INIT_STACKS=y` 가 동작하는지,
-그리고 `reset.S` 의 그 루프를 지우면 `INIT_STACKS=y` 로도 부팅하는지가
-다음 단계다. 후자가 참이면 Zephyr 쪽에 보고할 거리다.
+**장래 조사 거리 → 2026-11-06 에 유력한 가설이 생겼다.**
+`arch/arm64/core/Kconfig:446` 의 `ARM64_BOOT_DISABLE_DCACHE` 가 "Zephyr 가
+EL2 에서 부팅하는데 dcache 가 켜져 있으면 켜라" 고 기술하는데, 이 보드는
+U-Boot 가 EL2(SPSR 0x3c9)에서 `go` 하고 그 설정은 `ARM64_DCACHE_ALL_OPS=n`
+때문에 선택조차 되지 않는다. 즉 0xAA 칠하기가 EL2 dcache 에 dirty 로 남고
+EL1(MMU 꺼짐)이 DRAM 에 쓴 값을 나중에 덮는다는 가설이다.
+**실기 1회로 가른다** — `CONFIG_ARM64_DCACHE_ALL_OPS=y` +
+`CONFIG_ARM64_BOOT_DISABLE_DCACHE=y` + `CONFIG_INIT_STACKS=y`.
+근거·기전·실험 순서는 [trm-grounding.md](trm-grounding.md) §7.
+
+⚠ `reset.S` 의 루프만 지우는 실험은 **"루프 결함"과 "캐시 상태"를 가르지
+못한다** (둘 다 삭제로 고쳐진다). 위 실험 뒤에만 의미가 있다.
 
 ### 넷 중 어느 것인지 좁히는 과정에서 쓴 방법
 
