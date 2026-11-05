@@ -5,6 +5,26 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include <zephyr/dt-bindings/interrupt-controller/arm-gic.h>
+
+/*
+ * ⚠ uart2 인터럽트를 레벨 트리거로 바로잡는다.
+ *
+ * 인트리 rk3568.dtsi:81 이 IRQ_TYPE_EDGE 로 선언했으나 RK356x 의 UART 는
+ * 레벨 트리거다 (Linux rk356x-base.dtsi 는 IRQ_TYPE_LEVEL_HIGH 를 쓴다).
+ * intc_gicv3.c:208 의 `if (flags & IRQ_TYPE_EDGE)` 가 이 값을 실제로 GIC
+ * ICFGR 에 쓰므로, 틀린 채로 두면 SPI 118 이 edge 로 설정된다.
+ *
+ * 이 보드에서 UART 인터럽트를 켜는 것은 이 앱이 처음이다 — 기존 세 앱은
+ * CONFIG_SHELL 이 없어 이 경로를 쓴 적이 없다.
+ *
+ * 인트리 dtsi 대신 앱 오버레이에서 고친다. 보드 DTS 는 지금 유일하게
+ * 부팅하는 파일이라 건드리지 않는다.
+ */
+&uart2 {
+	interrupts = <GIC_SPI 118 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+};
+
 &zephyr_udc0 {
 	cdc_acm_uart0: cdc_acm_uart0 {
 		compatible = "zephyr,cdc-acm-uart";
