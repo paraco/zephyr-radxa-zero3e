@@ -163,9 +163,11 @@ dts/arm64/rockchip/           rk3566-usb.dtsi — dwc3 노드
 dts/bindings/usb/             snps,dwc3.yaml
 drivers/usb/udc/              udc_dwc3.c + 레지스터 헤더  ← 핵심
 drivers/hwinfo/               OTP 에서 칩 고유 ID 읽기
-apps/                         usbled · usbuart · ledblink
+apps/                         usbled · usbuart · ledblink · moru (관리 셸)
 sdcard/                       boot.cmd / boot.scr 와 적재 설명
-docs/hardware-verified.md     실기 검증 기록 ← 먼저 읽을 것
+docs/bringup-rules.md         실기 왕복 규율 ← 작업 시작 전에 읽을 것
+docs/trm-grounding.md         하드웨어 사실의 출처 등급과 TRM 사정권
+docs/hardware-verified.md     실기 검증 기록 (시간순 · 검색해서 쓴다)
 tools/board-status.sh         보드·포트 상태 한눈에
 build.sh                      빌드 래퍼
 ```
@@ -174,6 +176,12 @@ build.sh                      빌드 래퍼
 
 이 네 가지로 각각 여러 시간을 잃었다. 자세한 경위는
 [docs/hardware-verified.md](docs/hardware-verified.md).
+
+⚠ **실기 왕복을 쓰기 전에 [docs/bringup-rules.md](docs/bringup-rules.md) 의
+체크리스트를 먼저 본다.** bring-up 에서 반복한 실수 8가지를 규칙으로 바꿔
+둔 것이다 — 가장 비쌌던 둘은 "기준선 없이 변경을 쌓은 것"(왕복 4회)과
+"한 왕복에 변수를 20개 넣은 것"이었다. 하드웨어 상수를 새로 넣을 때는
+[docs/trm-grounding.md](docs/trm-grounding.md) 의 출처 등급을 따른다.
 
 **① `CONFIG_LOG_MODE_IMMEDIATE` 를 쓰면 USB 열거가 실패한다.**
 즉시 모드는 로그 한 줄을 그 자리에서 UART 로 밀어내며 스레드를 멈춘다. 115200
