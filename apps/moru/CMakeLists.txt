@@ -16,4 +16,8 @@ target_compile_definitions(app PRIVATE MORU_BUILD_TIME="${MORU_BUILD_TIME} UTC")
 # 이 앱은 이미 보드 전용이고(GPIO0 주소·SoC 문구가 하드코딩) 이 값은 배너
 # 장식 한 줄이라 그 취약함을 안고 갈 값이 아니다.
 
-target_sources(app PRIVATE src/main.c src/moru_boot.c)
+# ⚠ 1단계 격리 시험 중이다. moru_boot.c 는 PRE_KERNEL_1/0 에서 로그
+#   타임스탬프를 바꾸므로 그 자체가 무음의 후보다. 셸이 먼저 뜨는 것을
+#   확인한 뒤 되돌려 넣는다.
+target_sources(app PRIVATE src/main.c src/moru_stage.c)
+# target_sources(app PRIVATE src/moru_boot.c)
