@@ -2185,3 +2185,57 @@ dwc3  core 0x5533 release 0x300a · 물리 EP 16
 않았다. 스냅샷 하나로 묶은 것은 개별 getter 가 **찢긴 상태**를 보여주기
 때문이고, 출력 형식은 앱이 갖는다(드라이버가 `CONFIG_SHELL` 에 의존하지
 않게).
+
+## 🎯 HS 속도 확정 — 벌크 mps 64 → 512 (2026-11-06)
+
+빌드 `d8e01b6`. **OTA 로 올렸다 (카드 0회).**
+
+```
+bulk mps  CDC0 in=512 out=512 · CDC1 in=512 out=512
+✅ 512 — HS 디스크립터가 쓰인다
+reset 1 · connect 1 · disconnect 0 · setup 21
+⚠ cmd_timeout 0 · trb_hw_owned 0 · no_queued_buf 0
+```
+
+이전에는 네 개 모두 **64**(FS 값)였다. 패킷당 **8배**가 됐고 열거는 여전히
+리셋 1회로 깨끗하다.
+
+### 코드가 이미 예고한 문제였다
+
+`udc_dwc3.c` 의 `USB_RESET` case 주석:
+
+> ⚠ 속도(`DSTS.CONNECTSPD`)는 CONNECTION_DONE 뒤에야 확실하다. 스택이 이
+> 이벤트를 처리하며 `udc_device_speed()` 를 읽으므로, 리셋 직후 값이
+> 유효하지 않으면 **mps0 가 틀어질 수 있다. 실기에서 확인할 사항으로
+> 남긴다** — 순서가 틀리면 열거가 아예 안 되므로 순서를 먼저 바로잡는다.
+
+증상: 호스트는 HS 로 열거하는데(`ioreg Device Speed 2`, `CONNECTSPD=0`)
+스택 로그는 `Actual device speed 1`(FS)이고 그 로그가 **CONNECTION_DONE
+(0.311 s) 전인 0.298 s** 에 찍혔다.
+
+**수정**: `udc_submit_event(UDC_EVT_RESET)` 를 `USB_RESET` case 에서 빼고
+`CONNECTION_DONE` case 로 옮겼다. 그 시점에는 `CONNECTSPD` 가 확정이다.
+Linux dwc3 도 `dwc3_gadget_conndone_interrupt` 에서 속도를 확정한다.
+`USB_RESET` case 에는 EP0 재설정·재무장만 남는다(속도와 무관하다).
+
+### 진단을 로그에서 떼어 낸 것이 판정을 가능하게 했다
+
+보드 로그가 **매번 중간에 잘려** `ep 0x82 ... mps=` 줄을 볼 수 없었다
+(`ep 0x81 mps=16` 까지만 나오고 끊긴다). `ioreg` 도 `bMaxPacketSize0`
+(EP0)만 보여 준다. 그래서 `udc_dwc3_diag_get()` 이
+`udc_get_ep_cfg(dev, addr)->mps` 를 읽어 돌려주게 했다.
+
+→ **로그가 불안정한 환경에서는 진단을 로그에 의존하지 않는다.**
+   (로그가 왜 잘리는지는 따로 볼 일로 남긴다 — 셸 로그 백엔드의 큐 또는
+   CDC 전송이 버퍼를 못 따라가는 것으로 보인다.)
+
+### 내 실수 — 명령을 보내고 응답을 읽지 않았다
+
+첫 `apply` 시도에서 출력을 읽지 않고 재부팅만 기다렸다. 명령이 셸에
+닿지 않았는데(포트를 열고 바로 썼다) 그것을 모른 채 "적용 실패" 로
+오진했다. **카운터가 바로잡아 줬다** — `xfer_complete 2938` 이었으니
+재부팅이 없었다는 뜻이다(재부팅하면 0 부터 센다).
+
+→ `tools/ota_test.py` 의 `shell_cmd()` 가 이제 개행으로 프롬프트를 깨우고
+   짧게 비운 뒤 명령을 보낸다. 규칙 6 에 "명령을 보냈다 → 실행됐다" 를
+   함정으로 추가했다.

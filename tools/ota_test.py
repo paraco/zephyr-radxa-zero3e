@@ -61,6 +61,18 @@ def drain(fd, secs):
 
 
 def shell_cmd(fd, line, wait=2.5):
+    """명령을 보내고 응답을 돌려준다.
+
+    ⚠ 포트를 열고 **바로** 쓰면 명령이 셸에 닿지 않는 경우가 있다 — CDC 가
+      아직 준비되지 않았거나 셸이 프롬프트를 쓰는 중이다. 실제로 apply 가
+      그렇게 조용히 사라져 "적용 실패" 로 오진했다(2026-11-06).
+      그래서 먼저 개행을 보내 프롬프트를 깨우고 짧게 비운다.
+    ⚠ 그리고 **응답을 반드시 읽는다.** 읽지 않으면 명령이 실행됐는지
+      알 수 없다.
+    """
+    os.write(fd, b'\r\n')
+    time.sleep(0.3)
+    drain(fd, 0.5)
     os.write(fd, (line + '\r\n').encode())
     return drain(fd, wait)
 
