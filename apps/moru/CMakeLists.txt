@@ -31,7 +31,11 @@ target_compile_definitions(app PRIVATE MORU_BUILD_TIME="${MORU_BUILD_TIME} UTC")
 #   넣고 같은 함정을 밟으므로 지웠다.
 # drivers/hwinfo/hwinfo_rk3566.h 를 "hwinfo_rk3566.h" 로 쓸 수 있게 한다.
 # (저장소 루트는 CMakeLists.txt 의 두 단계 위)
-target_include_directories(app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../drivers/hwinfo)
+target_include_directories(app PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../drivers/hwinfo
+  # udc_dwc3_regs.h — moru usb 가 dwc3 레지스터를 직접 읽는다. 드라이버
+  # 소스는 건드리지 않고 레지스터 정의만 재사용하므로 중복 정의가 없다.
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../drivers/usb/udc)
 
 target_sources(app PRIVATE src/main.c src/moru_mark.c src/moru_boot.c
                            src/moru_shell.c src/moru_usbd.c)

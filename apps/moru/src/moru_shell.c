@@ -23,6 +23,7 @@
 #include <zephyr/logging/log_ctrl.h>
 #include <zephyr/sys/util.h>
 #include <stdlib.h>
+#include <string.h>
 #include <zephyr/sys/device_mmio.h>
 #include <zephyr/sys/sys_io.h>
 #include <zephyr/sys/crc.h>
@@ -30,6 +31,7 @@
 
 #include "moru.h"
 #include "hwinfo_rk3566.h"
+#include "udc_dwc3_regs.h"
 
 #ifndef MORU_BUILD_TIME
 #define MORU_BUILD_TIME "unknown"
@@ -338,6 +340,15 @@ static struct {
 	uint32_t	crc;		/* 호스트가 알려준 기대 CRC32 */
 	uint32_t	overrun;	/* 기대보다 더 온 바이트 (버린다) */
 	mm_reg_t	base;
+	/* ── 계측 (2026-11-06) — 추측을 멈추고 수치로 본다 ───────────────
+	 * 수신이 0 바이트인데 원인이 콜백 미호출인지 쓰기 쪽인지 가리려면
+	 * 런타임 수치가 필요하다. 소프트웨어 후보를 네 개 기각하고도
+	 * 좁혀지지 않아 계측을 넣는다 (docs/bringup-rules.md 규칙 4).
+	 */
+	uint32_t	cb_calls;	/* 콜백이 몇 번 불렸나 */
+	uint32_t	cb_bytes;	/* fifo_read 가 돌려준 바이트 합 */
+	uint32_t	cb_empty;	/* rx_ready 가 0 이어서 그냥 끝난 횟수 */
+	bool		use_poll;	/* true 면 poll_in 스레드 경로 */
 } moru_ota;
 
 static void moru_ota_rx_cb(const struct device *dev, void *user_data)
@@ -347,14 +358,22 @@ static void moru_ota_rx_cb(const struct device *dev, void *user_data)
 
 	ARG_UNUSED(user_data);
 
+	moru_ota.cb_calls++;
+
 	/* uart_irq_update() 는 void 다 — 조건으로 쓸 수 없고 먼저 부른다 */
 	uart_irq_update(dev);
+
+	if (!uart_irq_rx_ready(dev)) {
+		moru_ota.cb_empty++;
+		return;
+	}
 
 	while (uart_irq_rx_ready(dev)) {
 		n = uart_fifo_read(dev, buf, sizeof(buf));
 		if (n <= 0) {
 			break;
 		}
+		moru_ota.cb_bytes += (uint32_t)n;
 
 		if (!moru_ota.active) {
 			continue;	/* 수신 중이 아니면 버린다 */
@@ -375,6 +394,108 @@ static void moru_ota_rx_cb(const struct device *dev, void *user_data)
 			moru_ota.active = false;
 		}
 	}
+}
+
+/*
+ * poll_in 경로 — `moru ota begin <크기> <crc> poll` 로 고른다.
+ *
+ * 콜백 경로가 0 바이트였는데, 그 수정에서 로그(hexdump)와 경로(스레드→콜백)
+ * 를 **동시에** 바꿔 어느 쪽 효과인지 가릴 수 없게 됐다(규칙 2 위반).
+ * 두 경로를 한 빌드에 두면 **같은 왕복에서** 비교할 수 있다.
+ *
+ * poll_in 은 문맥 제약이 없다(cdc_acm_poll_in:980 에 check_wq_ctx 가 없다).
+ * 대신 1바이트마다 rx_fifo_work 를 제출한다.
+ */
+static void moru_ota_poll_thread(void *a, void *b, void *c)
+{
+	const struct device *dev = DEVICE_DT_GET(DT_NODELABEL(cdc_acm_uart1));
+	unsigned char ch;
+
+	ARG_UNUSED(a);
+	ARG_UNUSED(b);
+	ARG_UNUSED(c);
+
+	for (;;) {
+		if (!moru_ota.active || !moru_ota.use_poll) {
+			k_msleep(100);
+			continue;
+		}
+
+		if (uart_poll_in(dev, &ch) == 0) {
+			moru_ota.cb_calls++;
+			moru_ota.cb_bytes++;
+			if (moru_ota.got < moru_ota.expect) {
+				sys_write8(ch, moru_ota.base +
+						   MORU_OTA_HDR_SIZE +
+						   moru_ota.got);
+				moru_ota.got++;
+			} else {
+				moru_ota.overrun++;
+			}
+			if (moru_ota.got >= moru_ota.expect) {
+				moru_ota.active = false;
+			}
+		} else {
+			moru_ota.cb_empty++;
+			k_yield();
+		}
+	}
+}
+
+K_THREAD_DEFINE(moru_ota_poll_tid, 4096, moru_ota_poll_thread, NULL, NULL, NULL,
+		K_PRIO_PREEMPT(12), 0, 0);
+
+/*
+ * dwc3 레지스터를 **앱에서 직접 읽는다** (드라이버 편집 0).
+ *
+ * 로그가 터미널 출력 중에 잘려 EP 설정 상태를 알 수 없었다 — 매번
+ * `ep5 DEPCFG ... status` 에서 끊겼다. DALEPENA 하나면 EP 가 몇 개 켜졌는지
+ * 즉시 판정된다:
+ *   CDC 하나 → 비트 0,1,2,3,5        = 0x0000002f
+ *   CDC 둘   → 비트 0,1,2,3,4,5,7,9  = 0x000002bf
+ * 계획(roadmap B3)은 드라이버에 진단 API 를 넣는 것이었지만 지금 필요한
+ * 것은 읽기뿐이므로 앱에서 매핑해 읽는다. 드라이버를 안 건드리므로
+ * 위험이 낮고(USB 셸을 잃지 않는다) 왕복도 아낀다.
+ */
+#define MORU_DWC3_PHYS		0xfcc00000UL
+#define MORU_DWC3_MAP_SIZE	0x10000U
+
+static int cmd_moru_usb(const struct shell *sh, size_t argc, char **argv)
+{
+	static mm_reg_t dwc3;
+	uint32_t dalepena, dsts, ghw3;
+
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+
+	if (dwc3 == 0) {
+		device_map(&dwc3, MORU_DWC3_PHYS, MORU_DWC3_MAP_SIZE,
+			   K_MEM_CACHE_NONE);
+		if (dwc3 == 0) {
+			shell_error(sh, "device_map 실패");
+			return -ENOMEM;
+		}
+	}
+
+	ghw3 = sys_read32(dwc3 + DWC3_GHWPARAMS3);
+	dsts = sys_read32(dwc3 + DWC3_DSTS);
+	dalepena = sys_read32(dwc3 + DWC3_DALEPENA);
+
+	shell_print(sh, "dwc3 @0x%08lx", MORU_DWC3_PHYS);
+	shell_print(sh, "  GSNPSID    0x%08x", sys_read32(dwc3 + DWC3_GSNPSID));
+	shell_print(sh, "  GHWPARAMS3 0x%08x  (HW EP 수 %u)", ghw3,
+		    (unsigned int)FIELD_GET(DWC3_GHWPARAMS3_NUM_EPS, ghw3));
+	shell_print(sh, "  DSTS       0x%08x", dsts);
+	shell_print(sh, "  DALEPENA   0x%08x  ← EP 설정 판정", dalepena);
+	shell_print(sh, "     기대: CDC 하나 0x0000002f · CDC 둘 0x000002bf");
+	if (dalepena == 0x2bfU) {
+		shell_print(sh, "     ✅ EP 6개 + ep0 둘 다 켜졌다 (CDC 2개)");
+	} else if (dalepena == 0x2fU) {
+		shell_warn(sh, "     ❌ CDC 하나뿐이다 — 두 번째 EP 가 안 켜졌다");
+	} else {
+		shell_warn(sh, "     ⚠ 예상 밖의 값이다 — 비트를 손으로 읽는다");
+	}
+	return 0;
 }
 
 static int cmd_moru_ota_begin(const struct shell *sh, size_t argc, char **argv)
@@ -410,6 +531,10 @@ static int cmd_moru_ota_begin(const struct shell *sh, size_t argc, char **argv)
 	sys_write32(0U, base + MORU_OTA_OFF_MAGIC);
 
 	moru_ota.overrun = 0;
+	moru_ota.cb_calls = 0;
+	moru_ota.cb_bytes = 0;
+	moru_ota.cb_empty = 0;
+	moru_ota.use_poll = (argc >= 4) && (strcmp(argv[3], "poll") == 0);
 
 	{
 		const struct device *dev =
@@ -420,10 +545,19 @@ static int cmd_moru_ota_begin(const struct shell *sh, size_t argc, char **argv)
 			return -ENODEV;
 		}
 
-		uart_irq_rx_disable(dev);
-		uart_irq_callback_user_data_set(dev, moru_ota_rx_cb, NULL);
-		moru_ota.active = true;
-		uart_irq_rx_enable(dev);
+		if (moru_ota.use_poll) {
+			/* 콜백을 떼야 poll_in 이 받는다 — usbd_cdc_acm_enable
+			 * (:367)이 cb == NULL 일 때만 poll_in 용 rx_fifo_work 를
+			 * 제출하고, irq_rx_enable 이 켜져 있으면 경로가 섞인다 */
+			uart_irq_rx_disable(dev);
+			uart_irq_callback_user_data_set(dev, NULL, NULL);
+			moru_ota.active = true;
+		} else {
+			uart_irq_rx_disable(dev);
+			uart_irq_callback_user_data_set(dev, moru_ota_rx_cb, NULL);
+			moru_ota.active = true;
+			uart_irq_rx_enable(dev);
+		}
 	}
 
 	shell_print(sh, "수신 시작 — %lu 바이트, 기대 CRC32 0x%08lx", size, crc);
@@ -447,6 +581,15 @@ static int cmd_moru_ota_status(const struct shell *sh, size_t argc, char **argv)
 		    moru_ota.active ? "받는 중" : "멈춤/완료",
 		    moru_ota.got, moru_ota.expect,
 		    (unsigned int)((uint64_t)moru_ota.got * 100U / moru_ota.expect));
+	shell_print(sh, "경로: %s", moru_ota.use_poll ? "poll_in 스레드" : "콜백");
+	shell_print(sh, "계측: 호출 %u회 · 읽은 바이트 %u · 빈 호출 %u",
+		    moru_ota.cb_calls, moru_ota.cb_bytes, moru_ota.cb_empty);
+	if (moru_ota.cb_calls == 0U) {
+		shell_warn(sh, "  → 한 번도 불리지 않았다. 수신 경로가 막혀 있다");
+		shell_warn(sh, "     'moru usb' 로 DALEPENA 를 먼저 본다");
+	} else if (moru_ota.cb_bytes == 0U) {
+		shell_warn(sh, "  → 불렸지만 읽은 바이트가 0 이다 (링버퍼가 빈다)");
+	}
 	if (moru_ota.overrun != 0U) {
 		shell_warn(sh, "기대보다 %u 바이트 더 왔다 (버렸다) — 크기가 틀렸나?",
 			   moru_ota.overrun);
@@ -538,8 +681,9 @@ static int cmd_moru_ota_check(const struct shell *sh, size_t argc, char **argv)
 }
 
 SHELL_STATIC_SUBCMD_SET_CREATE(moru_ota_subcmds,
-	SHELL_CMD_ARG(begin, NULL, "수신 시작: begin <크기> <crc32(16진수)>",
-		      cmd_moru_ota_begin, 3, 0),
+	SHELL_CMD_ARG(begin, NULL,
+		      "수신 시작: begin <크기> <crc32(16진수)> [poll]",
+		      cmd_moru_ota_begin, 3, 1),
 	SHELL_CMD_ARG(status, NULL, "수신 진행 상황", cmd_moru_ota_status, 1, 0),
 	SHELL_CMD_ARG(verify, NULL, "받은 것의 CRC32 를 검사한다",
 		      cmd_moru_ota_verify, 1, 0),
@@ -564,7 +708,9 @@ SHELL_STATIC_SUBCMD_SET_CREATE(moru_subcmds,
 		      "재부팅 (PSCI_SYSTEM_RESET). 'probe' 로 먼저 확인한다",
 		      cmd_moru_reboot, 1, 1),
 	SHELL_CMD(ota, &moru_ota_subcmds,
-		  "OTA 실험 — 재부팅 뒤 DRAM 보존 여부를 가린다", NULL),
+		  "OTA — 수신·검증·DRAM 보존 확인", NULL),
+	SHELL_CMD_ARG(usb, NULL, "dwc3 레지스터 (DALEPENA 로 EP 설정 판정)",
+		      cmd_moru_usb, 1, 0),
 	SHELL_SUBCMD_SET_END
 );
 
