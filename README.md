@@ -327,6 +327,7 @@ Linux 에서 **사실로서** 확인하고 코드는 직접 작성했다 — 하
 | `moru info` | 버전·해시·보드·CPU·메모리·칩ID·콘솔·부트로더 시간·가동 |
 | `moru usb` | dwc3 레지스터 + **벌크 mps** + 이벤트 카운터 + 전원 상태 |
 | `moru usb pm on\|off` | suspend/resume 을 스택에 올리기. **기본 꺼짐 — 꺼짐이 안전 장치다** |
+| `moru htop [갱신ms]` | 전체화면 실시간 모니터 — 스레드·스택 바·상태·힙 (`q` 로 나간다) |
 | `moru reboot [probe]` | PSCI 재부팅 (`probe` 는 BL31 응답만 확인) |
 | `moru ota begin\|status\|verify\|apply\|abort` | **카드를 빼지 않는 펌웨어 교체** |
 | `moru ota mark\|check` | 재부팅 뒤 DRAM 보존 확인 (진단용) |
@@ -344,6 +345,16 @@ python3 tools/ota_test.py /tmp/claude-501/rz3e-build/zephyr/zephyr.bin --chunk 4
 
 ⚠ 카드를 빼야 하는 경우는 셋뿐이다 — `boot.cmd`/`boot.scr` 을 바꿀 때,
 롤백할 때(`.old` → `zephyr.bin`), 그리고 부팅이 완전히 깨졌을 때.
+
+### ⚠ 켜면 부팅하지 않는 설정
+
+| 설정 | 확인 |
+|---|---|
+| `CONFIG_FRAME_POINTER` 단독 | (과거) — 지금은 `ARM64_BOOT_DISABLE_DCACHE` 로 해결돼 켜져 있다 |
+| **`CONFIG_THREAD_RUNTIME_STATS`** | **2026-11-06 실측.** 켜면 LED·USB·콘솔 전부 무음. 끄면 정상. 기전은 미설명 — [docs/hardware-verified.md](docs/hardware-verified.md) 참고 |
+
+그래서 `moru htop` 의 CPU% 는 쓸 수 없다(0.0 으로 나오고 머리줄에 표시된다).
+스택 사용량·우선순위·상태·힙은 모두 동작한다.
 
 ### 이 보드의 필수 설정 (지우면 부팅하지 않는다)
 
