@@ -39,4 +39,4 @@ target_include_directories(app PRIVATE
 
 target_sources(app PRIVATE src/main.c src/moru_mark.c src/moru_boot.c
                            src/moru_shell.c src/moru_usbd.c
-                           src/moru_htop.c)
+                           src/moru_htop.c src/moru_fatal.c)
