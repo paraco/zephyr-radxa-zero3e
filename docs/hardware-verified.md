@@ -2040,3 +2040,63 @@ verify CRC32 계산 0x8e73de9c / 기대 0x8e73de9c
 `itest.l *0x50000000 -eq 0x4d4f5255` 로 확인해 `fatwrite` 로
 `zephyr.bin.old` 백업 + `zephyr.bin` 교체 후 `go` 한다. 그것이 되면
 **카드를 빼는 일이 끝난다.**
+
+## 🎯 OTA 완성 — 카드를 빼지 않고 펌웨어를 교체했다 (2026-11-06)
+
+빌드 `aa58af0`. **전체 경로가 실기에서 동작한다.**
+
+```
+현재 보드   빌드 2026-11-06 09:07:06 UTC
+OTA 로 보낼 빌드 2026-11-06 09:08:51 UTC   (코드 동일, 빌드 시각만 다름)
+
+전송   175456 / 175456 · 0.74초 · 239 KB/s · EAGAIN 0회
+status 100 % · 콜백 2742회 · 부족분 재전송 없음 (tcdrain 보강 효과)
+verify CRC32 0x66d92572 일치 ✅
+apply  뒤쪽 86688 바이트를 0 으로 채움 → 매직 MORU → PSCI 재부팅
+       포트 복귀 2초
+
+재부팅 뒤  빌드 2026-11-06 09:08:51 UTC   ← ✅ 적용됐다
+moru ota check → magic 0x00000000, count 175456
+       boot.scr 의 mw.l 이 매직만 지웠다 — 재적용 방지 작동
+```
+
+### 동작한 경로
+
+```
+Zephyr                                    U-Boot (boot.scr)
+  moru ota begin <크기> <crc32>
+  ← USB CDC 둘째 포트로 175 KB (64바이트씩 + tcdrain)
+  moru ota verify   CRC32 검증 → 헤더(크기·CRC) 기록
+  moru ota apply    뒤쪽을 0 으로 → 매직 "MORU" → flush → PSCI 재부팅
+                                        itest.l *0x50000000 -eq 0x4d4f5255
+                                        fatload  zephyr.bin → .old 백업
+                                        fatwrite 0x50000010 → zephyr.bin (256 KiB)
+                                        mw.l 매직 지움
+                                        fatload + go → 새 이미지
+```
+
+`boot.scr` 이 `fatwrite` 로 SD 에 쓴 뒤 **그것을 `fatload` 로 읽어 `go`** 했다.
+즉 SD 에 실제로 기록된 것이 증거다.
+
+### 성공의 조건이 된 것들
+
+| | |
+|---|---|
+| **64바이트씩 + `tcdrain`** | 큰 블록은 커널 TTY 버퍼에만 쌓인다. bulk mps 에 맞춘다 |
+| **`K_MEM_CACHE_WB` + flush** | `NONE` 이면 CRC 계산이 멈춘 것처럼 보인다. flush API 는 EL2 캐시 문제를 고치며 켠 `ARM64_DCACHE_ALL_OPS=y` 덕 — **네 번째로 쓰였다** |
+| **CDC 로그 WRN** | `INF` 는 수신 바이트를 전부 hexdump 해 대량 전송을 따라가지 못한다 |
+| **CDC-ACM 두 개** | 셸과 데이터를 분리 — 전송 중에도 진행률을 물어본다 |
+| **고정 256 KiB + 0 채움** | `setexpr` 가 없어 크기를 변수로 읽을 수 없다. 0 을 채우니 SD 에 쓰레기가 안 들어가고 그 영역은 `.bss` 다 |
+| **매직을 마지막에** | 그 전에 전원이 끊겨도 적용되지 않는다 |
+| **`verify` 가 유일한 관문** | U-Boot 는 CRC 를 검증할 수 없다(`setexpr` 없음) |
+
+### 이제 개발 왕복이 이렇게 된다
+
+```
+빌드 → python3 tools/ota_test.py <새이미지> --chunk 64 → moru ota apply
+                                                          (카드·전원 안 건드림)
+```
+
+⚠ `boot.cmd`·`boot.scr` 자체를 바꿀 때는 여전히 카드를 뺀다. 그리고
+`zephyr.bin.old` 가 SD 에 남으므로 롤백은 그것을 `zephyr.bin` 으로
+되돌리면 된다(카드를 맥에 꽂아서).

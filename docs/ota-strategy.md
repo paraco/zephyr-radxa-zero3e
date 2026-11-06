@@ -71,7 +71,12 @@ DRAM 은 `0x00200000` ~ `0x80000000` (2 GB, 실기 검증). Zephyr 는
 `fatwrite`** 한다. 이미지보다 큰 뒤쪽은 Zephyr 의 `.bss` 영역에 들어가고
 `arch_bss_zero()` 가 지우므로 무해하다.
 
-### ⚠ 미지수 하나 — 재부팅 뒤 DRAM 이 보존되는가
+### ✅ 전부 검증됐다 (2026-11-06)
+
+아래 설계가 **실기에서 끝까지 동작한다.** 상세 기록은
+[hardware-verified.md](hardware-verified.md) 의 "OTA 완성" 절.
+
+### ⚠ (해소됨) 미지수 하나 — 재부팅 뒤 DRAM 이 보존되는가
 
 PSCI `SYSTEM_RESET` 은 SoC 리셋이다. TF-A BL31 과 DDR 초기화가 메모리를
 지우면 이 설계 전체가 무의미하다. **보장이 없고 실험으로만 알 수 있다.**

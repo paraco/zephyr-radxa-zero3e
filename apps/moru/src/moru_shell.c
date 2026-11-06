@@ -780,7 +780,10 @@ static int cmd_moru_ota_check(const struct shell *sh, size_t argc, char **argv)
 	}
 
 	if (magic == 0U && pattern == 0U) {
-		shell_warn(sh, "❌ 0 으로 지워졌다 — DDR 초기화가 메모리를 비운다.");
+		shell_warn(sh, "매직이 0 이다. 둘 중 하나다:");
+		shell_warn(sh, "  ① OTA 적용 뒤 boot.scr 의 mw.l 이 지웠다 (정상)");
+		shell_warn(sh, "  ② mark 한 적이 없거나 DDR 초기화가 비웠다");
+		shell_warn(sh, "  → count 가 0 이 아니면 ①이다 (크기 필드가 남아 있다)");
 	} else {
 		shell_warn(sh, "❌ 값이 다르다 — 보존되지 않거나 다른 용도로 쓰인 영역이다.");
 	}
