@@ -333,6 +333,42 @@ L3 은 `ggml-quants.c` 한 파일이었다. L4 는 **ggml 코어 + CPU 백엔드
 
 ---
 
+## ✅ 모델 실측 — 2026-11-07, `gguf_dump` 로 읽은 값
+
+`models/Qwen3.5-0.8B-Q4_K_M.gguf` · **532,517,120 B** (507.9 MiB)
+sha256 `bd258782e35f7f458f8aced1adc053e6e92e89bc735ba3be89d38a06121dc517`
+Apache-2.0 · 게이트 없음 · `mmproj-*.gguf` 별도이므로 본체만 쓰면 텍스트 전용.
+
+**계획서에 "카드에서 손으로 계산한 것" 이라 적었던 값들을 실측으로 바꾼다.**
+
+| 키 | 값 |
+|---|---|
+| `general.architecture` | **`qwen35`** — upstream 의 `src/models/qwen35.cpp` 와 맞는다 |
+| `block_count` | **24** |
+| `embedding_length` | **1024** |
+| `attention.head_count` / `head_count_kv` | **8 / 2** (GQA 4:1) |
+| `attention.key_length` / `value_length` | **256 / 256** (head_dim 256) |
+| `rope.dimension_count` | **64** — partial RoPE 64 가 맞았다 |
+| `rope.freq_base` | **1e7** |
+| `rope.dimension_sections` | **[11, 11, 10, 0]** — mRoPE 구간(VL 모델) |
+| `context_length` | **262,144** |
+| `ssm.conv_kernel` | **4** |
+| `ssm.state_size` | **128** |
+| `ssm.group_count` | **16** |
+| `ssm.time_step_rank` | **16** |
+| `ssm.inner_size` | **2048** |
+
+### KV 캐시 — 손 계산이 맞았다
+
+어텐션 층 1개 · 토큰 1개당 `2(K,V) × head_count_kv(2) × head_dim(256) × 2 B
+= 2,048 B`. 24층 중 어텐션이 6층이므로 **토큰당 12 KiB**.
+2,048 토큰이면 **24 MiB** — 계획서의 "KV 2K ≈ 25 MB" 와 맞는다.
+
+즉 **128 MB 창 안에 KV·로짓·연산 버퍼가 들어가고 가중치만 창 밖**이라는
+배치가 실측으로 확인됐다.
+
+---
+
 ## 테스트 사다리
 
 | # | 계층 | 무엇을 검증 | 골든 기준값 | 모델 필요? | QEMU? |
