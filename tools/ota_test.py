@@ -28,11 +28,21 @@ import tty
 import zlib
 
 
-def open_raw(path, flags):
+def open_raw(path, flags, baud=115200):
+    '''raw 모드로 열고 **보율까지 설정**한다.
+
+    ⚠ 보율 설정을 빠뜨리면 CDC(USB)에서는 무해하지만 **UART 에서는 한
+      글자도 못 읽는다.** 진단 빌드는 셸이 UART2(115200)에 있으므로
+      필수다 — 실제로 이것을 빠뜨려 셸 출력이 전부 비었다.
+    '''
     fd = os.open(path, flags | os.O_NOCTTY | os.O_NONBLOCK)
     tty.setraw(fd)
     a = termios.tcgetattr(fd)
     a[0] &= ~(termios.IXON | termios.IXOFF | termios.IXANY)
+    spd = getattr(termios, 'B%d' % baud, None)
+    if spd is not None:
+        a[4] = spd   # ispeed
+        a[5] = spd   # ospeed
     termios.tcsetattr(fd, termios.TCSANOW, a)
     return fd
 
@@ -89,6 +99,14 @@ def main():
                          'CDC 로그를 INF 로 켠 상태에서는 64 정도만 보낸다')
     ap.add_argument('--wait', type=float, default=3.0,
                     help='전송 뒤 로그를 모을 시간(초)')
+    ap.add_argument('--baud', type=int, default=115200,
+                    help='셸 포트 보율. UART 셸(진단 빌드)에 필수')
+    ap.add_argument('--chunk', type=int, default=64,
+                    help='한 번에 write 할 바이트. ⚠ 크게 하면 커널 TTY '
+                         '버퍼에만 쌓이고 USB 로 나가지 않는다(실측). '
+                         'bulk mps(64)에 맞추고 매번 tcdrain 한다')
+    ap.add_argument('--drain', action='store_true', default=True,
+                    help='청크마다 tcdrain 으로 실제 송신을 기다린다')
     args = ap.parse_args()
 
     path = args.file or os.path.join(
@@ -122,7 +140,7 @@ def main():
     print()
 
     try:
-        sh = open_raw(sh_port, os.O_RDWR)
+        sh = open_raw(sh_port, os.O_RDWR, args.baud)
     except OSError as e:
         print('셸 포트를 열 수 없다 (%s) — tio 가 잡고 있으면 먼저 닫는다.' % e)
         return 1
@@ -133,18 +151,26 @@ def main():
         show('moru ota begin', shell_cmd(sh, 'moru ota begin %d %08x' % (size, crc)))
 
         print('── 전송 ' + '─' * 52)
-        fd = open_raw(data_port, os.O_WRONLY)
+        fd = open_raw(data_port, os.O_WRONLY)   # CDC — 보율 무관
         t0 = time.time()
         n = 0
         eagain = 0
-        while n < size and time.time() - t0 < 60:
+        # ⚠ 청크를 크게 하면 커널 TTY 버퍼에만 들어가고 USB 로 나가지
+        #   않는다. 4096 으로 보냈을 때 호스트는 "EAGAIN 0회로 다 보냈다"
+        #   고 했지만 보드는 0 바이트였다. bulk mps(64)에 맞추고 매번
+        #   tcdrain 으로 실제 송신을 기다린다.
+        chunk = max(1, args.chunk)
+        while n < size and time.time() - t0 < 180:
             try:
-                n += os.write(fd, data[n:n + 4096])
+                w = os.write(fd, data[n:n + chunk])
+                n += w
+                if args.drain:
+                    termios.tcdrain(fd)
             except OSError as e:
                 import errno as E
                 if e.errno in (E.EAGAIN, E.EWOULDBLOCK):
                     eagain += 1
-                    time.sleep(0.005)
+                    time.sleep(0.002)
                     continue
                 raise
         el = time.time() - t0
