@@ -100,7 +100,7 @@ TRM 을 확보하는 것이 bring-up 삽질의 해답이 아니다. 이 착각�
 
 | 우선 | 항목 | 지금 | TRM 위치 | 필요한 이유 |
 |---|---|---|---|---|
-| **1** | `CRU_GLB_SRST_FST` / `_SND` 오프셋·매직값 | **없음** | Part1 CRU 장 | **B4 `moru reboot`** — PSCI(BL31)가 NS-EL1 SMC 에 응답하지 않으면 이것이 유일한 대안 |
+| ~~1~~ | ~~`CRU_GLB_SRST_FST` / `_SND`~~ | 없음 | Part1 CRU 장 | **2026-11-06 우선순위 내림** — 실기에서 `moru reboot probe` 가 **PSCI 1.1 응답**(raw 0x00010001)을 받았다. PSCI 가 동작하므로 이 대안이 필요 없을 가능성이 크다. `moru reboot` 이 실제로 재부팅하지 못할 때만 다시 올린다 |
 | **2** | uart2 인터럽트 트리거 타입 (SPI 118) | D | Part1 인터럽트 요약표 | 인터럽트 구동으로 바꿀 때 필요. 오늘 오판한 지점 |
 | **3** | RK3566 UART 에 `USR`/busy-detect 가 있는가 | **미확인** (`apps/moru/prj.conf:93` 에 숙제로 적힘) | Part1 UART 장 | `UART_NS16550_DW8250_DW_APB` 를 켜야 하는지 판정 |
 | 4 | GPIO0 base `0xfdd60000` + `SWPORT_DR_L` 0x00 · `DDR_L` 0x08 | C (FreeBSD) + L | Part1 GPIO 장 | 등급을 T 로 올린다. 지금 네 앱 전부가 이 값에 의존 |
@@ -125,8 +125,11 @@ TRM 을 확보하는 것이 bring-up 삽질의 해답이 아니다. 이 착각�
 | **B3** `moru usb` 진단 API | **없음** | dwc3 는 Synopsys/Fuchsia, PHY GRF 는 3.9절 확보 |
 | **B4** `moru reboot` | **PSCI 실패 시 필수** | §5 의 1번 항목. `moru reboot probe` 로 PSCI 를 먼저 가린다 |
 
-→ **TRM 을 다시 받을 실제 사유는 B4 와 §5 의 2·3번뿐이다.** 그 셋을 묶어
-한 번에 받는다 (장 단위 접근).
+→ **2026-11-06 갱신: 남은 사유는 §5 의 2·3번뿐이다.** B4 의 CRU 대안은
+PSCI 1.1 이 응답하는 것이 실기로 확인돼 우선순위가 내려갔다. 둘(uart2
+트리거 타입 · UART USR 레지스터)은 둘 다 인터럽트 구동으로 바꿀 때 필요한
+것이고 지금은 폴링 모드라 급하지 않다. 즉 **TRM 을 지금 당장 받을 이유가
+없다.**
 
 ---
 

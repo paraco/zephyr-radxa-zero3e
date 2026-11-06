@@ -1675,3 +1675,66 @@ B1 이 부팅 메시지를 ~15줄 늘린 뒤 다시 확인한다.
 `MIDR 0x412fd050` → Cortex-A55 **r2p0** (0x41=ARM, 0x2=variant 2,
 0xd05=A55, 0x0=revision 0). `MPIDR 0x81000000` → Aff0=0, 즉 primary core.
 `CTR_EL0 0x84448004` → 최소 D-line 64 B.
+
+## ✅ B2 + reboot — PSCI 가 응답한다 (2026-11-06)
+
+빌드 `ec96cdd`, 166576 B. 실기 1회. **B4 의 핵심 미지수가 해소됐다.**
+
+```
+Moru > moru info
+MoruLab Zephyr RTOS
+  버전      0.1.0 (build 59d5f19462c1)
+  빌드      2026-11-06 06:59:51 UTC
+  Zephyr    4.4.99
+  보드      radxa_zero_3e/rk3568  (Radxa ZERO 3E)
+  SoC       Rockchip RK3566 (rk3568 정의 재사용)
+  CPU       Cortex-A55 r2p0, MIDR 0x412fd050, EL1
+  메모리    0x40000000 + 1024 KiB (zephyr,sram)
+  칩 ID     4d425737333500000000000000032106  (OTP)
+  콘솔      cdc_acm_uart0 (셸 같은 포트)
+  마커 UART serial@fe660000 115200 8N1 (초기 부팅 전용)
+  부트로더  6.700 s (전원 투입 → Zephyr 진입)
+  가동      0d 00:00:27 (27342 ms)
+
+Moru > moru reboot probe
+probe: issuing PSCI_VERSION (SMC 0x84000000) ...
+probe: PSCI 1.1 (raw 0x00010001) — 응답했다
+
+Moru > kernel heap
+free:           8192
+allocated:      0
+max. allocated: 0
+
+Moru > hwinfo devid
+Length: 16
+ID: 0x4d425737333500000000000000032106
+```
+
+### 🎯 PSCI 1.1 이 NS-EL1 의 SMC 에 응답한다
+
+계획 단계에서 **"실기 확인이 필요하다"고 적어 둔 유일한 미지수**였다
+(`docs/roadmap.md` B4). `arm_smccc_smc(PSCI_VERSION)` 이 `0x00010001` =
+PSCI 1.1 을 돌려줬다. 즉 TF-A BL31 v2.3 이 런타임 서비스를 제공하고
+Zephyr 가 EL1 에서 쏜 SMC 가 거기 닿는다.
+
+**결과 둘:**
+1. `moru reboot`(`PSCI_SYSTEM_RESET`)이 동작할 근거가 생겼다
+2. **TRM 을 다시 받을 사유가 하나 줄었다** — PSCI 가 실패할 때의 대안이던
+   CRU 글로벌 소프트 리셋(TRM Part1 CRU 장)이 필요 없을 가능성이 크다.
+   `trm-grounding.md` §5 의 1번 우선순위를 내린다.
+
+### 칩 ID 의 지연 읽기 순서는 문제 없었다
+
+검토가 "`rk3566_otp_id_is_valid()` 는 첫 `hwinfo_get_device_id()` 뒤에만
+의미가 있다" 고 지적했는데, 실기에서 `(OTP)` 로 정상 표시됐다. USB 초기화가
+셸보다 먼저 OTP 를 읽기 때문이다(B1 로그에서 OTP ID 줄이 배너 직후에 나온다).
+다만 `diag-uart` 빌드에서는 순서가 다를 수 있으므로 헤더의 조건은 유지한다.
+
+### ⚠ 버전 스탬프가 한 커밋 뒤처진다
+
+`build 59d5f19462c1` 인데 실제 코드는 `ec96cdd` 다. `APP_BUILD_VERSION` 은
+`git describe` 로 **빌드 시점의 HEAD** 를 쓰므로, "빌드 → 커밋" 순서로
+작업하면 항상 한 커밋 뒤처진다. 기능에는 영향이 없지만 그 해시를 찾으면
+그 코드가 없어 혼란을 준다.
+
+→ **순서를 "커밋 → 재빌드 → 복사" 로 한다.** 굽기 전 체크리스트에 넣었다.
