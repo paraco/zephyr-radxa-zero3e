@@ -21,6 +21,8 @@
 #include <zephyr/drivers/pm_cpu_ops/psci.h>
 #include <zephyr/logging/log_ctrl.h>
 #include <zephyr/sys/util.h>
+#include <zephyr/sys/device_mmio.h>
+#include <zephyr/sys/sys_io.h>
 
 #include "moru.h"
 #include "hwinfo_rk3566.h"
@@ -101,6 +103,7 @@ static int cmd_moru_info(const struct shell *sh, size_t argc, char **argv)
 	shell_print(sh, "kernel heap|uptime|cycles, device list, hwinfo devid,");
 	shell_print(sh, "log status, app version");
 	shell_print(sh, "재부팅은 moru reboot (먼저 moru reboot probe)");
+	shell_print(sh, "OTA 실험은 moru ota mark → moru reboot → moru ota check");
 
 	return 0;
 }
@@ -191,6 +194,124 @@ static int cmd_moru_reboot(const struct shell *sh, size_t argc, char **argv)
 	return -EIO;
 }
 
+/*
+ * ── OTA 1단계: 재부팅 뒤 DRAM 이 보존되는가 (2026-11-06) ──────────────
+ *
+ * 왜 이 실험이 필요한가: U-Boot 에 ums·fastboot·dfu 가 없고 bootdelay=0 이라
+ * USB 로 SD 카드를 갱신할 길이 없다. 그러나 fatwrite 가 있으므로
+ * "Zephyr 가 RAM 에 받고 U-Boot 가 SD 에 쓴다" 가 가능하다
+ * (docs/ota-strategy.md §2). 그 설계 전체가 **재부팅 뒤 DRAM 보존**이라는
+ * 미지수 하나에 걸려 있다. PSCI SYSTEM_RESET 에서 BL31·DDR 초기화가
+ * 메모리를 지우면 무의미하다. 보장이 없어 실험으로만 알 수 있다.
+ *
+ *   moru ota mark   -> moru reboot -> moru ota check
+ *
+ * 주소 선택: 0x50000000. DRAM(0x00200000~0x80000000, 실기 검증) 안이고,
+ * Zephyr 영역(0x40000000 + 1 MiB)과 겹치지 않으며, U-Boot 가 재배치되는
+ * 상단(0x80000000 근처)과도 멀다.
+ *
+ * ⚠ device_map() 은 PRE_KERNEL 에서 부르면 보드가 죽는다
+ *   (z_mem_manage_init 이 그보다 뒤, kernel/init.c:293). 여기는 셸 스레드
+ *   문맥이므로 적법하다 — moru_stage.c 가 바로 그것을 어겨 삭제됐다.
+ */
+#define MORU_OTA_PHYS		0x50000000UL
+#define MORU_OTA_MAP_SIZE	0x1000U		/* 한 페이지면 충분하다 */
+#define MORU_OTA_MAGIC		0x4d4f5255UL	/* "MORU" (LE 로 'U''R''O''M') */
+#define MORU_OTA_PATTERN	0xa5c3f00dUL
+
+/* 오프셋: [0]=매직 [4]=패턴 [8]=단조 카운터 */
+#define MORU_OTA_OFF_MAGIC	0x00
+#define MORU_OTA_OFF_PATTERN	0x04
+#define MORU_OTA_OFF_COUNT	0x08
+
+static mm_reg_t moru_ota_map(const struct shell *sh)
+{
+	static mm_reg_t base;
+
+	if (base != 0) {
+		return base;
+	}
+
+	device_map(&base, MORU_OTA_PHYS, MORU_OTA_MAP_SIZE, K_MEM_CACHE_NONE);
+	if (base == 0) {
+		shell_error(sh, "device_map 실패 — MAX_XLAT_TABLES(%d) 부족일 수 있다",
+			    CONFIG_MAX_XLAT_TABLES);
+	}
+	return base;
+}
+
+static int cmd_moru_ota_mark(const struct shell *sh, size_t argc, char **argv)
+{
+	mm_reg_t base = moru_ota_map(sh);
+	uint32_t count;
+
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+
+	if (base == 0) {
+		return -ENOMEM;
+	}
+
+	/* 이전에 표시한 적이 있으면 카운터를 늘린다 (몇 번째 재부팅인지) */
+	count = (sys_read32(base + MORU_OTA_OFF_MAGIC) == MORU_OTA_MAGIC)
+			? sys_read32(base + MORU_OTA_OFF_COUNT) + 1U
+			: 1U;
+
+	sys_write32(MORU_OTA_MAGIC, base + MORU_OTA_OFF_MAGIC);
+	sys_write32(MORU_OTA_PATTERN, base + MORU_OTA_OFF_PATTERN);
+	sys_write32(count, base + MORU_OTA_OFF_COUNT);
+
+	shell_print(sh, "0x%08lx 에 표시했다 — magic 0x%08lx pattern 0x%08lx count %u",
+		    MORU_OTA_PHYS, MORU_OTA_MAGIC, MORU_OTA_PATTERN, count);
+	shell_print(sh, "이제 'moru reboot' 한 뒤 'moru ota check' 를 친다.");
+	shell_print(sh, "⚠ 캐시를 끈 매핑(K_MEM_CACHE_NONE)이라 쓰기가 바로 DRAM 에");
+	shell_print(sh, "  들어간다 — 재부팅 전 flush 를 기다릴 필요가 없다.");
+	return 0;
+}
+
+static int cmd_moru_ota_check(const struct shell *sh, size_t argc, char **argv)
+{
+	mm_reg_t base = moru_ota_map(sh);
+	uint32_t magic, pattern, count;
+
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+
+	if (base == 0) {
+		return -ENOMEM;
+	}
+
+	magic = sys_read32(base + MORU_OTA_OFF_MAGIC);
+	pattern = sys_read32(base + MORU_OTA_OFF_PATTERN);
+	count = sys_read32(base + MORU_OTA_OFF_COUNT);
+
+	shell_print(sh, "0x%08lx: magic 0x%08x pattern 0x%08x count %u",
+		    MORU_OTA_PHYS, magic, pattern, count);
+
+	if (magic == MORU_OTA_MAGIC && pattern == MORU_OTA_PATTERN) {
+		shell_print(sh, "✅ 보존됐다 — 재부팅을 넘어 DRAM 이 남는다.");
+		shell_print(sh, "   RAM→SD OTA 경로가 열린다 (docs/ota-strategy.md §2).");
+		return 0;
+	}
+
+	if (magic == 0U && pattern == 0U) {
+		shell_warn(sh, "❌ 0 으로 지워졌다 — DDR 초기화가 메모리를 비운다.");
+	} else {
+		shell_warn(sh, "❌ 값이 다르다 — 보존되지 않거나 다른 용도로 쓰인 영역이다.");
+	}
+	shell_warn(sh, "   A/B 슬롯 chain-load 로 간다 (docs/ota-strategy.md §3).");
+	shell_warn(sh, "   ⚠ 아직 'moru ota mark' 를 한 적이 없으면 이 결과는 무의미하다.");
+	return 0;
+}
+
+SHELL_STATIC_SUBCMD_SET_CREATE(moru_ota_subcmds,
+	SHELL_CMD_ARG(mark, NULL, "0x50000000 에 매직을 써 둔다 (재부팅 전)",
+		      cmd_moru_ota_mark, 1, 0),
+	SHELL_CMD_ARG(check, NULL, "그 매직이 재부팅을 넘어 남았는지 본다",
+		      cmd_moru_ota_check, 1, 0),
+	SHELL_SUBCMD_SET_END
+);
+
 SHELL_STATIC_SUBCMD_SET_CREATE(moru_reboot_subcmds,
 	SHELL_CMD_ARG(probe, NULL, "PSCI_VERSION 만 쏘아 BL31 응답을 확인한다",
 		      cmd_moru_reboot_probe, 1, 0),
@@ -202,6 +323,8 @@ SHELL_STATIC_SUBCMD_SET_CREATE(moru_subcmds,
 	SHELL_CMD_ARG(reboot, &moru_reboot_subcmds,
 		      "재부팅 (PSCI_SYSTEM_RESET). 'probe' 로 먼저 확인한다",
 		      cmd_moru_reboot, 1, 1),
+	SHELL_CMD(ota, &moru_ota_subcmds,
+		  "OTA 실험 — 재부팅 뒤 DRAM 보존 여부를 가린다", NULL),
 	SHELL_SUBCMD_SET_END
 );
 
