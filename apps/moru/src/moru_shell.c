@@ -572,6 +572,12 @@ static int cmd_moru_usb(const struct shell *sh, size_t argc, char **argv)
 	shell_print(sh, "  ⚠ cmd_timeout %u · trb_hw_owned %u · no_queued_buf %u",
 		    d.stats.cmd_timeout, d.stats.trb_hw_owned,
 		    d.stats.no_queued_buf);
+	shell_print(sh, "  전원: suspend %u · wakeup %u · linkstate %u (마지막 U%u)",
+		    d.stats.suspend, d.stats.wakeup, d.stats.link_state,
+		    (unsigned int)d.stats.last_linkst);
+	if (d.stats.suspend == 0U && d.stats.link_state == 0U) {
+		shell_print(sh, "     (호스트가 아직 suspend 를 보내지 않았다)");
+	}
 	if (d.stats.cmd_timeout || d.stats.trb_hw_owned ||
 	    d.stats.no_queued_buf) {
 		shell_warn(sh, "  → 0 이 아니다. 과거 열거 실패를 일으킨 증상들이다");

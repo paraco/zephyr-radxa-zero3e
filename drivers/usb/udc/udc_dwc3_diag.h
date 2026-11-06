@@ -39,6 +39,15 @@ struct udc_dwc3_stats {
 	uint32_t cmd_timeout;	/* DEPCMD 타임아웃 */
 	uint32_t trb_hw_owned;	/* 완료 처리 시 TRB 가 아직 HW 소유 */
 	uint32_t no_queued_buf;	/* XferComplete 인데 큐에 버퍼가 없음 */
+	/*
+	 * 전원 관리 — 1단계는 **세기만** 한다 (2026-11-06).
+	 * 호스트가 실제로 suspend 를 보내는지 먼저 알아야 스택에 올릴
+	 * 가치가 있다. 올리는 것은 2단계다.
+	 */
+	uint32_t suspend;	/* U3/L2/L1 진입 (DWC3_DEVT_SUSPEND_ENTRY) */
+	uint32_t wakeup;	/* REMOTE_WAKEUP */
+	uint32_t link_state;	/* LINK_STATE_CHANGE — 빈번할 수 있어 로그 없음 */
+	uint8_t  last_linkst;	/* 마지막으로 본 DSTS.USBLNKST */
 };
 
 /** 한 번에 읽는 상태 묶음. */

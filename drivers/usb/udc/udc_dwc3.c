@@ -608,10 +608,34 @@ static int udc_dwc3_enable(const struct device *dev)
 	 * 받을 디바이스 이벤트. 지금 단계에서 의미 있는 것만 켠다 —
 	 * 리셋 / 연결 완료 / 분리. 나머지는 [7] 이후.
 	 */
+	/*
+	 * ⚠ 전원 관리 이벤트를 켠다 (2026-11-06, 1단계).
+	 *
+	 * 지금까지 USBRST·CONNECTDONE·DISCONN 만 켜 두어 **suspend 이벤트가
+	 * 애초에 오지 않았다.** 호스트가 실제로 보내는지 확인하려면 먼저
+	 * 받아야 한다.
+	 *
+	 *   U3L2L1SUSPEN  suspend 진입 (HS 에서는 L2)
+	 *   WKUPEVTEN     remote wakeup
+	 *   ULSTCNGEN     링크 상태 변화 — **resume 을 아는 유일한 경로**다.
+	 *                 HS 에서 resume 은 별도 이벤트가 아니라 링크가 U0 로
+	 *                 돌아오는 것으로 나타난다 (Linux dwc3 도
+	 *                 linksts_change 로 처리한다)
+	 *
+	 * ⚠ ULSTCNGEN 은 빈번할 수 있다. 그래서 그 case 는 **로그를 찍지
+	 *   않고 카운터만** 올린다 — 로그 폭주가 수신을 멈추게 한 전례가
+	 *   있다(CDC hexdump).
+	 *
+	 * 1단계는 세기만 한다. UDC_EVT_SUSPEND/RESUME 을 스택에 올리는 것은
+	 * 2단계다 — 호스트가 보내는 것이 확인된 뒤에.
+	 */
 	dwc3_write32(dev, DWC3_DEVTEN,
 		     DWC3_DEVTEN_USBRSTEVTEN |
 		     DWC3_DEVTEN_CONNECTDONEEVTEN |
-		     DWC3_DEVTEN_DISSCONNEVTEN);
+		     DWC3_DEVTEN_DISSCONNEVTEN |
+		     DWC3_DEVTEN_U3L2L1SUSPEN |
+		     DWC3_DEVTEN_WKUPEVTEN |
+		     DWC3_DEVTEN_ULSTCNGEN);
 
 	/*
 	 * 동작 속도와 디바이스 주소. 이 보드는 USB3 combphy 가 연결되지
@@ -2326,6 +2350,36 @@ static void dwc3_handle_events(const struct device *dev)
 				udc_submit_event(dev, UDC_EVT_RESET, 0);
 				break;
 			}
+			case DWC3_DEVT_SUSPEND_ENTRY:
+				priv->stats.suspend++;
+				/*
+				 * 1단계: 세고 남긴다. 스택에 UDC_EVT_SUSPEND 를
+				 * 올리지 않는다 — 올리면 usbd 가 클래스에
+				 * 알리고 CDC 가 상태를 바꾼다. 호스트가 실제로
+				 * 보내는지 확인한 뒤에 한다.
+				 */
+				LOG_INF("suspend entry (%u번째) DSTS=0x%08x",
+					priv->stats.suspend,
+					dwc3_read32(dev, DWC3_DSTS));
+				break;
+			case DWC3_DEVT_REMOTE_WAKEUP:
+				priv->stats.wakeup++;
+				LOG_INF("remote wakeup (%u번째)",
+					priv->stats.wakeup);
+				break;
+			case DWC3_DEVT_LINK_STATE_CHANGE:
+				/*
+				 * ⚠ 로그를 찍지 않는다 — 빈번할 수 있고, 로그
+				 *   폭주가 수신을 멈추게 한 전례가 있다.
+				 *   마지막 링크 상태만 남겨 moru usb 가 보여 준다.
+				 *   HS 에서 resume 은 여기서 U0(0) 로 돌아오는
+				 *   것으로 나타난다.
+				 */
+				priv->stats.link_state++;
+				priv->stats.last_linkst = (uint8_t)FIELD_GET(
+					DWC3_DSTS_USBLNKST,
+					dwc3_read32(dev, DWC3_DSTS));
+				break;
 			case DWC3_DEVT_DISCONNECT:
 				priv->stats.disconnect++;
 				/*
