@@ -259,6 +259,18 @@ static int cmd_moru_reboot(const struct shell *sh, size_t argc, char **argv)
  */
 #define MORU_OTA_MAGIC		0x4d4f5255UL	/* "MORU" */
 #define MORU_MARK_MAGIC		0x4d524b30UL	/* "MRK0" */
+/*
+ * ⚠ 한 번만 시도하는 실험 슬롯의 매직 (2026-11-06 저녁).
+ *
+ *   boot.scr 이 이 매직을 보면 zephyr.bin **대신 zephyr.bin.try** 에 쓰고,
+ *   부팅 때 .try 를 **지운 뒤** 그것으로 뛴다. 그래서 그 이미지가 멈춰도
+ *   다음 전원 투입에는 파일이 없어 평소 zephyr.bin 으로 돌아온다 —
+ *   **카드를 꺼내지 않고 복구된다.**
+ *
+ *   부팅을 막는 설정(예: CONFIG_THREAD_RUNTIME_STATS)을 시험할 때 쓴다.
+ *   하루에 카드 롤백을 네 번 한 뒤에 만들었다.
+ */
+#define MORU_OTA_MAGIC_TRY	0x4d4f5452UL	/* "MOTR" */
 #define MORU_OTA_PATTERN	0xa5c3f00dUL
 
 /*
@@ -821,9 +833,16 @@ static int cmd_moru_ota_verify(const struct shell *sh, size_t argc, char **argv)
 static int cmd_moru_ota_apply(const struct shell *sh, size_t argc, char **argv)
 {
 	uint32_t pad;
+	bool try_slot = false;
 
-	ARG_UNUSED(argc);
-	ARG_UNUSED(argv);
+	if (argc > 1) {
+		if (strcmp(argv[1], "try") == 0) {
+			try_slot = true;
+		} else {
+			shell_error(sh, "인자는 'try' 뿐이다 (없으면 정식 적용)");
+			return -EINVAL;
+		}
+	}
 
 	if (moru_ota.base == 0 || moru_ota.expect == 0U) {
 		shell_error(sh, "받은 것이 없다.");
@@ -844,11 +863,23 @@ static int cmd_moru_ota_apply(const struct shell *sh, size_t argc, char **argv)
 		     0, pad);
 
 	/* 매직을 마지막에 쓴다 — 그 전에 전원이 끊겨도 적용되지 않는다 */
-	sys_write32(MORU_OTA_MAGIC, moru_ota.base + MORU_OTA_OFF_MAGIC);
+	if (try_slot) {
+		sys_write32(MORU_OTA_MAGIC_TRY,
+			    moru_ota.base + MORU_OTA_OFF_MAGIC);
+	} else {
+		sys_write32(MORU_OTA_MAGIC, moru_ota.base + MORU_OTA_OFF_MAGIC);
+	}
 	moru_ota_flush(moru_ota.base, MORU_OTA_HDR_SIZE + MORU_OTA_MAX_SIZE);
 
-	shell_print(sh, "매직 MORU 를 썼다. 재부팅하면 boot.scr 이 적용한다:");
-	shell_print(sh, "  zephyr.bin -> zephyr.bin.old 백업 후 교체");
+	if (try_slot) {
+		shell_print(sh, "매직 MOTR 를 썼다 — **한 번만 시도하는 슬롯**이다:");
+		shell_print(sh, "  zephyr.bin.try 에 쓰고, 부팅 때 지운 뒤 뛴다");
+		shell_print(sh, "  → 멈추면 **전원만 다시 주면 복구된다** (카드 작업 없음)");
+		shell_print(sh, "  → zephyr.bin 은 손대지 않는다");
+	} else {
+		shell_print(sh, "매직 MORU 를 썼다. 재부팅하면 boot.scr 이 적용한다:");
+		shell_print(sh, "  zephyr.bin -> zephyr.bin.old 백업 후 교체");
+	}
 	shell_print(sh, "⚠ USB 가 끊기므로 이 셸도 끊긴다. 재부팅 뒤 'moru info'");
 	shell_print(sh, "  의 build 해시가 바뀌었으면 성공이다.");
 
@@ -974,8 +1005,9 @@ SHELL_STATIC_SUBCMD_SET_CREATE(moru_ota_subcmds,
 	SHELL_CMD_ARG(verify, NULL, "받은 것의 CRC32 를 검사한다",
 		      cmd_moru_ota_verify, 1, 0),
 	SHELL_CMD_ARG(apply, NULL,
-		      "적용: 매직을 쓰고 재부팅한다 (verify 통과 필요)",
-		      cmd_moru_ota_apply, 1, 0),
+		      "적용: 매직을 쓰고 재부팅한다 (verify 통과 필요). "
+		      "'try' 를 붙이면 한 번만 시도하는 슬롯 — 멈춰도 전원 재투입으로 복구",
+		      cmd_moru_ota_apply, 1, 1),
 	SHELL_CMD_ARG(abort, NULL, "수신 취소 + 매직 지우기",
 		      cmd_moru_ota_abort, 1, 0),
 	SHELL_CMD_ARG(mark, NULL, "DRAM 보존 확인 표시 (MRK0, 재부팅 전)",

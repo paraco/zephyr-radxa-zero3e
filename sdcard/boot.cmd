@@ -43,6 +43,7 @@ setenv zentry 0x40001084
 setenv ota_addr 0x50000000
 setenv ota_body 0x50000010
 setenv ota_magic 0x4d4f5255
+setenv ota_magic_try 0x4d4f5452
 
 echo ""
 echo "=== PiZZa Zephyr loader ==="
@@ -67,6 +68,40 @@ if itest.l *${ota_addr} -eq ${ota_magic}; then
 	else
 		echo "  ⚠ fatwrite 실패 — 기존 zephyr.bin 을 그대로 쓴다"
 	fi
+fi
+
+# ── 한 번만 시도하는 실험 슬롯 (2026-11-06 저녁) ─────────────────────────
+#
+# 왜: 부팅을 막는 설정을 시험할 때마다 카드를 빼서 zephyr.bin.old 를
+# 되돌려야 했다. 하루에 네 번 했다. 이 슬롯은 그 비용을 없앤다 —
+# **멈추면 전원만 다시 주면 복구된다.**
+#
+# 쓰기: 매직이 'MOTR' 이면 zephyr.bin **대신 zephyr.bin.try** 에 쓴다.
+#       정상 zephyr.bin 은 손대지 않으므로 백업도 필요 없다.
+# 읽기: 아래 적재 경로보다 **먼저** .try 를 찾고, 찾으면 **뛰기 전에
+#       지운다.** 그러면 그 이미지가 멈춰도 다음 전원 투입에는 파일이
+#       없어 평소 zephyr.bin 으로 돌아온다.
+if itest.l *${ota_addr} -eq ${ota_magic_try}; then
+	echo "=== OTA(try) image in RAM at ${ota_addr} ==="
+	if fatwrite ${devtype} ${devnum}:${distro_bootpart} ${ota_body} zephyr.bin.try 0x40000; then
+		echo "  staged zephyr.bin.try (one-shot, 256 KiB fixed)"
+		mw.l ${ota_addr} 0 1
+		echo "  magic cleared"
+	else
+		echo "  ⚠ fatwrite 실패 — 실험 슬롯을 쓰지 못했다"
+	fi
+fi
+
+if fatload ${devtype} ${devnum}:${distro_bootpart} ${zaddr} zephyr.bin.try; then
+	echo "=== one-shot try image ==="
+	# ⚠ 뛰기 전에 지운다. 이 순서가 복구의 전부다.
+	if fatrm ${devtype} ${devnum}:${distro_bootpart} zephyr.bin.try; then
+		echo "  removed zephyr.bin.try — 멈추면 전원 재투입으로 복구된다"
+	else
+		echo "  ⚠ fatrm 실패 — 이 이미지가 멈추면 카드를 꺼내야 한다"
+	fi
+	echo "  jumping to ${zentry}"
+	go ${zentry}
 fi
 
 if fatload ${devtype} ${devnum}:${distro_bootpart} ${zaddr} zephyr.bin; then
