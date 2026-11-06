@@ -21,3 +21,4 @@ build/
 *.pdf
 trm-download/
 sdcard/zephyr-diag-uart.bin
+sdcard/zephyr-usbmain.bin
