@@ -85,19 +85,130 @@ Zephyr 에 올리는 것은 350M 하나로 한다.
 
 **이것 없이는 어떤 Zephyr 수치도 해석할 수 없다.**
 
+아래는 전달받은 구현 순서를 **우리가 확인한 사실로 각색한** 실행 레시피다.
+각색한 곳에는 이유를 붙였다.
+
+#### 0-a. 가장 먼저 — CPU 기능 확인 (한 줄)
+
+```bash
+grep -o 'asimddp\|i8mm' /proc/cpuinfo | sort -u
+```
+
+**이 한 줄이 측정 해석의 전제다.** `asimddp`(= dotprod)가 없으면 llama.cpp 의
+ARM 재패킹 경로가 아예 안 걸리고, Q4 기대값이 전부 틀어진다. A55 는 ARM 문서
+기준 dotprod 가 있고 i8mm 은 없다 — **그러나 이 보드에서 재 본 적이 없다.**
+(맥에서 같은 것을 보려면 `sysctl -a | grep FEAT_DotProd`. 이 맥 M3 Pro 는
+DotProd·I8MM 둘 다 1 이다 — "있는 경우" 의 예다.)
+
+#### 0-b. 환경 — 두 번째 카드, SSH, 스왑 끄기
+
 - **두 번째 SD 카드**에 `images/radxa-zero3_bullseye_xfce_b6.img.xz` 를 쓴다.
-  ⚠ **지금 Zephyr 카드를 덮지 않는다** — 2026-11-06 에 카드 교체 비용이
-  얼마나 큰지 겪었다(하루에 롤백 4회).
-- 접속: **이더넷 + SSH**. ADB 가젯은 올라오지만 `adb root` 가 거부되고
-  `uid=2000` 이라 `apt`·`--mlock` 이 안 된다(`docs/hardware-verified.md`).
-  Zero 3E 는 이더넷 포트가 있다. 시리얼은 1,500,000 baud 인데 우리 CP2102 가
+  ⚠ **지금 Zephyr 카드를 덮지 않는다** — 2026-11-06 에 카드 교체 비용을
+  겪었다(하루에 롤백 4회).
+- 접속은 **이더넷 + SSH**. ⚠ **ADB 로는 안 된다** — 가젯은 올라오지만
+  `adb root` 가 거부되고 `uid=2000` 이라 `apt` 도 `--mlock` 도 막힌다
+  (`docs/hardware-verified.md`). 시리얼은 1,500,000 baud 인데 우리 CP2102 가
   그 속도를 못 낸다(같은 문서).
-- `llama.cpp` 를 보드에서 네이티브 빌드 → `llama-bench`
-  - 행렬: {`Q4_0`, `Q4_K_M`} × {1,2,3,4 스레드} × {`pp128`, `tg64`}
-  - 함께 기록: 피크 RSS(`/usr/bin/time -v`), `/sys/class/thermal/*/temp`,
-    `/sys/devices/system/cpu/cpufreq/*/scaling_cur_freq`
-  - **스왑을 끈다**(`swapoff -a`) — 켜져 있으면 측정이 오염된다
-- 컨텍스트별 메모리: `-c 512 / 2048 / 8192 / 32768` 에서 피크 RSS
+- `sudo swapoff -a` — **켜져 있으면 측정이 오염된다.** 2 GB 에 0.25 GB
+  모델이면 필요 없다.
+- `--mlock` 을 쓰려면 `RLIMIT_MEMLOCK` 을 올려야 한다(`ulimit -l unlimited`,
+  또는 `sudo`). 이것이 ADB 가 아니라 SSH 로 가는 이유 중 하나다.
+
+#### 0-c. llama.cpp 빌드 + **LFM2.5 지원을 그 빌드에서 확인**
+
+```bash
+cmake -B build -DGGML_NATIVE=ON -DCMAKE_BUILD_TYPE=Release && cmake --build build -j4
+```
+
+각색: 전달 내용은 "LFM2 구조 지원 확인" 이라고만 적었다. **확인 방법을
+정한다** — 빌드한 바이너리가 그 구조를 아는지 직접 묻는다:
+
+```bash
+./build/bin/llama-cli --list-devices   # 빌드가 성립했는지
+strings build/bin/llama-cli | grep -i lfm2   # 구조 이름이 들어갔는지
+```
+
+상류 근거: PR #14620 이 LFM2(350M·700M·1.2B)를 넣었고, Liquid 공식 문서가
+upstream llama.cpp 가 LFM2/LFM2.5 를 지원한다고 적는다. **그래도 이 빌드에서
+확인한다** — 버전이 낡으면 LFM2.5 의 확장 토크나이저에서 막힌다.
+
+#### 0-d. 모델 — **Q4_0 과 Q4_K_M 을 둘 다** 받는다
+
+```bash
+# 공식 GGUF (Q4_K_M 이 올라와 있다)
+./build/bin/llama-cli -hf LiquidAI/LFM2.5-350M-GGUF --conversation \
+    --temp 0.1 --top-k 50 --repeat-penalty 1.05
+```
+
+⚠ **각색한 곳**: 전달 내용은 "GGUF Q4_0 사용 (A55/A53 계열은 dotprod 경로가
+빠름)" 이었다. 두 군데를 고친다.
+
+1. **공식 배포본은 `Q4_K_M` 이다.** Q4_0 이 저장소에 없으면 F16 에서 만든다:
+   `./build/bin/llama-quantize <f16.gguf> <q4_0.gguf> Q4_0`
+2. **"ARM 은 Q4_0" 는 낡은 조언일 수 있다.** 정적 타입 `Q4_0_4_4` 는
+   삭제됐고(#10757) 지금은 적재 시 런타임 재패킹이며, **Q4_K 용 AArch64
+   재패킹**이 dotprod 전용 변종까지 올라왔다(#17494·#16739).
+   → 그래서 **둘 다 재서 이 빌드·이 칩에서 어느 쪽이 빠른지 정한다.**
+   Q4_K_M 이 이기면 품질까지 같이 얻는다.
+3. **A53 은 dotprod 가 없다**(ARMv8.0). 전달 메모의 "A55/A53 계열" 은
+   A53 에 대해 틀렸다. 이번 대상은 A55 라 영향은 없다.
+
+#### 0-e. KV 캐시는 **추정하지 않고 계산한다** (맥에서 가능)
+
+모델 카드 기준 16층 하이브리드(짧은 컨볼루션 10 + GQA 어텐션 6)이고 KV 가
+**어텐션 6층에만** 생긴다. 그래서 32K 컨텍스트에서도 작을 것으로 보이지만,
+**숫자는 GGUF 메타데이터에서 읽는다**:
+
+```bash
+python3 llama.cpp/gguf-py/gguf/scripts/gguf_dump.py --no-tensors <model.gguf>
+```
+
+`n_embd_head_k`·`n_embd_head_v`·`n_head_kv`·`block_count`·`n_ctx_train` 을
+보고 KV = `2 × 층수(어텐션만) × n_ctx × n_embd_kv × 바이트` 로 계산한다.
+**이 값이 1단계 메모리 설계의 입력이다.**
+
+#### 0-f. 측정 행렬
+
+```bash
+./build/bin/llama-bench -m <model.gguf> -t 1,2,3,4 -p 128 -n 64 -r 5
+```
+
+| 축 | 값 |
+|---|---|
+| 양자화 | `Q4_0`, `Q4_K_M` |
+| 스레드 | 1, 2, 3, 4 (A55 4코어) |
+| 작업 | `pp128`(프롬프트 처리, 연산 바운드), `tg64`(생성, 대역폭 바운드) |
+| 컨텍스트 | `-c 512 / 2048 / 8192 / 32768` 에서 피크 RSS |
+
+함께 **반드시** 기록한다 — 이것 없이는 수치를 믿을 수 없다:
+
+```bash
+/usr/bin/time -v ./build/bin/llama-cli ...   # 피크 RSS
+cat /sys/class/thermal/thermal_zone*/temp     # 측정 전·후 온도
+cat /sys/devices/system/cpu/cpufreq/policy0/scaling_cur_freq  # 클럭
+```
+
+⚠ **수동 방열 보드다.** 발열로 클럭이 떨어지면 스레드를 늘려도 느려진다.
+온도·클럭을 같이 안 적으면 그 현상을 "스레드 확장이 안 된다" 로 오독한다.
+
+#### 0-g. 비교 기준점 — Qwen3.5-0.8B (품질만)
+
+존재 확인됐다(`unsloth/Qwen3.5-0.8B-GGUF`·`bartowski/Qwen_Qwen3.5-0.8B-GGUF`).
+⚠ **각색**: **350M 의 2.3배**다. 그래서 **품질 기준점으로만** 쓰고 Zephyr 에
+올리는 대상으로는 잡지 않는다. 한국어 품질 비교에 쓴다(LFM2.5 는 한국어 포함
+9개 언어를 주장한다 — 그 주장을 확인하는 것이 이 비교의 목적이다).
+
+#### 0-h. 라이선스 — 포팅 **전에** 확인한다
+
+LFM Open License 의 **상업 조건**. 2~6주를 쓰기 전에 봐야 한다. 제품에 넣을
+수 없는 라이선스면 모델을 바꾸는 것이 포팅보다 싸다.
+
+#### 기록 — 저장소 CSV 를 정본으로
+
+`docs/llm-bench.csv` 에 적는다. 전달받은 양식은 `ZERO3E_LLM_벤치마크.xlsx`
+'벤치마크 기록' 시트인데 **로컬에서 찾지 못했다**(Google Drive 쪽일 수 있다).
+⚠ **각색한 이유**: 숫자가 git 으로 diff 되어야 "언제 무엇이 느려졌나" 를
+추적할 수 있다. xlsx 는 그게 안 된다. 보고용이 필요하면 CSV 에서 내보낸다.
 
 **관문 0:** 350M Q4 가 이 실리콘에서 **tg 5 t/s 이상** 나오는가.
 못 나오면 Zephyr 포팅은 의미가 없다 — OS 를 바꿔도 메모리 대역폭은 같다.

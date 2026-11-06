@@ -1,0 +1,6 @@
+# 온디바이스 LLM 측정 기록 — 정본. 숫자가 git 으로 diff 되어야 회귀를 잡는다.
+# host: linux | zephyr   quant: Q4_0 | Q4_K_M | F16
+# temp_c_start/end: /sys/class/thermal/thermal_zone*/temp (℃)
+# clk_mhz_avg: /sys/devices/system/cpu/cpufreq/policy0/scaling_cur_freq 평균
+# asimddp/i8mm: /proc/cpuinfo 에서 확인한 값 (0|1) — 없으면 Q4 기대값이 틀어진다
+date,host,commit,board,model,quant,threads,ctx,pp_tps,tg_tps,peak_mb,temp_c_start,temp_c_end,clk_mhz_avg,asimddp,i8mm,note
