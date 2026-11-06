@@ -139,9 +139,17 @@ SYS_INIT(moru_boot_memory, PRE_KERNEL_2, 2);
 
 static int moru_boot_console(void)
 {
-#define CON DT_CHOSEN(zephyr_console)
-	LOG_INF("Console: %s %u 8N1, shell on same port",
-		DT_NODE_FULL_NAME(CON), (unsigned int)DT_PROP(CON, current_speed));
+	/*
+	 * ⚠ DT_PROP(CON, current_speed) 를 쓰면 안 된다 — main 이 USB CDC-ACM
+	 *   이 되면서 chosen zephyr,console 이 cdc_acm_uart0 를 가리키는데
+	 *   그 노드에는 current-speed 속성이 없어 **컴파일 오류**가 난다.
+	 *   노드 이름만 찍고, 보율은 uart2 에서 직접 가져온다.
+	 */
+	LOG_INF("Console: %s (shell on same port)",
+		DT_NODE_FULL_NAME(DT_CHOSEN(zephyr_console)));
+	LOG_INF("Marker UART: %s %u 8N1 (early boot only)",
+		DT_NODE_FULL_NAME(DT_NODELABEL(uart2)),
+		(unsigned int)DT_PROP(DT_NODELABEL(uart2), current_speed));
 	LOG_INF("Board: %s", CONFIG_BOARD_TARGET);
 	return 0;
 }
