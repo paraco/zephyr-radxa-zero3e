@@ -28,4 +28,7 @@ target_compile_definitions(app PRIVATE MORU_BUILD_TIME="${MORU_BUILD_TIME} UTC")
 #   src/moru_boot.c 도 빼둔다 — PRE_KERNEL_1/0 에서 로그 타임스탬프를
 #   바꾸므로 역시 후보다. 셸이 먼저 뜨는 것을 확인한 뒤 되돌려 넣는다.
 target_sources(app PRIVATE src/main.c src/moru_mark.c)
-# target_sources(app PRIVATE src/moru_boot.c src/moru_stage.c)
+# moru_boot.c 는 B1 에서 되살린다 (docs/roadmap.md).
+# moru_stage.c 는 2026-11-06 에 삭제했다 — PRE_KERNEL_1 에서 device_map() 을
+# 불러 보드를 죽이는 파일이었다. 남겨 두면 다음 사람이 빌드에 넣고 당한다.
+# target_sources(app PRIVATE src/moru_boot.c)
