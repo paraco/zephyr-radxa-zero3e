@@ -83,3 +83,19 @@ Q4_0 은 `-8 × 0 = **-0.0**`, Q4_K 는 `0 × 0 - 0 = **+0.0**` 이 나온다.
 ./tools/l3_golden.sh                         # 골든값 (호스트 ggml)
 L_BLOB=/tmp/claude-501/l2_test.gguf ./tools/qemu_run.sh apps/llm_l3 120
 ```
+
+## ⚠ L3 만 빌드 플래그가 다르다 — 의도한 것이다
+
+L4 이후 앱은 `cmake/llm_ggml.cmake` 를 거쳐 `-mcpu=cortex-a55` 와
+`-ffp-contract=off` 를 **소스 수준**으로 받는다. **L3 은 거치지 않는다** —
+`ggml-quants.c` 한 파일만 필요한 시험에 24개 파일을 끌어오지 않기 위해서다.
+그래서 L3 의 `compile_commands.json` 에는 Zephyr 기본값
+(`-mcpu=cortex-a53`, gcc 기본 축약)만 들어 있다.
+
+그런데도 **비트 일치**가 나온다. 이유가 있다:
+- `y = x0 * d` 는 곱 하나다 — `a*b+c` 가 없으니 FMA 로 묶을 자리가 없고
+  `-ffp-contract` 가 영향을 주지 않는다.
+- 역양자화에는 dotprod 경로가 없으므로 `-mcpu` 도 영향이 없다.
+
+즉 **일관성의 흠이지 정확성 문제가 아니다.** 나중에 "왜 L3 만 플래그가
+다른가" 로 헤매지 않도록 적어 둔다.

@@ -3,6 +3,19 @@
 2026-11-07 기준. 자세한 것은 각 앱의 README 와
 [llm-hub-test-plan.md](llm-hub-test-plan.md) 에 있다.
 
+## 기준선 — 2026-11-07 전체 통과
+
+```
+$ ./tools/run_ladder.sh
+  llm_l0: PASS   llm_l1: PASS   llm_l2: PASS   llm_l3: PASS
+  llm_l4: PASS   llm_l5a: PASS  llm_l5b: PASS
+통과 7 · 실패 0
+```
+
+소스 목록 단일화 · `-ffp-contract` 정책 · 호스트 하네스 일반화를 크게 바꾼
+뒤 세운 기준선이다. 이후에는 연관 시험만 돌리고, 공통 부분을 또 바꾸면
+이것을 다시 통과시킨다(전역 지침의 시험 순서).
+
 ## 어디까지 왔나
 
 | 칸 | 상태 | 한 줄 |
