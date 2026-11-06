@@ -284,101 +284,63 @@ Linux 에서 **사실로서** 확인하고 코드는 직접 작성했다 — 하
 `CONFIG_HWINFO_RK3566_OTP=n` 으로 끄거나 자리표 판으로 되돌릴 수 있다
 (git 이력에 있다).
 
-## 현재 작업 상태 — 관리 셸 (2026-11-05)
+## 현재 작업 상태 — 관리 셸 + OTA (2026-11-06)
 
-`apps/moru` 가 **UART2 에 `Moru > ` 셸을 띄우는 단계까지 동작한다.** 계획은
-`~/.claude/plans/twinkly-doodling-frog.md`, 실기 기록은
+`apps/moru` 가 **USB CDC-ACM 두 포트로 셸과 OTA 를 모두 제공한다.**
+계획과 남은 일은 [docs/roadmap.md](docs/roadmap.md), 실기 기록은
 [docs/hardware-verified.md](docs/hardware-verified.md) 에 있다.
 
-### 동작 확인된 것
+### 쓸 수 있는 것
 
 ```
-[00:00:00.457,000] <inf> hwinfo_rk3566: OTP 칩 ID: 4d4257373335...
-[00:00:00.465,000] <inf> usbd_cdc_acm: Configuration enabled
-Moru > help
-Available commands:
-  app · clear · device · help · history · kernel · rem · resize · retval · shell
+/dev/cu.usbmodem…1   셸 + 로그 (chosen console/shell = cdc_acm_uart0)
+/dev/cu.usbmodem…3   OTA 데이터 (cdc_acm_uart1)
+/dev/cu.usbserial…   UART2 115200 — 초기 부팅 마커 전용 (USB 가 죽었을 때의 창)
 ```
 
-UART2 셸 + USB CDC-ACM 열거(HS) + OTP 직렬번호가 동시에 살아 있고 `<err>` 0줄.
+| 명령 | 하는 일 |
+|---|---|
+| `moru info` | 버전·해시·보드·CPU·메모리·칩ID·콘솔·부트로더 시간·가동 |
+| `moru usb` | dwc3 레지스터 + **벌크 mps** + 이벤트 카운터 9개 |
+| `moru reboot [probe]` | PSCI 재부팅 (`probe` 는 BL31 응답만 확인) |
+| `moru ota begin\|status\|verify\|apply\|abort` | **카드를 빼지 않는 펌웨어 교체** |
+| `moru ota mark\|check` | 재부팅 뒤 DRAM 보존 확인 (진단용) |
+| 내장 | `kernel thread list\|stacks\|unwind`, `kernel heap`, `device list`, `hwinfo devid`, `log status`, `app version` |
 
-### ⚠ 이 보드의 필수 설정 — EL2 데이터 캐시 (2026-11-06 해결)
+### 펌웨어를 바꾸는 법 — 카드를 빼지 않는다
 
-**이 보드에서 Zephyr 를 쓰려면 다음 두 줄이 있어야 한다.**
+```bash
+./build.sh "$(pwd)/apps/moru"
+python3 tools/ota_test.py /tmp/claude-501/rz3e-build/zephyr/zephyr.bin --chunk 4096
+```
+
+그다음 셸에서 `moru ota apply`. 175 KB 가 **0.37초**에 전송되고, `boot.scr` 이
+`fatwrite` 로 SD 의 `zephyr.bin` 을 교체하면서 **`zephyr.bin.old` 로 백업**한다.
+
+⚠ 카드를 빼야 하는 경우는 셋뿐이다 — `boot.cmd`/`boot.scr` 을 바꿀 때,
+롤백할 때(`.old` → `zephyr.bin`), 그리고 부팅이 완전히 깨졌을 때.
+
+### 이 보드의 필수 설정 (지우면 부팅하지 않는다)
 
 ```conf
 CONFIG_ARM64_DCACHE_ALL_OPS=y
 CONFIG_ARM64_BOOT_DISABLE_DCACHE=y
 ```
 
-없으면 `CONFIG_INIT_STACKS=y` 를 켜는 순간 **보드가 완전히 무음이 된다**
-(실기 3회 확인). U-Boot 는 정상이고 `go` 까지 가지만 Zephyr 가 한 글자도
-못 찍는다 — 동기 마커조차 안 나오므로 `PRE_KERNEL_2` 보다 앞에서 죽는다.
+U-Boot 가 EL2 에서 `go` 하고 캐시를 정리하지 않기 때문이다. 자세한 것은
+위 §"이 보드의 필수 설정 — EL2 데이터 캐시".
 
-**원인.** `INIT_STACKS` 자체가 아니라 **EL2 에서 부팅할 때 데이터 캐시를
-정리하지 않는 것**이었다. U-Boot 가 EL2(SPSR 0x3c9)에서 `go` 하고, `go` 는
-`booti` 와 달리 캐시를 정리하지 않으므로 MMU·dcache 가 켜진 채 진입한다.
-`reset.S:199-215` 의 0xAA 칠하기가 ISR 스택 4 KiB 를 dcache 에 dirty 로
-남기고, EL1 은 SCTLR 초기값이라 MMU·C 가 꺼져 스택 접근이 캐시를 우회한다 →
-나중에 그 stale dirty 줄이 evict 되며 EL1 이 DRAM 에 쓴 값을 덮는다.
+### 2026-11-06 에 해결한 것
 
-`arch/arm64/core/Kconfig:446` 이 정확히 이 위험을 적어 두었다 — "if data
-cache is enabled in case of Zephyr is booting from EL2, enable this option".
-그런데 **기본값이 꺼짐**이고, 의존하는 `ARM64_DCACHE_ALL_OPS` 도 꺼짐이라
-선택 자체가 보이지 않는다. 그래서 찾기 어려웠다.
-
-실기 판정 (`INIT_STACKS` 는 양쪽 다 `y`, 캐시 설정만 토글):
-
-| 빌드 | 캐시 두 설정 | 결과 |
-|---|---|---|
-| `464a4ce` | 없음 | 무음 ❌ |
-| `ef6780f` | **y** | 부팅 ✅ `kernel thread list`·`stacks` 동작 |
-
-되찾은 것: `kernel thread list` · `kernel thread stacks` (`IRQ 00` ISR 스택
-포함). 그 덕에 셸 스택이 71% 인 것을 즉시 알아 `SHELL_STACK_SIZE` 를 올렸다.
-
-### 다음에 이어서 할 일
-
-```bash
-./build.sh "$(pwd)/apps/moru" && cp /tmp/claude-501/rz3e-build/zephyr/zephyr.bin sdcard/
-```
-
-그 뒤 SD 카드 복사(위 "보드에 올리기") → 전원. `tio` 는 **115200**
-(U-Boot 구간은 1.5 Mbps 라 쓰레기로 보이고, 그 뒤 Zephyr 출력이 읽힌다).
-
-남은 묶음 — 각각 실기 1회:
-
-| 묶음 | 내용 | 위험 |
-|---|---|---|
-| B1 | Linux 형식 부팅 메시지 · `moru_boot.c` 되살리기 · MoruLab 제품 문자열/PID | 낮음 |
-| B2 | `moru info` · `VERSION` · 셸 모듈(`hwinfo`·`log`·`heap`) | 낮음 |
-| B3 | `moru usb` · 드라이버 진단 API·카운터 | 중간 — 열거 회귀 시험 필수 |
-| B4 | `moru reboot` (셸에서 직접 SMC) | 낮음 — BL31 확인됨, Kconfig 변경 0 |
-
-B4 의 근거: U-Boot 로그에서 `BL31 v2.3` 이 EL3 에서 GICv3 를 초기화하고
-런타임 서비스를 올리는 것을 확인했다. 단 **`CONFIG_PM_CPU_OPS` 는 켜지 말 것** —
-`psci_init` 이 `PRE_KERNEL_1` 에서 SMC 를 쏘고 그건 콘솔보다 먼저라, BL31 이
-응답하지 않으면 원인 구분이 불가능한 무음이 된다.
-
-### 측정 방법 (비싸게 배운 것)
-
-- **기준점을 먼저 확인한다.** 검증된 `apps/usbuart` 를 같은 카드로 구워
-  LED 가 깜박이는지 본다. 이것 하나로 보드·카드·배선·전원·부팅 사슬이
-  한꺼번에 검증된다. 이걸 건너뛰어 왕복 네 번을 낭비했다.
-- **`prj.conf` 의 줄 수는 실제 변경량이 아니다.** 2줄을 더했는데 `.config`
-  차이가 70개였다. 반드시 비교한다:
-  `diff <(grep ^CONFIG_ A/.config|sort) <(grep ^CONFIG_ B/.config|sort)`
-- **U-Boot 를 읽으려면 1.5 Mbps.** 그래야 `fatload` 결과와 `go` 주소가 보인다.
-- `tio --log-file` 은 버퍼링돼 실시간이 아니다. 판단은 터미널 화면으로.
-  `--log-strip` 은 쓰레기를 버려서 로그가 비어 보인다.
-- 보율이 틀린 구간의 쓰레기에서 문자열을 grep 하면 안 된다 (거짓 양성·음성).
-- `diskutil list` 에 카드가 없는 것은 복사 성공의 증거가 아니다. `mdir` 을 본다.
-- `sudo -v` 를 먼저 돌린다. 비밀번호 오류로 `&&` 사슬이 끊기면 조용히 실패한다.
-- **진단 장치가 피검체를 죽인 사례가 두 번 있었다** — `PRE_KERNEL_1` 에서
-  `device_map()` 호출, LED 스레드 스택 1024. 계측을 추가할 때도 같은 규칙을
-  지킨다.
-
----
+| | |
+|---|---|
+| `INIT_STACKS` 무음 | **EL2 데이터 캐시**였다. `INIT_STACKS` 는 방아쇠였을 뿐 |
+| 역추적 | 같은 원인. `kernel thread unwind` + `addr2line` 동작 |
+| USB main 전환 | 셸·로그가 CDC, UART2 는 마커 창 |
+| CDC-ACM 두 개 | `INITIALIZE_AT_BOOT` 이 하나만 등록한다 → `moru_usbd.c` 가 직접 구성 |
+| OTA 1·2·3단계 + 롤백 | 양방향 검증 |
+| HS 속도 확정 | 벌크 mps 64 → **512** (`UDC_EVT_RESET` 을 `CONNECTION_DONE` 으로) |
+| 로그 잘림 | 두 단계(CDC `poll_out` + 셸 로그 큐)에서 버려지고 있었다. **드롭 0** |
 
 ## 다음에 할 만한 것
 
