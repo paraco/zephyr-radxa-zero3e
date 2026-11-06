@@ -11,6 +11,7 @@
 #define L5_GRAPH_H
 
 #include <stdint.h>
+#include "llm_fullsum.h"
 
 #define L5_S		128	/* ssm.state_size — head_k_dim = head_v_dim */
 #define L5_H		16	/* n_k_heads == n_v_heads */
@@ -31,6 +32,7 @@ struct l5_results {
 	/* L5a-1 인과 컨볼루션 */
 	float    conv[L5_CONV_SAMP];
 	uint32_t conv_crc;
+	struct llm_fullsum conv_full;	/* 표본 밖 영역의 상한 */
 	/* L5a-2 감쇠·게이트 계수 */
 	float    beta[L5_H];		/* sigmoid(ssm_beta @ x) */
 	float    a_softplus[L5_H];	/* softplus(ssm_alpha @ x + ssm_dt) */
@@ -39,6 +41,7 @@ struct l5_results {
 	float    o[L5_O_N];
 	float    state[L5_STATE_SAMP];
 	uint32_t state_crc;
+	struct llm_fullsum state_full;	/* 262,144개 중 0.4%만 표본이다 — 상한이 필요하다 */
 	/* L5a-4 ssm_norm + 게이트 */
 	float    normg[L5_O_N];
 	/* L5a-5 축 배치 — 중간 텐서의 ne[] 를 그대로 기록한다 */

@@ -34,8 +34,19 @@ APPSRC="$REPO/apps/$APP/src"
 	echo "  git clone --depth 1 https://github.com/ggml-org/llama.cpp $LLAMA" >&2
 	exit 1; }
 
-GRAPH=$(ls "$APPSRC"/*_graph.c 2>/dev/null | head -1)
-[[ -n "$GRAPH" ]] || { echo "$APPSRC 에 *_graph.c 가 없다" >&2; exit 1; }
+# ⚠ `ls … | head -1` 를 쓰면 set -e -o pipefail 에서 실패 시 **조용히 종료**하고
+#   아래 진단문에 닿지 못한다. glob 을 직접 쓴다.
+shopt -s nullglob
+GRAPHS=("$APPSRC"/*_graph.c)
+shopt -u nullglob
+if [[ ${#GRAPHS[@]} -eq 0 ]]; then
+	echo "$APPSRC 에 *_graph.c 가 없다" >&2; exit 1
+fi
+if [[ ${#GRAPHS[@]} -gt 1 ]]; then
+	echo "$APPSRC 에 *_graph.c 가 ${#GRAPHS[@]}개다 — 하나만 두어라:" >&2
+	printf '  %s\n' "${GRAPHS[@]}" >&2; exit 1
+fi
+GRAPH="${GRAPHS[0]}"
 PREFIX=$(basename "$GRAPH" _graph.c)
 TOOL="$HERE/${PREFIX}_golden.c"
 OUT="$APPSRC/${PREFIX}_golden.h"
@@ -52,8 +63,11 @@ sed -e "s/@GGML_VERSION@/$VER/" -e "s/@GGML_BUILD_COMMIT@/$COMMIT/" \
 	"$G/src/ggml-version.h.in" > "$WORK/gen/ggml-version.h"
 
 SRCS=()
-while IFS= read -r line; do
+while IFS= read -r line || [[ -n "$line" ]]; do	# || 절: 마지막 줄에 개행이 없어도 읽는다
 	line="${line%%$'\r'}"
+	# cmake 쪽은 string(STRIP) 을 한다. 여기서도 앞뒤 공백을 지워야 같은 결과가 된다.
+	line="${line#"${line%%[![:space:]]*}"}"
+	line="${line%"${line##*[![:space:]]}"}"
 	[[ -z "$line" || "$line" == \#* ]] && continue
 	if [[ "$line" == "HOST_ONLY "* ]]; then
 		SRCS+=("$G/${line#HOST_ONLY }")   # 호스트에는 std::mutex 가 있다
@@ -62,7 +76,8 @@ while IFS= read -r line; do
 	fi
 done < "$REPO/cmake/ggml-sources.txt"
 
-INC=(-I"$G/include" -I"$G/src" -I"$G/src/ggml-cpu" -I"$WORK/gen" -I"$APPSRC")
+INC=(-I"$G/include" -I"$G/src" -I"$G/src/ggml-cpu" -I"$WORK/gen" -I"$APPSRC"
+     -I"$REPO/apps/llm_common")
 DEF=(-DGGML_USE_CPU -DGGML_BACKEND_BUILD)
 # ⚠ -ffp-contract 를 양쪽에서 똑같이 맞춘다. gcc 와 clang 이 `sumf += a*b` 를
 #   fmadd 로 묶는 기준이 달라 1 ulp 가 갈리고, 상쇄가 있는 합에서는 상대오차로
@@ -70,6 +85,20 @@ DEF=(-DGGML_USE_CPU -DGGML_BACKEND_BUILD)
 #   Zephyr 쪽 기본값은 cmake/llm_ggml.cmake 의 LLM_GGML_FP_CONTRACT 다.
 FP_CONTRACT=${LLM_FP_CONTRACT:-off}
 FEAT=(-Xclang -target-feature -Xclang -i8mm "-ffp-contract=$FP_CONTRACT")
+
+# ⚠ Zephyr 쪽 컴파일 명령과 **같은 조건**으로 맞춘다. 한쪽만 달라지면
+#   "골든값과 결과가 다른 코드에서 나온" 상태가 되고 그 사실이 드러나지 않는다.
+#
+#   -fno-strict-aliasing : Zephyr 가 준다 (compile_commands.json 으로 확인).
+#   -U__ARM_NEON__       : clang 은 __ARM_NEON__ 을 정의하고 aarch64 gcc 는
+#                          **하지 않는다**. 상류 ggml-cpu/simd-gemm.h:12 가
+#                          `defined(__AVX512F__) || defined(__ARM_NEON__)` 로
+#                          타일 크기를 고르므로, 그대로 두면 호스트는 4x4,
+#                          보드는 2x2 경로를 돈다. 지금 그래프는 flash-attn 을
+#                          쓰지 않아 드러나지 않지만 L6 에서 터진다.
+#                          (__ARM_NEON 은 양쪽 다 정의되므로 건드리지 않는다 —
+#                           arm_neon.h 포함이 그것에 걸려 있다.)
+FEAT+=(-fno-strict-aliasing -U__ARM_NEON__)
 
 echo "── $APP : ggml ${#SRCS[@]}개 + $(basename "$GRAPH") + $(basename "$TOOL")"
 # ⚠ 확장자별로 따로 컴파일한다. c++ 드라이버에 .c 를 섞으면 -x none 으로도
@@ -88,6 +117,9 @@ for s in "$TOOL" "$GRAPH" "${SRCS[@]}"; do
 	OBJS+=("$o")
 done
 c++ -O2 -o "$WORK/golden" "${OBJS[@]}" -lm
-"$WORK/golden" > "$OUT"
+# ⚠ $OUT 에 바로 쓰면 생성기가 중간에 죽을 때 **커밋된 헤더가 잘린 채 남는다.**
+#   임시 파일에 쓰고 성공했을 때만 옮긴다.
+"$WORK/golden" > "$WORK/out.h"
+mv "$WORK/out.h" "$OUT"
 echo "── 골든 헤더: $OUT  ($(grep -c . "$OUT") 줄)"
 echo "   llama.cpp: $(git -C "$LLAMA" rev-parse --short HEAD)"

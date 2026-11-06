@@ -50,6 +50,18 @@ int main(void)
 	printf("#define L5B_G_GATE_CRC  0x%08xu\n", r.gate_crc);
 	printf("#define L5B_G_GATED_CRC 0x%08xu\n", r.gated_crc);
 	printf("#define L5B_G_OUT_CRC   0x%08xu\n\n", r.out_crc);
+	/* 전체 요약은 비트 패턴으로 적는다. 순서는 l5b_graph.h 의 enum 과 맞는다. */
+	printf("static const uint32_t l5b_g_full_sum[L5B_FULL_N] = {\n");
+	for (int i = 0; i < L5B_FULL_N; i++) {
+		uint32_t b; memcpy(&b, &r.full[i].sum, 4);
+		printf("\t0x%08xu,\n", b);
+	}
+	printf("};\nstatic const uint32_t l5b_g_full_abs[L5B_FULL_N] = {\n");
+	for (int i = 0; i < L5B_FULL_N; i++) {
+		uint32_t b; memcpy(&b, &r.full[i].abssum, 4);
+		printf("\t0x%08xu,\n", b);
+	}
+	printf("};\n\n");
 	dump_ne("l5b_g_ne_q_view", r.ne_q_view);
 	dump_ne("l5b_g_ne_gate", r.ne_gate);
 	dump_ne("l5b_g_ne_kq", r.ne_kq);

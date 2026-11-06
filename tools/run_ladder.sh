@@ -12,21 +12,28 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(dirname "$HERE")"
 GGUF="${L2_GGUF:-/tmp/claude-501/l2_test.gguf}"
 
+# ⚠ 아래에서 앱을 **상대경로**로 넘기므로 저장소 루트에서 돌아야 한다.
+#   없으면 다른 디렉터리에서 실행할 때 전부 "빌드 실패" 로 나와 진단이 틀린다.
+cd "$REPO"
+
 APPS=("$@")
 if [[ ${#APPS[@]} -eq 0 ]]; then
 	APPS=(llm_l0 llm_l1 llm_l2 llm_l3 llm_l4 llm_l5a llm_l5b)
 fi
 
-# 블롭이 필요한 앱 (app.overlay 에 model_blob 이 있고 실제 파일을 읽는 것)
-needs_blob() { case "$1" in llm_l2|llm_l3) return 0 ;; *) return 1 ;; esac; }
+# 블롭이 필요한 앱 — **표식 파일**로 판정한다. qemu_run.sh 와 같은 기준이다.
+# 하드코딩하면 새 앱(L6)이 빠져 블롭 없이 돌 수 있다.
+needs_blob() { [[ -f "$REPO/apps/$1/NEEDS_BLOB" ]]; }
 
 pass=0; failed=0; declare -a SUMMARY=()
 for app in "${APPS[@]}"; do
 	printf '\n════════ %s ════════\n' "$app"
 	if needs_blob "$app" && [[ ! -f $GGUF ]]; then
-		echo "⚠ 건너뜀 — 시험 GGUF 가 없다: $GGUF"
+		# ⚠ 건너뜀을 성공으로 세면 "전체 통과" 가 거짓이 된다. 실패로 센다.
+		echo "건너뜀 — 시험 GGUF 가 없다: $GGUF"
 		echo "   ./.venv/bin/python tools/l2_make_gguf.py"
-		SUMMARY+=("$app: 건너뜀(GGUF 없음)")
+		failed=$((failed + 1))
+		SUMMARY+=("$app: 건너뜀(GGUF 없음) — 실패로 센다")
 		continue
 	fi
 	if needs_blob "$app"; then

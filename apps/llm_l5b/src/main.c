@@ -25,6 +25,14 @@ static uint64_t rel_ppb(float got, float want)
 	float d = ab(got - want);
 	float m = ab(want);
 
+	/*
+	 * ⚠ NaN·Inf 를 먼저 걸러낸다. 그러지 않으면 **NaN 이 OK 로 통과한다** —
+	 *   NaN 비교는 `d == 0` 도 `r > 1e18` 도 거짓이고 `(uint64_t)NaN` 은 0 이라
+	 *   worst 가 0 으로 남아 "최대 0 ppb" 로 찍힌다. 커널이 NaN 을 내거나
+	 *   Inf-Inf 가 생기는 회귀가 조용히 통과한다.
+	 */
+	if (got != got || want != want) { return UINT64_MAX; }	/* NaN */
+	if (d > 1e30f) { return UINT64_MAX; }			/* Inf 또는 폭발 */
 	if (d == 0.0f) { return 0; }
 	if (m < 1e-30f) { m = 1e-30f; }
 	float r = d / m * 1e9f;
@@ -39,6 +47,20 @@ static int check(const char *name, const float *got, const uint32_t *golden, int
 	uint64_t worst = 0;
 	int wi = 0;
 
+	/*
+	 * 비트가 같으면 비교를 건너뛰므로, **양쪽이 같은 NaN 을 내면 통과한다.**
+	 * 그래서 얻은 값 자체에 비유한값이 있는지 골든과 무관하게 먼저 본다.
+	 * 층 출력에 NaN·Inf 가 나오는 것은 어떤 경우에도 실패다.
+	 */
+	int nonfinite = 0;
+
+	for (int i = 0; i < n; i++) {
+		if (got[i] != got[i] || ab(got[i]) > 1e30f) { nonfinite++; }
+	}
+	if (nonfinite) {
+		printk("FAIL — 얻은 값에 비유한값(NaN/Inf) %d개\n", nonfinite);
+		return 1;
+	}
 	printk("  %-22s %4d개 ... ", name, n);
 	for (int i = 0; i < n; i++) {
 		if (bits(got[i]) != golden[i]) {
@@ -86,6 +108,36 @@ static int check_ne(const char *name, const int64_t *got, const int64_t *g)
 }
 
 static struct l5b_results res;
+
+/*
+ * 전체 텐서 요약 비교 — 표본 밖 영역의 상한이다. CRC 불일치는 libm 1 ulp 로도
+ * 생기므로 실패로 셀 수 없고, 큰 텐서는 12~50%만 표본이다. 그 구멍을 좁힌다.
+ */
+static int check_full_all(void)
+{
+	int bad = 0;
+
+	for (int i = 0; i < L5B_FULL_N; i++) {
+		float gs, ga;
+
+		memcpy(&gs, &l5b_g_full_sum[i], 4);
+		memcpy(&ga, &l5b_g_full_abs[i], 4);
+		uint64_t rs = rel_ppb(res.full[i].sum, gs);
+		uint64_t ra = rel_ppb(res.full[i].abssum, ga);
+
+		printk("  %-22s 합 %" PRIu64 " · |합| %" PRIu64 " ppb ... ",
+		       l5b_full_names[i], rs, ra);
+		/* 합은 상쇄가 있을 수 있어 참고, |합| 을 주 판정으로 쓴다 */
+		if (ra <= TOL_PPB) {
+			printk("OK\n");
+		} else {
+			printk("FAIL — 표본 밖이 틀렸다는 뜻이다\n");
+			bad++;
+		}
+	}
+	return bad;
+}
+
 
 int main(void)
 {
@@ -171,6 +223,9 @@ int main(void)
 		      res.gated_crc, L5B_G_GATED_CRC);
 	fail += check("[15] 층 출력 (wo 투영)", res.out, l5b_g_out, L5B_OUT_SAMP,
 		      res.out_crc, L5B_G_OUT_CRC);
+
+	printk("  ── 전체 요약 (표본 밖 영역의 상한)\n");
+	fail += check_full_all();
 
 	if (fail == 0) {
 		printk("=== L5b PASS (실패 0) ===\n");

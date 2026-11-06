@@ -15,6 +15,9 @@
 #include <stdint.h>
 #include <inttypes.h>
 
+#include "ggml-backend.h"
+#include "ggml-cpu.h"
+
 #include "l4_graph.h"
 #include "l4_golden.h"
 
@@ -30,6 +33,14 @@ static uint64_t rel_ppb(float got, float want)
 	float d = fabsf_(got - want);
 	float m = fabsf_(want);
 
+	/*
+	 * ⚠ NaN·Inf 를 먼저 걸러낸다. 그러지 않으면 **NaN 이 OK 로 통과한다** —
+	 *   NaN 비교는 `d == 0` 도 `r > 1e18` 도 거짓이고 `(uint64_t)NaN` 은 0 이라
+	 *   worst 가 0 으로 남아 "최대 0 ppb" 로 찍힌다. 커널이 NaN 을 내거나
+	 *   Inf-Inf 가 생기는 회귀가 조용히 통과한다.
+	 */
+	if (got != got || want != want) { return UINT64_MAX; }	/* NaN */
+	if (d > 1e30f) { return UINT64_MAX; }			/* Inf 또는 폭발 */
 	if (d == 0.0f) { return 0; }
 	if (m < 1e-30f) { m = 1e-30f; }
 	float r = d / m * 1e9f;
@@ -44,6 +55,20 @@ static int check(const char *name, const float *got, const uint32_t *golden, int
 	uint64_t worst = 0;
 	int worst_i = 0;
 
+	/*
+	 * 비트가 같으면 비교를 건너뛰므로, **양쪽이 같은 NaN 을 내면 통과한다.**
+	 * 그래서 얻은 값 자체에 비유한값이 있는지 골든과 무관하게 먼저 본다.
+	 * 층 출력에 NaN·Inf 가 나오는 것은 어떤 경우에도 실패다.
+	 */
+	int nonfinite = 0;
+
+	for (int i = 0; i < n; i++) {
+		if (got[i] != got[i] || fabsf_(got[i]) > 1e30f) { nonfinite++; }
+	}
+	if (nonfinite) {
+		printk("FAIL — 얻은 값에 비유한값(NaN/Inf) %d개\n", nonfinite);
+		return 1;
+	}
 	printk("  %-12s %4d개 ... ", name, n);
 	for (int i = 0; i < n; i++) {
 		float want;
@@ -85,6 +110,38 @@ int main(void)
 		printk("  l4_run 실패: %d\n", rc);
 		printk("=== L4 FAIL (실패 1) ===\n");
 		return 0;
+	}
+
+	/*
+	 * [0a] **sysconf 포팅의 양성 대조.**
+	 *
+	 * ggml_backend_cpu_device_get_memory() 가 sysconf(_SC_PHYS_PAGES) 와
+	 * sysconf(_SC_PAGE_SIZE) 를 연달아 부른다. 우리 포팅이 틀리면 여기서
+	 * 멈추거나 쓰레기를 돌려준다 — 실제로 한 번 **무한 재귀**를 만들었고
+	 * L4·L5 가 이 함수를 부르지 않아 초록으로 통과했다.
+	 * 계기를 쓰지 않으면 잠복한다. 그래서 직접 부른다.
+	 */
+	printk("  [0a] sysconf 포팅 (장치 메모리 보고) ... ");
+	{
+		ggml_backend_reg_t reg = ggml_backend_cpu_reg();
+		size_t dev_free = 0, dev_total = 0;
+
+		if (!reg || ggml_backend_reg_dev_count(reg) == 0) {
+			printk("FAIL — CPU 백엔드 장치가 없다\n");
+			fail++;
+		} else {
+			ggml_backend_dev_t dev = ggml_backend_reg_dev_get(reg, 0);
+
+			ggml_backend_dev_memory(dev, &dev_free, &dev_total);
+			if (dev_total == 0 || dev_total > (size_t)1 << 40) {
+				printk("FAIL — total=%u KiB 가 말이 안 된다\n",
+				       (unsigned)(dev_total / 1024));
+				fail++;
+			} else {
+				printk("OK — total %u KiB (멈추지 않았다)\n",
+				       (unsigned)(dev_total / 1024));
+			}
+		}
 	}
 
 	/*

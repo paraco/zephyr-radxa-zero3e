@@ -17,6 +17,10 @@
 #define L5_HOST_I8MM    0
 #define L5_G_CONV_CRC   0xb799e3e4u
 #define L5_G_STATE_CRC  0xc2cb3ec0u
+#define L5_G_CONV_SUM   0xc46fdbdau
+#define L5_G_CONV_ABS   0x4576129cu
+#define L5_G_STATE_SUM  0xc3b9a41du
+#define L5_G_STATE_ABS  0x495d28abu
 
 static const int64_t l5_g_ne_q_perm[4] = { 128, 1, 16, 1 };
 static const int64_t l5_g_ne_sk[4] = { 1, 128, 16, 1 };

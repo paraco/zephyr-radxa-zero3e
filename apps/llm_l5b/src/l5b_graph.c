@@ -225,6 +225,15 @@ int l5b_run(struct l5b_results *out)
 	sample(out->out, (const float *)o->data, L5B_OUT_SAMP, L5B_OUT_STRIDE);
 	out->out_crc = crc32_of(o->data, (size_t)L5B_OUT_N * 4);
 
+	out->full[L5B_FULL_QNORM] = llm_fullsum_of(pqn, L5B_Q_N);
+	out->full[L5B_FULL_KNORM] = llm_fullsum_of((const float *)kn_c->data, L5B_K_N);
+	out->full[L5B_FULL_QROPE] = llm_fullsum_of(pqr, L5B_Q_N);
+	out->full[L5B_FULL_KROPE] = llm_fullsum_of((const float *)kr_c->data, L5B_K_N);
+	out->full[L5B_FULL_ATT]   = llm_fullsum_of((const float *)att->data, L5B_ATT_N);
+	out->full[L5B_FULL_GATE]  = llm_fullsum_of((const float *)gate2->data, L5B_ATT_N);
+	out->full[L5B_FULL_GATED] = llm_fullsum_of((const float *)gated->data, L5B_ATT_N);
+	out->full[L5B_FULL_OUT]   = llm_fullsum_of((const float *)o->data, L5B_OUT_N);
+
 	/*
 	 * ── 부분 RoPE 증거.
 	 * RoPE 전후가 달라진 자리를 **모든 토큰·헤드에 걸쳐** 센다.

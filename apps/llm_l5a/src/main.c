@@ -27,6 +27,14 @@ static uint64_t rel_ppb(float got, float want)
 	float d = ab(got - want);
 	float m = ab(want);
 
+	/*
+	 * ⚠ NaN·Inf 를 먼저 걸러낸다. 그러지 않으면 **NaN 이 OK 로 통과한다** —
+	 *   NaN 비교는 `d == 0` 도 `r > 1e18` 도 거짓이고 `(uint64_t)NaN` 은 0 이라
+	 *   worst 가 0 으로 남아 "최대 0 ppb" 로 찍힌다. 커널이 NaN 을 내거나
+	 *   Inf-Inf 가 생기는 회귀가 조용히 통과한다.
+	 */
+	if (got != got || want != want) { return UINT64_MAX; }	/* NaN */
+	if (d > 1e30f) { return UINT64_MAX; }			/* Inf 또는 폭발 */
 	if (d == 0.0f) { return 0; }
 	if (m < 1e-30f) { m = 1e-30f; }
 	float r = d / m * 1e9f;
@@ -41,6 +49,20 @@ static int check(const char *name, const float *got, const uint32_t *golden, int
 	uint64_t worst = 0;
 	int wi = 0;
 
+	/*
+	 * 비트가 같으면 비교를 건너뛰므로, **양쪽이 같은 NaN 을 내면 통과한다.**
+	 * 그래서 얻은 값 자체에 비유한값이 있는지 골든과 무관하게 먼저 본다.
+	 * 층 출력에 NaN·Inf 가 나오는 것은 어떤 경우에도 실패다.
+	 */
+	int nonfinite = 0;
+
+	for (int i = 0; i < n; i++) {
+		if (got[i] != got[i] || ab(got[i]) > 1e30f) { nonfinite++; }
+	}
+	if (nonfinite) {
+		printk("FAIL — 얻은 값에 비유한값(NaN/Inf) %d개\n", nonfinite);
+		return 1;
+	}
 	printk("  %-28s %5d개 ... ", name, n);
 	for (int i = 0; i < n; i++) {
 		if (bits(got[i]) != golden[i]) {
@@ -99,6 +121,35 @@ static int check_ne(const char *name, const int64_t *got, const int64_t *golden)
 	return 0;
 }
 
+/*
+ * 전체 텐서 요약 비교 — **표본 밖 영역의 상한**이다.
+ *
+ * CRC32 는 차이를 감지하지만 허용 오차가 없어 libm 1 ulp 로도 달라진다.
+ * 그래서 CRC 불일치는 실패로 셀 수 없고, 결과적으로 표본에 안 걸리는 영역이
+ * 틀려도 통과한다 — 순환 상태는 262,144개 중 1,024개(0.4%)만 표본이다.
+ * 합과 절댓값 합을 허용 오차로 비교해 그 구멍을 좁힌다.
+ */
+static int check_full(const char *name, struct llm_fullsum got,
+		      uint32_t g_sum_bits, uint32_t g_abs_bits)
+{
+	float gs, ga;
+
+	memcpy(&gs, &g_sum_bits, 4);
+	memcpy(&ga, &g_abs_bits, 4);
+
+	uint64_t rs = rel_ppb(got.sum, gs);
+	uint64_t ra = rel_ppb(got.abssum, ga);
+
+	printk("  %-28s 합 %" PRIu64 " ppb · |합| %" PRIu64 " ppb ... ", name, rs, ra);
+	/* 합은 상쇄가 있을 수 있으므로 |합| 을 주 판정으로, 합은 참고로 둔다 */
+	if (ra <= TOL_PPB) {
+		printk("OK\n");
+		return 0;
+	}
+	printk("FAIL — |합| 이 허용 오차를 넘었다 (표본 밖이 틀렸다는 뜻이다)\n");
+	return 1;
+}
+
 static struct l5_results res;
 
 int main(void)
@@ -139,8 +190,10 @@ int main(void)
 	if (res.conv_crc == L5_G_CONV_CRC) {
 		printk("OK — 전체가 비트 일치\n");
 	} else {
-		printk("다름 (골든 0x%08x) — 표본 비교로 판정한다\n", L5_G_CONV_CRC);
+		printk("다름 (골든 0x%08x) — 아래 전체 요약으로 상한을 본다\n", L5_G_CONV_CRC);
 	}
+	fail += check_full("[6a] ssm_conv 전체 요약", res.conv_full,
+			   L5_G_CONV_SUM, L5_G_CONV_ABS);
 
 	printk("  ── L5a-2 감쇠·게이트 계수\n");
 	fail += check("[7] beta = sigmoid(..)", res.beta, l5_g_beta, L5_H);
@@ -154,8 +207,10 @@ int main(void)
 	if (res.state_crc == L5_G_STATE_CRC) {
 		printk("OK — 262,144개 전부 비트 일치\n");
 	} else {
-		printk("다름 (골든 0x%08x) — 표본 비교로 판정한다\n", L5_G_STATE_CRC);
+		printk("다름 (골든 0x%08x) — 아래 전체 요약으로 상한을 본다\n", L5_G_STATE_CRC);
 	}
+	fail += check_full("[12a] 상태 전체 요약", res.state_full,
+			   L5_G_STATE_SUM, L5_G_STATE_ABS);
 
 	printk("  ── L5a-4 ssm_norm + silu 게이트\n");
 	fail += check("[13] normg", res.normg, l5_g_normg, L5_O_N);

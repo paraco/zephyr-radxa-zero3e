@@ -12,6 +12,7 @@
 #define L5B_GRAPH_H
 
 #include <stdint.h>
+#include "llm_fullsum.h"
 
 #define L5B_HEAD_DIM	256
 #define L5B_N_HEAD	8
@@ -37,6 +38,17 @@
 #define L5B_OUT_STRIDE	4
 #define L5B_OUT_SAMP	(L5B_OUT_N / L5B_OUT_STRIDE)	/* 1024 */
 
+/* 전체 요약을 재는 텐서 — 순서가 골든 배열과 맞아야 한다 */
+enum {
+	L5B_FULL_QNORM = 0, L5B_FULL_KNORM, L5B_FULL_QROPE, L5B_FULL_KROPE,
+	L5B_FULL_ATT, L5B_FULL_GATE, L5B_FULL_GATED, L5B_FULL_OUT,
+	L5B_FULL_N
+};
+static const char *const l5b_full_names[L5B_FULL_N] = {
+	"Q RMSNorm", "K RMSNorm", "Q mRoPE", "K mRoPE",
+	"어텐션 출력", "게이트", "sigmoid 뒤", "층 출력",
+};
+
 struct l5b_results {
 	float    q_norm[L5B_Q_SAMP];	uint32_t q_norm_crc;
 	float    k_norm[L5B_K_SAMP];	uint32_t k_norm_crc;
@@ -57,6 +69,12 @@ struct l5b_results {
 	/* 부분 RoPE 증거 — 회전된 앞 64 과 안 건드린 뒤쪽이 구분되는가 */
 	int      rope_changed_lo;	/* [0,64) 중 RoPE 로 값이 바뀐 개수 */
 	int      rope_changed_hi;	/* [64,256) 중 바뀐 개수 — **0 이어야 한다** */
+	/*
+	 * 표본 밖 영역의 상한. CRC32 는 차이를 감지하지만 허용 오차가 없어
+	 * libm 1 ulp 로도 달라지고 실패로 셀 수 없다. 큰 텐서는 12~50%만
+	 * 표본이므로 전체 합·절댓값 합으로 묶는다. 순서는 L5B_FULL_* 와 맞춘다.
+	 */
+	struct llm_fullsum full[L5B_FULL_N];
 	int      dotprod;
 	int      i8mm;
 };

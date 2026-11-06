@@ -24,6 +24,27 @@
 #define L5B_G_GATED_CRC 0x37bb92cau
 #define L5B_G_OUT_CRC   0x6897e45fu
 
+static const uint32_t l5b_g_full_sum[L5B_FULL_N] = {
+	0xc413c5deu,
+	0x426b3e79u,
+	0xc4118b0du,
+	0x4274d9eeu,
+	0x408dee80u,
+	0xc195c28fu,
+	0xc015bcb5u,
+	0x4523fffdu,
+};
+static const uint32_t l5b_g_full_abs[L5B_FULL_N] = {
+	0x455eec58u,
+	0x445e17c4u,
+	0x455f9f82u,
+	0x445ea707u,
+	0x45450cdeu,
+	0x458082d1u,
+	0x44c341b4u,
+	0x47802978u,
+};
+
 static const int64_t l5b_g_ne_q_view[4] = { 256, 8, 4, 1 };
 static const int64_t l5b_g_ne_gate[4] = { 2048, 4, 1, 1 };
 static const int64_t l5b_g_ne_kq[4] = { 4, 4, 8, 1 };

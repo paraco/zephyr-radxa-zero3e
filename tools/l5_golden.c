@@ -46,7 +46,15 @@ int main(void)
 	printf(" */\n#ifndef L5_GOLDEN_H\n#define L5_GOLDEN_H\n\n#include <stdint.h>\n\n");
 	printf("#define L5_HOST_DOTPROD %d\n#define L5_HOST_I8MM    %d\n", r.dotprod, r.i8mm);
 	printf("#define L5_G_CONV_CRC   0x%08xu\n", r.conv_crc);
-	printf("#define L5_G_STATE_CRC  0x%08xu\n\n", r.state_crc);
+	printf("#define L5_G_STATE_CRC  0x%08xu\n", r.state_crc);
+	/* 전체 요약은 비트 패턴으로 적는다 — 10진수로는 비교가 느슨해진다 */
+	{
+		uint32_t b;
+		memcpy(&b, &r.conv_full.sum, 4);    printf("#define L5_G_CONV_SUM   0x%08xu\n", b);
+		memcpy(&b, &r.conv_full.abssum, 4); printf("#define L5_G_CONV_ABS   0x%08xu\n", b);
+		memcpy(&b, &r.state_full.sum, 4);   printf("#define L5_G_STATE_SUM  0x%08xu\n", b);
+		memcpy(&b, &r.state_full.abssum, 4);printf("#define L5_G_STATE_ABS  0x%08xu\n\n", b);
+	}
 	dump_ne("l5_g_ne_q_perm", r.ne_q_perm);
 	dump_ne("l5_g_ne_sk", r.ne_sk);
 	dump_ne("l5_g_ne_kd", r.ne_kd);

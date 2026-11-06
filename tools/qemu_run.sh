@@ -45,15 +45,26 @@ if [[ -n "${L_BLOB:-}" ]]; then
 	[[ -f $L_BLOB ]] || { echo "L_BLOB 파일 없음: $L_BLOB" >&2; exit 3; }
 	QEMU_ARGS+=(-device "loader,file=$L_BLOB,addr=0x60000000,force-raw=on")
 	echo "── 블롭: $L_BLOB → 0x60000000"
-elif [[ -f "$APP/app.overlay" ]] && grep -q "model_blob" "$APP/app.overlay"; then
-	# 이 앱은 모델 창을 선언한다. 블롭 없이 돌리면 전부 0 을 읽는데, 역양자화
-	# 결과가 ±0.0 이라 그럴듯해 보여 "포팅이 틀렸다" 로 오진한다 — 실제로 겪었다.
-	echo "⚠ $NAME 은 model_blob 창을 선언하는데 L_BLOB 이 없다 — 전부 0 을 읽는다" >&2
+elif [[ -f "$APP/NEEDS_BLOB" ]]; then
+	# 이 앱은 블롭을 **읽는다**. 없이 돌리면 전부 0 을 읽는데 역양자화 결과가
+	# ±0.0 이라 그럴듯해 보여 "포팅이 틀렸다" 로 오진한다 — 실제로 겪었다.
+	# 그래서 경고가 아니라 **실패**다.
+	#
+	# ⚠ 판정 기준이 app.overlay 의 model_blob 선언이 아니라 **표식 파일**이다.
+	#   L1·L4·L5a·L5b 는 창을 선언하지만 읽지 않으므로 overlay 로 판정하면
+	#   매번 거짓 경고가 뜬다. 오경보가 반복되면 진짜 경고도 묻힌다.
+	echo "$NAME 은 블롭을 읽는데 L_BLOB 이 없다 — 전부 0 을 읽게 된다" >&2
 	echo "   L_BLOB=<파일> $0 $APP" >&2
+	exit 3
 fi
 
 echo "── 실행 (제한 ${LIMIT}s)"
 # macOS 에 timeout 이 없을 수 있다 — 직접 감시한다.
+# ⚠ trap 이 없으면 Ctrl-C 로 스크립트가 죽어도 비동기 QEMU 가 **살아남는다**
+#   (SIGINT 가 무시된 채로 띄워진다). 어떤 경로로 끝나도 정리한다.
+cleanup() { [[ -n "${PID:-}" ]] && kill -9 "$PID" 2>/dev/null; }
+trap cleanup EXIT INT TERM
+
 qemu-system-aarch64 "${QEMU_ARGS[@]}" >"$LOG" 2>&1 &
 PID=$!
 for ((i = 0; i < LIMIT; i++)); do

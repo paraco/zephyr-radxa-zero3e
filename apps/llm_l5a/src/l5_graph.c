@@ -218,6 +218,7 @@ int l5_run(struct l5_results *out)
 		out->conv[i] = cp[(size_t)i * L5_CONV_STRIDE];
 	}
 	out->conv_crc = crc32_of(cp, (size_t)L5_CONV_DIM * sizeof(float));
+	out->conv_full = llm_fullsum_of(cp, L5_CONV_DIM);
 
 	memcpy(out->beta, beta->data, sizeof(out->beta));
 	memcpy(out->a_softplus, a_sp->data, sizeof(out->a_softplus));
@@ -231,6 +232,7 @@ int l5_run(struct l5_results *out)
 		out->state[i] = sp[(size_t)i * L5_STATE_STRIDE];
 	}
 	out->state_crc = crc32_of(sp, (size_t)L5_STATE_N * sizeof(float));
+	out->state_full = llm_fullsum_of(sp, L5_STATE_N);
 
 	ggml_free(ctx);
 	return 0;
