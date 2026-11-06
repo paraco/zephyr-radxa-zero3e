@@ -1862,3 +1862,55 @@ USB main 빌드 크기가 이전과 같은 167264 B 여서 설정 누락을 의�
 `nm` 으로 우리 심볼 7개(`moru_uds`·`moru_add_speed`·`cdc_acm_1` 등)와
 자동 경로 심볼 0개를 확인했다. **오늘 세 번째 "크기가 같아서 의심했다가
 심볼로 확인" 사례다** — 정렬 패딩이 흡수한다.
+
+## ⚠ OTA 2단계 — 수신이 0 바이트 (미해결, 2026-11-06)
+
+빌드 `7d057f7`. `moru ota begin 171360 b277da07` 뒤 호스트에서 부어 넣었으나
+**`moru ota status` 가 계속 `0 / 171360`** 이다. 호스트의 `write` 도 블록된다.
+
+### 내가 가를 수 없게 만들었다
+
+수정 때 **두 변수를 동시에** 바꿨다:
+1. `USBD_CDC_ACM_LOG_LEVEL` INF → WRN (수신 바이트 hexdump 제거)
+2. 전용 폴링 스레드(`uart_poll_in`) → 콜백(`uart_fifo_read`) 전환
+
+그래서 0 바이트의 원인이 ②인지, 아니면 ① 전에도 0 이었는지(그때 `status` 를
+확인하지 않았다) **가릴 수 없다.** 규칙 2("묶어야 할 때는 실패 시 어떻게
+가를지 먼저 적는다")를 어긴 결과다.
+
+### 기각된 가설 — EP 부족
+
+`ep1 XferComplete with no queued buffer` 가 반복돼 "두 CDC 가 물리 EP 0~9 를
+쓰는데 `num-bidir-endpoints=8` 이라 부족하다" 고 의심했다. **코드로 기각.**
+`udc_dwc3.c:83` 이 `DWC3_NUM_PHYS_EPS = 2 * num_bidir_endpoints` = **16** 이다.
+phys 9 는 범위 안이다.
+
+그리고 그 로그의 `ep1` 은 **물리 EP 1 = EP0 IN**, 즉 제어 엔드포인트다
+(`udc_dwc3.c:1451` 근처가 EP0 경로). 데이터 경로가 아니므로, 내가 진단하려고
+포트를 반복해서 열고 닫은 부작용일 가능성이 크다.
+
+### 코드로 확인된 제약 (다음 조사의 전제)
+
+| 함수 | 제약 |
+|---|---|
+| `cdc_acm_fifo_read`(:807) | `check_wq_ctx()` 아니면 `__ASSERT_NO_MSG(false)` |
+| `cdc_acm_irq_rx_ready`(:847) | 같음 |
+| `cdc_acm_irq_update`(:880) | 같음. `IRQ_RX_ENABLED` **와** 링버퍼 비어있지 않음을 함께 봐야 `rx_ready` 가 선다 |
+| `cdc_acm_poll_in`(:980) | 문맥 제약 **없음**. 단 1바이트마다 `rx_fifo_work` 제출 |
+| `cdc_acm_irq_rx_enable`(:755) | `IRQ_RX_ENABLED` 설정 + `rx_fifo_work` 제출 |
+| `usbd_cdc_acm_enable`(:355) | 클래스 활성화 시 `IRQ_RX_ENABLED` 면 `rx_enable` 재호출. `cb == NULL` 이면 `rx_fifo_work` 를 제출(poll_in 용) |
+| `usbd_cdc_acm.c:315` | `LOG_HEXDUMP_INF(buf->data, buf->len, "")` — **수신 바이트를 전부 hexdump** |
+
+마지막 항목은 확실한 결함이고 WRN 으로 내린 것은 유지할 가치가 있다.
+Zephyr 공식 `overlay-usb.conf` 도 `USBD_CDC_ACM_LOG_LEVEL_OFF=y` 를 쓴다.
+
+### 다음 수 — 변수를 하나로
+
+**`poll_in` 스레드로 되돌리고 로그는 WRN 으로 둔다.** 그러면 바뀐 것이
+로그 하나이므로 ①의 효과만 본다.
+- 받으면 → hexdump 가 병목이었고 `poll_in` 으로 충분하다
+- 0 이면 → 수신 경로 자체가 막혀 있다. 그때 계측(콜백 호출 횟수·
+  `fifo_read` 반환값)을 `moru ota status` 에 넣어 어디서 끊기는지 본다
+
+⚠ 진단하려고 호스트에서 포트를 반복해서 열고 닫지 않는다. 제어 전송이
+폭주해 로그가 오염되고 원인 판단을 흐린다 (위 `ep1` 경고가 그 결과로 보인다).
