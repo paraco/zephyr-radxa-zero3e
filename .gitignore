@@ -22,3 +22,4 @@ build/
 trm-download/
 sdcard/zephyr-diag-uart.bin
 sdcard/zephyr-usbmain.bin
+sdcard/boot.scr.known-good

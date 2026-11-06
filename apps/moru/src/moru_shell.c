@@ -116,7 +116,7 @@ static int cmd_moru_info(const struct shell *sh, size_t argc, char **argv)
 	shell_print(sh, "kernel heap|uptime|cycles, device list, hwinfo devid,");
 	shell_print(sh, "log status, app version");
 	shell_print(sh, "재부팅은 moru reboot (먼저 moru reboot probe)");
-	shell_print(sh, "OTA 는 moru ota begin|status|verify|abort (+ mark|check)");
+	shell_print(sh, "OTA 는 moru ota begin|status|verify|apply|abort");
 
 	return 0;
 }
@@ -374,6 +374,7 @@ static struct {
 	uint32_t	cb_bytes;	/* fifo_read 가 돌려준 바이트 합 */
 	uint32_t	cb_empty;	/* rx_ready 가 0 이어서 그냥 끝난 횟수 */
 	bool		use_poll;	/* true 면 poll_in 스레드 경로 */
+	bool		verified;	/* verify 가 CRC 일치를 확인했다 */
 } moru_ota;
 
 static void moru_ota_rx_cb(const struct device *dev, void *user_data)
@@ -559,6 +560,7 @@ static int cmd_moru_ota_begin(const struct shell *sh, size_t argc, char **argv)
 	moru_ota.cb_calls = 0;
 	moru_ota.cb_bytes = 0;
 	moru_ota.cb_empty = 0;
+	moru_ota.verified = false;
 	moru_ota.use_poll = (argc >= 4) && (strcmp(argv[3], "poll") == 0);
 
 	{
@@ -663,10 +665,76 @@ static int cmd_moru_ota_verify(const struct shell *sh, size_t argc, char **argv)
 	sys_write32(0U, moru_ota.base + MORU_OTA_OFF_PATTERN);
 	moru_ota_flush(moru_ota.base, MORU_OTA_HDR_SIZE + moru_ota.expect);
 
+	moru_ota.verified = true;
+
 	shell_print(sh, "✅ 일치한다. 헤더(크기·CRC)를 쓰고 캐시를 밀어냈다.");
-	shell_print(sh, "   3단계(boot.cmd 의 itest+fatwrite)가 들어가면");
-	shell_print(sh, "   'moru ota apply' 로 적용한다 — 지금은 경로가 없다.");
+	shell_print(sh, "   이제 'moru ota apply' 로 적용할 수 있다.");
 	return 0;
+}
+
+/*
+ * ── OTA 적용 ─────────────────────────────────────────────────────────
+ *
+ * 매직 "MORU" 를 쓰고 재부팅한다. boot.scr 이 그것을 보고 fatwrite 로
+ * SD 의 zephyr.bin 을 교체한다 (sdcard/boot.cmd 의 OTA 블록).
+ *
+ * ⚠ verify 를 통과해야만 매직을 쓴다. U-Boot 는 CRC 를 검증할 수 없다 —
+ *   crc32 결과를 변수로 받을 setexpr 가 없다(실측). 그래서 **여기가 유일한
+ *   무결성 관문**이고, 반쪽 이미지가 SD 에 쓰이는 것을 막는 유일한 수단이다.
+ *
+ * ⚠ 이미지 뒤를 256 KiB 까지 0 으로 채운다. boot.scr 이 고정 256 KiB 를
+ *   쓰기 때문이다(크기를 변수로 읽을 수 없다). 0 을 채우면 쓰레기가 아니라
+ *   0 이 SD 에 들어가고, 그 영역은 Zephyr 의 .bss 라 arch_bss_zero() 가
+ *   어차피 지운다.
+ *
+ * ⚠ 벽돌이 되지 않는다. boot.scr 이 먼저 기존 zephyr.bin 을
+ *   zephyr.bin.old 로 백업하고, fatwrite 가 실패하면 기존 것을 그대로
+ *   부팅한다. 매직이 틀리면 OTA 블록 자체가 건너뛰어진다.
+ */
+static int cmd_moru_ota_apply(const struct shell *sh, size_t argc, char **argv)
+{
+	uint32_t pad;
+
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+
+	if (moru_ota.base == 0 || moru_ota.expect == 0U) {
+		shell_error(sh, "받은 것이 없다.");
+		return -EINVAL;
+	}
+	if (!moru_ota.verified) {
+		shell_error(sh, "'moru ota verify' 를 먼저 통과해야 한다.");
+		shell_error(sh, "U-Boot 는 CRC 를 검증할 수 없으므로 여기가 유일한");
+		shell_error(sh, "무결성 관문이다 — 건너뛰면 반쪽 이미지가 SD 에 쓰인다.");
+		return -EPERM;
+	}
+
+	/* 이미지 뒤를 0 으로 — boot.scr 이 고정 256 KiB 를 쓴다 */
+	pad = MORU_OTA_MAX_SIZE - moru_ota.expect;
+	shell_print(sh, "뒤쪽 %u 바이트를 0 으로 채운다 (고정 256 KiB 쓰기용) ...",
+		    pad);
+	(void)memset((void *)(moru_ota.base + MORU_OTA_HDR_SIZE + moru_ota.expect),
+		     0, pad);
+
+	/* 매직을 마지막에 쓴다 — 그 전에 전원이 끊겨도 적용되지 않는다 */
+	sys_write32(MORU_OTA_MAGIC, moru_ota.base + MORU_OTA_OFF_MAGIC);
+	moru_ota_flush(moru_ota.base, MORU_OTA_HDR_SIZE + MORU_OTA_MAX_SIZE);
+
+	shell_print(sh, "매직 MORU 를 썼다. 재부팅하면 boot.scr 이 적용한다:");
+	shell_print(sh, "  zephyr.bin -> zephyr.bin.old 백업 후 교체");
+	shell_print(sh, "⚠ USB 가 끊기므로 이 셸도 끊긴다. 재부팅 뒤 'moru info'");
+	shell_print(sh, "  의 build 해시가 바뀌었으면 성공이다.");
+
+	log_panic();
+	k_msleep(50);
+
+	{
+		struct arm_smccc_res res = { 0 };
+
+		arm_smccc_smc(MORU_PSCI_SYSTEM_RESET, 0, 0, 0, 0, 0, 0, 0, &res);
+		shell_error(sh, "재부팅 실패 — SMC 가 돌아왔다 (a0=0x%08lx).", res.a0);
+	}
+	return -EIO;
 }
 
 static int cmd_moru_ota_abort(const struct shell *sh, size_t argc, char **argv)
@@ -728,6 +796,9 @@ SHELL_STATIC_SUBCMD_SET_CREATE(moru_ota_subcmds,
 	SHELL_CMD_ARG(status, NULL, "수신 진행 상황", cmd_moru_ota_status, 1, 0),
 	SHELL_CMD_ARG(verify, NULL, "받은 것의 CRC32 를 검사한다",
 		      cmd_moru_ota_verify, 1, 0),
+	SHELL_CMD_ARG(apply, NULL,
+		      "적용: 매직을 쓰고 재부팅한다 (verify 통과 필요)",
+		      cmd_moru_ota_apply, 1, 0),
 	SHELL_CMD_ARG(abort, NULL, "수신 취소 + 매직 지우기",
 		      cmd_moru_ota_abort, 1, 0),
 	SHELL_CMD_ARG(mark, NULL, "DRAM 보존 확인 표시 (MRK0, 재부팅 전)",

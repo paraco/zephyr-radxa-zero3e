@@ -21,8 +21,53 @@
 setenv zaddr 0x40000000
 setenv zentry 0x40001084
 
+# ── OTA (2026-11-06) ──────────────────────────────────────────────────
+#
+# Zephyr 가 USB 로 받은 새 이미지를 0x50000000 에 쌓고 매직 "MORU" 를 쓴 뒤
+# 재부팅한다 (moru ota begin -> verify -> apply). 여기서 그것을 SD 에 쓴다.
+#
+#   헤더  [0] 매직 0x4d4f5255 "MORU" · [4] 크기 · [8] CRC32 · [12] 0
+#   본체  [16] 부터 — Zephyr 가 256 KiB 까지 0 으로 채워 둔다
+#
+# ⚠ 고정 256 KiB 를 쓴다. U-Boot 에 setexpr 가 없어 헤더의 크기를 변수로
+#   읽을 수 없기 때문이다(실측 확인). 그래서 Zephyr 쪽 apply 가 이미지
+#   뒤를 0 으로 채운다 — 쓰레기가 아니라 0 이 들어가고, 그 영역은 Zephyr
+#   의 .bss 라 arch_bss_zero() 가 어차피 지운다.
+#
+# ⚠ CRC 검증은 Zephyr 의 moru ota verify 가 한다. U-Boot 의 crc32 는 결과를
+#   변수로 받을 수 없어(setexpr 없음) 여기서 비교할 수 없다. apply 는
+#   verify 를 통과한 뒤에만 매직을 쓰므로 그것이 보호다.
+#
+# ⚠ 폴백: 이 블록이 무엇을 실패해도 아래 평소 적재 경로가 그대로 돈다.
+#   fatwrite 가 실패하면 기존 zephyr.bin 이 손상되지 않고 남는다.
+setenv ota_addr 0x50000000
+setenv ota_body 0x50000010
+setenv ota_magic 0x4d4f5255
+
 echo ""
 echo "=== PiZZa Zephyr loader ==="
+
+if itest.l *${ota_addr} -eq ${ota_magic}; then
+	echo "=== OTA image in RAM at ${ota_addr} ==="
+
+	# 지금 것을 .old 로 백업한다 (롤백용)
+	if fatload ${devtype} ${devnum}:${distro_bootpart} ${zaddr} zephyr.bin; then
+		if fatwrite ${devtype} ${devnum}:${distro_bootpart} ${zaddr} zephyr.bin.old ${filesize}; then
+			echo "  backup  zephyr.bin -> zephyr.bin.old (${filesize})"
+		else
+			echo "  ⚠ backup 실패 — 그래도 적용은 계속한다"
+		fi
+	fi
+
+	if fatwrite ${devtype} ${devnum}:${distro_bootpart} ${ota_body} zephyr.bin 0x40000; then
+		echo "  applied zephyr.bin (256 KiB fixed)"
+		# 매직을 지워 다음 부팅에 다시 적용되지 않게 한다
+		mw.l ${ota_addr} 0 1
+		echo "  magic cleared"
+	else
+		echo "  ⚠ fatwrite 실패 — 기존 zephyr.bin 을 그대로 쓴다"
+	fi
+fi
 
 if fatload ${devtype} ${devnum}:${distro_bootpart} ${zaddr} zephyr.bin; then
 	echo "loaded from ${devtype} ${devnum}:${distro_bootpart}, jumping to ${zentry}"
