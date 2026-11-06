@@ -2239,3 +2239,87 @@ Linux dwc3 도 `dwc3_gadget_conndone_interrupt` 에서 속도를 확정한다.
 → `tools/ota_test.py` 의 `shell_cmd()` 가 이제 개행으로 프롬프트를 깨우고
    짧게 비운 뒤 명령을 보낸다. 규칙 6 에 "명령을 보냈다 → 실행됐다" 를
    함정으로 추가했다.
+
+## ✅ 로그 잘림 해결 — 두 단계로 버려지고 있었다 (2026-11-06)
+
+빌드 `e89b1f3`. **배너 첫 줄부터 마지막 EP 설정까지 60줄이 온전히 나온다
+(드롭 0).**
+
+### 증상과 오진
+
+터미널을 열면 부팅 로그가 쏟아지다 **매번 같은 지점에서 끊겼다**
+(`ep 0x81 mps=16` 까지). 그런데 `shell stats show` 는 `Lost logs: 0` 이었다.
+그래서 "버퍼 넘침이 아니다" 로 보고 원인을 찾지 못한 채 하루를 보냈다 —
+그 사이 EP 설정·mps·속도를 로그로 확인할 수 없어 진단이 계속 막혔다.
+
+**두 숫자가 다른 것을 센다.** `Lost logs` 는 셸 로그 백엔드의 큐 드롭만
+세고, 그 아래 CDC 단계의 버림은 집계하지 않는다.
+
+### 원인 ① CDC `poll_out` 이 조용히 버린다
+
+`usbd_cdc_acm.c:1014`:
+
+```c
+if (k_is_in_isr() || !data->flow_ctrl) {
+	LOG_WRN_ONCE("Ring buffer full, discard data");
+	break;      /* 버린다 */
+}
+```
+
+`flow_ctrl` 은 DT `hw-flow-control` 에서 오고 우리 노드엔 없으므로 false 다.
+즉 **터미널을 열기 전 생성된 로그가 CDC 링버퍼를 채우고 버려진다.**
+
+**해결:** `CONFIG_SHELL_BACKEND_SERIAL_CHECK_DTR` — DTR 이 올 때까지 TX 를
+막아 버리지 않고 기다린다. 그것이 **인터럽트 모드 전용**이므로
+(`Kconfig.backends:148`) 셸 백엔드를 `API_INTERRUPT_DRIVEN` 으로 바꿨다.
+
+폴링을 쓴 원래 이유(uart2 의 GIC 트리거 타입 불확실)는 **셸이 CDC 로
+옮겨간 뒤 사라졌다** — CDC 의 인터럽트는 USB 컨트롤러(SPI 169, 라이브 DT
+검증)가 낸다. 진단 빌드는 셸이 UART2 라 그 이유가 살아 있으므로
+`apps/moru/diag-uart.conf` 로 폴링을 되돌리고, `build.sh` 가
+`<오버레이>.conf` 를 자동으로 함께 적용한다.
+**진단 수단이 진단 대상이 되면 안 된다.**
+
+### 원인 ② 셸 로그 백엔드의 큐 (기본 512 B)
+
+`CHECK_DTR` 을 켜니 로그가 EP 6개까지 나왔지만 `--- 27 messages dropped ---`
+가 남았다. CHECK_DTR 이 **버림을 집계되게** 만든 것이고, 이제 드롭되는
+곳은 셸 로그 백엔드의 큐였다.
+
+```conf
+CONFIG_SHELL_BACKEND_SERIAL_LOG_MESSAGE_QUEUE_SIZE=8192     # 512
+CONFIG_SHELL_BACKEND_SERIAL_LOG_MESSAGE_QUEUE_TIMEOUT=1000  # 100 ms
+```
+
+타임아웃을 늘리면 로그를 넣는 쪽이 더 기다려 준다 — deferred 모드라
+호출자를 막지 않고, 부팅 중 몇백 ms 지연은 로그를 잃는 것보다 낫다.
+계획(보정 7)에 적어 둔 값이다.
+
+### 덤으로 로그에서 직접 확인된 것
+
+```
+usbd_core: Actual device speed 2                    ← HS (이전엔 1=FS)
+ep 0x81 (phys 3) type=3 mps=16    ep 0x83 (phys 7) type=3 mps=16
+ep 0x82 (phys 5) type=2 mps=512   ep 0x84 (phys 9) type=2 mps=512
+ep 0x01 (phys 2) type=2 mps=512   ep 0x02 (phys 4) type=2 mps=512
+DALEPENA 0x000002bf
+```
+
+물리 EP **3,5,2,7,9,4** — OTA 1단계에서 계산한 것과 정확히 일치한다
+(phys 9 포함). 그때 "EP 부족" 을 의심했지만
+`DWC3_NUM_PHYS_EPS = 2 × 8 = 16` 이라 범위 안이었고, 이제 로그로도 확인된다.
+
+### OTA 전송 속도
+
+| 구성 | 속도 |
+|---|---|
+| mps 64(FS) · 바이트 루프 | 약 290~420 KB/s, 청크 4096 은 **0 바이트** |
+| mps 512(HS) · 바이트 루프 | 420 KB/s |
+| mps 512(HS) · `memcpy` | **472 KB/s (175 KB → 0.37초)** |
+
+청크 크기를 64~16384 로 바꿔도 수렴했다 — 병목이 호스트가 아니라 수신
+콜백의 바이트 루프였다. `memcpy` 로 12 % 개선. 콜백 호출이 514회로 같아
+더 파면 이득이 있겠지만 **0.37초면 개발 왕복에서 무시할 수 있어** 멈췄다.
+
+부수 사실: 이전에 청크 4096 이 0 바이트였던 것은 mps 가 64 였기 때문이다.
+mps 512 가 되니 커널이 큰 쓰기를 쪼개 내보낸다 — HS 수정의 부수 효과다.

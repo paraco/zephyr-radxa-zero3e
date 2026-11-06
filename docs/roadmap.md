@@ -217,6 +217,29 @@ OTA 남은 작업:
 - **미지수 하나: 재부팅 뒤 DRAM 보존.** `moru ota mark` → `moru reboot`
   → `moru ota check` 로 **실기 1회**에 가린다 (`moru reboot` 시험과 같은 왕복)
 
+## ✅ 2026-11-06 저녁에 추가로 끝난 것
+
+| | 결과 |
+|---|---|
+| **HS 속도 확정 시점** | `UDC_EVT_RESET` 을 `CONNECTION_DONE` 으로 — 벌크 mps 64 → **512** |
+| **진단에 EP mps 추가** | 로그가 잘려 확인할 수 없던 것을 `moru usb` 가 직접 읽는다 |
+| **OTA 수신 `memcpy`** | 472 KB/s (175 KB → 0.37초). 바이트 루프가 병목이었다 |
+| **로그 잘림** | 두 단계(CDC `poll_out` 버림 + 셸 로그 큐)에서 버려지고 있었다. **드롭 0** |
+
+상세는 [hardware-verified.md](hardware-verified.md) 의 해당 절들.
+
+## 남은 조사거리 (급하지 않다)
+
+- **Zephyr 상류 보고** — EL2 부팅 보드에서 `ARM64_BOOT_DISABLE_DCACHE` 가
+  기본 꺼짐이라 `INIT_STACKS` 같은 평범한 설정 하나로 콘솔 출력 없이
+  죽는다. QEMU 로 일반 문제임을 확인한 뒤 보고한다 (실기 0회)
+- **TRM 미확인 둘** — uart2 트리거 타입, UART `USR` 레지스터
+  ([trm-grounding.md](trm-grounding.md) §5). 진단 빌드가 폴링을 쓰는
+  한 급하지 않다. 진단 빌드도 인터럽트로 바꾸려면 필요해진다
+- **OTA 수신 더 빠르게** — 콜백 호출이 514회이고 `fifo_read` 가 평균
+  341 바이트만 읽는다. CDC 링버퍼를 키우면 줄어들 것이다. 0.37초로
+  충분하므로 보류
+
 ## 하지 않는 것
 
 - `apps/ledblink`·`usbled`·`usbuart` 는 건드리지 않는다 — 각자 특정 가설을
