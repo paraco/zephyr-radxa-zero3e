@@ -12,6 +12,19 @@ set(LLM_GGML_CMAKE_DIR "${CMAKE_CURRENT_LIST_DIR}")
 # 그래서 ggml 소스에는 실기와 같은 -mcpu 를 명시한다.
 set(LLM_GGML_MCPU "cortex-a55" CACHE STRING "ggml 소스에 줄 -mcpu (실기와 맞춘다)")
 
+#
+# 부동소수 축약(FMA) 정책.
+#
+# gcc 와 clang 이 `sumf += a*b` 를 fmadd 로 **묶는 기준이 다르다.** 묶으면
+# 중간 반올림이 한 번 줄어 결과가 1 ulp 달라진다. ggml 의 평범한 C 루프
+# (예: ggml_compute_forward_ssm_conv_f32 — intrinsic 이 아니라 스칼라 루프다)
+# 에서 이것이 드러난다. 상쇄가 있는 합에서는 상대오차로 크게 보인다.
+#
+# `off` 로 두면 호스트와 Zephyr 가 같은 반올림을 하여 **비트 비교가 가능**해진다.
+# 대가는 FMA 를 못 쓰는 것 — 정확성 사다리에서는 재현성이 더 중요하다.
+# 성능 측정(L8)에서는 `fast` 로 바꿔 다시 잰다.
+set(LLM_GGML_FP_CONTRACT "off" CACHE STRING "ggml 소스의 -ffp-contract (off=재현성, fast=성능)")
+
 function(llm_add_ggml)
 	set(LLAMA_DIR "${LLM_GGML_CMAKE_DIR}/../../upstream/llama.cpp"
 	    CACHE PATH "llama.cpp 체크아웃")
@@ -78,6 +91,7 @@ endfunction()
 function(llm_ggml_flags)
 	foreach(f ${ARGN})
 		set_property(SOURCE ${f} APPEND PROPERTY
-			COMPILE_OPTIONS "-mcpu=${LLM_GGML_MCPU}")
+			COMPILE_OPTIONS "-mcpu=${LLM_GGML_MCPU}"
+			                "-ffp-contract=${LLM_GGML_FP_CONTRACT}")
 	endforeach()
 endfunction()
