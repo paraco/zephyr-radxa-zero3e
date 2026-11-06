@@ -266,6 +266,73 @@ Q4_0 은 `-8×0 = -0.0`, Q4_K 는 `0×0-0 = +0.0` 이 나온다. **그럴듯한 
 
 ---
 
+## ✅ L4 통과 — **ggml 전체가 Zephyr 로 온다**
+
+```
+  [0] 기능 집합  Zephyr dotprod=1 i8mm=0 / 호스트 1 0 ... OK
+  [1] mm f32    128개 ... OK — 비트 일치
+  [2] mm Q4_0   128개 ... OK — 비트 일치
+  [3] RMSNorm   128개 ... OK — 비트 일치
+  [4] SiLU      128개 ... OK — 비트 일치
+  [5] RoPE      256개 ... OK — 최대 상대오차 344 ppb ≤ 1e-5
+=== L4 PASS ===
+```
+
+L3 은 `ggml-quants.c` 한 파일이었다. L4 는 **ggml 코어 + CPU 백엔드 23개
+파일**(C/C++ 혼합)이고 `ggml_init` → 그래프 → `ggml_graph_compute` 가 전부
+돈다. **상류 소스는 한 줄도 고치지 않았다.**
+
+### 포팅 항목은 셋뿐이다 — 전부 상류를 고치지 않는 방식
+
+| 항목 | 왜 | 어떻게 |
+|---|---|---|
+| `ggml-version.h` | cmake 생성 파일 | `cmake/llm_ggml.cmake` 가 상류 템플릿으로 만든다 |
+| `std::mutex` 없음 | 툴체인 libstdc++ 가 gthreads 없이 빌드됐다 (**L0 의 사실 ②**) | `ggml-threading.cpp`(12줄) 제외 + `apps/llm_common/ggml_port.c` 가 `k_mutex` 로 |
+| `M_PI` · `_SC_PHYS_PAGES` | picolibc 가 `__BSD_VISIBLE` 로 감춤 · Zephyr sysconf enum 에 없음 | `ggml_zephyr_compat.h` 를 `-include` 강제 포함 |
+
+**B안(ggml 포팅)이 성립한다.** 이제 남은 위험은 ggml 이 아니라 **모델 그래프**
+(L5 의 Gated DeltaNet)와 **성능**(L8)이다.
+
+### ⚠ QEMU 사다리가 실기와 **다른 커널**을 시험하고 있었다
+
+처음 `[0]` 이 `Zephyr dotprod=0 / 호스트 1` 로 불일치였다. `qemu_cortex_a53`
+보드라 Zephyr 가 `-mcpu=cortex-a53`(ARMv8.0)을 주고 `__ARM_FEATURE_DOTPROD` 가
+꺼져 ggml 이 **스칼라 경로**를 골랐다 — QEMU 를 `-cpu cortex-a55` 로 돌려도
+그렇다. **컴파일 타임 선택이라 런타임 CPU 와 무관하다.**
+
+실기(`radxa_zero_3e/rk3568`)는 Zephyr 가 이미 `-mcpu=cortex-a55` 를 주므로
+하드웨어에서는 켜진다. 즉 **QEMU 쪽만 모르게 덜 시험하고 있었다.** 고쳤다.
+
+그리고 **플래그 순서**에 또 걸렸다. `target_compile_options` 로는 안 된다 —
+순서가 `[타깃][인터페이스][소스]` 이고 Zephyr 의 `-mcpu=cortex-a53` 이
+인터페이스로 뒤에 붙어 이긴다. `set_property(SOURCE ...)` 로 소스 수준에
+줘야 한다.
+
+> **교훈으로 둘 것:** QEMU 가 보고하는 CPU(`-cpu`)와 **컴파일된 코드의 기능
+> 집합**은 별개다. 사다리의 각 칸이 기능 매크로를 찍고 호스트와 비교하게 둔
+> 것이 이것을 잡았다. 안 찍었으면 "통과" 로 넘어갔을 것이다.
+
+### 함정 둘을 더 기록한다
+
+**`file(STRINGS)` 에 `ENCODING UTF-8` 이 필수다.** 없으면 ASCII 로 읽어 한글
+주석의 UTF-8 바이트를 구분자로 삼아 줄을 조각낸다 — 소스 23개가 **108조각**이
+되고 `ggml/** 를 못 찾는다` 같은 엉뚱한 오류로 나타난다.
+
+**아레나가 요청과 같으면 `ggml_aligned_malloc` 이 실패한다.** `ggml_init` 의
+`mem_size` 를 정렬 할당 한 덩이로 받으므로 정렬 여유가 필요하다. 요청의
+여러 배로 둔다. ggml 의 진단 메시지가 정확해 한 번에 찾았다.
+
+### L5 의 전제가 정리됐다
+
+| 미해결이었던 것 | 확인된 사실 |
+|---|---|
+| upstream 이 `qwen35` 를 지원하나 | **한다** — `src/models/qwen35.cpp` |
+| 라이선스 | **Apache-2.0**, 게이트 없음 (`Qwen/Qwen3.5-0.8B`) |
+| 실제 크기 | 873,438,784 파라미터 · Q4_K_M **약 533 MB** |
+| 텍스트 전용으로 쓸 수 있나 | **된다** — `mmproj-*.gguf` 가 **별도 파일**이라 본체만 쓰면 텍스트다 |
+
+---
+
 ## 테스트 사다리
 
 | # | 계층 | 무엇을 검증 | 골든 기준값 | 모델 필요? | QEMU? |
