@@ -2281,8 +2281,22 @@ static void dwc3_handle_events(const struct device *dev)
 				 *   유효하지 않으면 mps0 가 틀어질 수 있다. 실기에서
 				 *   확인할 사항으로 남긴다 — 순서가 틀리면 열거가
 				 *   아예 안 되므로 순서를 먼저 바로잡는다.
+				 *
+				 * ✅ 2026-11-06: 그 확인이 됐다. 실제로 틀어졌다 —
+				 *   벌크 EP 의 mps 가 FS 값 64 로 설정됐다(HS 는
+				 *   512). 호스트는 HS 로 열거하는데(ioreg Device
+				 *   Speed 2) 스택은 FS 디스크립터를 골랐고, 그래서
+				 *   전송이 8배 느렸다.
+				 *
+				 *   → UDC_EVT_RESET 제출을 CONNECTION_DONE 으로
+				 *     옮겼다. 그 시점에는 CONNECTSPD 가 확정이므로
+				 *     스택이 udc_device_speed() 에서 HS 를 읽는다.
+				 *     Linux dwc3 도 conndone 에서 속도를 확정한다
+				 *     (dwc3_gadget_conndone_interrupt).
+				 *
+				 *   여기서는 EP0 재설정·재무장만 한다 — 그것은
+				 *   리셋 직후에 해야 하고 속도와 무관하다.
 				 */
-				udc_submit_event(dev, UDC_EVT_RESET, 0);
 				stop_batch = true;
 				break;
 			case DWC3_DEVT_CONNECTION_DONE: {
@@ -2301,11 +2315,15 @@ static void dwc3_handle_events(const struct device *dev)
 				 * 속도를 확정한다 (위 USB_RESET 주석 참고).
 				 */
 				/*
-				 * RESET 이벤트는 USB_RESET 에서 이미 올렸다
-				 * (위 주석 참고). 여기서는 속도만 남긴다 —
-				 * 이 시점의 CONNECTSPD 가 확정값이므로, 리셋
-				 * 시점에 스택이 읽은 값과 다르면 로그로 드러난다.
+				 * ⚠ RESET 이벤트를 **여기서** 올린다 (2026-11-06).
+				 *
+				 * 스택은 이 이벤트를 처리하며 udc_device_speed() 를
+				 * 읽어 status.speed 를 확정하고, 그 값으로 FS/HS
+				 * 디스크립터를 고른다. USB_RESET 시점에 올리면
+				 * CONNECTSPD 가 아직 유효하지 않아 FS 로 잡히고
+				 * 벌크 mps 가 64 가 된다 — 실기에서 그렇게 됐다.
 				 */
+				udc_submit_event(dev, UDC_EVT_RESET, 0);
 				break;
 			}
 			case DWC3_DEVT_DISCONNECT:
