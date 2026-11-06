@@ -27,6 +27,7 @@
 #include <zephyr/sys/device_mmio.h>
 #include <zephyr/sys/sys_io.h>
 #include <zephyr/sys/crc.h>
+#include <zephyr/cache.h>
 #include <zephyr/drivers/uart.h>
 
 #include "moru.h"
@@ -265,12 +266,35 @@ static mm_reg_t moru_ota_map(const struct shell *sh)
 		return base;
 	}
 
-	device_map(&base, MORU_OTA_PHYS, MORU_OTA_MAP_SIZE, K_MEM_CACHE_NONE);
+	/*
+	 * ⚠ K_MEM_CACHE_WB (캐시 켬) — 2026-11-06 수정.
+	 *
+	 * 처음에는 K_MEM_CACHE_NONE 이었다. 쓰기는 빨랐지만(175 KB 전송이
+	 * 1.2초) **읽기가 멈췄다** — moru ota verify 의 crc32_ieee 가 175 KB 를
+	 * 바이트 단위로 읽는데, Device 매핑은 접근마다 직렬화되어 극단적으로
+	 * 느려진다. 셸이 멈춘 것처럼 보였다.
+	 *
+	 * 대가: 쓴 내용이 캐시에 남으므로 **재부팅 전에 밀어내야** DRAM 에
+	 * 남는다. moru_ota_flush() 가 그 일을 하고, mark 와 apply 가 부른다.
+	 * sys_cache_data_flush_range() 는 CONFIG_ARM64_DCACHE_ALL_OPS=y 덕에
+	 * 쓸 수 있다 (그 설정은 EL2 부팅 문제를 고치면서 켠 것이다 — 그때의
+	 * 수확이 여기서 또 쓰인다).
+	 */
+	device_map(&base, MORU_OTA_PHYS, MORU_OTA_MAP_SIZE, K_MEM_CACHE_WB);
 	if (base == 0) {
 		shell_error(sh, "device_map 실패 — MAX_XLAT_TABLES(%d) 부족일 수 있다",
 			    CONFIG_MAX_XLAT_TABLES);
 	}
 	return base;
+}
+
+/*
+ * 캐시를 DRAM 으로 밀어낸다. WB 매핑이므로 재부팅을 넘기려면 필수다.
+ * 재부팅 뒤 U-Boot 와 다음 Zephyr 가 읽는 것은 DRAM 의 내용이다.
+ */
+static void moru_ota_flush(mm_reg_t base, size_t len)
+{
+	sys_cache_data_flush_range((void *)base, len);
 }
 
 static int cmd_moru_ota_mark(const struct shell *sh, size_t argc, char **argv)
@@ -295,11 +319,12 @@ static int cmd_moru_ota_mark(const struct shell *sh, size_t argc, char **argv)
 	sys_write32(0U, base + MORU_OTA_OFF_CRC);
 	sys_write32(MORU_OTA_PATTERN, base + MORU_OTA_OFF_PATTERN);
 
+	moru_ota_flush(base, MORU_OTA_HDR_SIZE);
+
 	shell_print(sh, "0x%08lx 에 표시했다 — magic MRK0 pattern 0x%08lx count %u",
 		    MORU_OTA_PHYS, MORU_OTA_PATTERN, count);
 	shell_print(sh, "이제 'moru reboot' 한 뒤 'moru ota check' 를 친다.");
-	shell_print(sh, "⚠ 캐시를 끈 매핑(K_MEM_CACHE_NONE)이라 쓰기가 바로 DRAM 에");
-	shell_print(sh, "  들어간다 — 재부팅 전 flush 를 기다릴 필요가 없다.");
+	shell_print(sh, "캐시를 DRAM 으로 밀어냈다 (WB 매핑이라 flush 가 필요하다).");
 	shell_print(sh, "⚠ MRK0 은 boot.scr 이 무시한다. 실제 OTA 는 MORU 매직이다.");
 	return 0;
 }
@@ -614,6 +639,10 @@ static int cmd_moru_ota_verify(const struct shell *sh, size_t argc, char **argv)
 		return -EAGAIN;
 	}
 
+	/* 캐시 매핑이라 빠르지만, 수치를 보여 주고 시작한다 — 멈춘 것처럼
+	 * 보이지 않게 하는 것이 진단에 중요하다 (NONE 매핑 때 그렇게 보였다) */
+	shell_print(sh, "CRC32 계산 중 — %u 바이트 ...", moru_ota.expect);
+
 	calc = crc32_ieee((const uint8_t *)(moru_ota.base + MORU_OTA_HDR_SIZE),
 			  moru_ota.expect);
 
@@ -623,8 +652,20 @@ static int cmd_moru_ota_verify(const struct shell *sh, size_t argc, char **argv)
 		return -EIO;
 	}
 
-	shell_print(sh, "✅ 일치한다. 3단계(boot.cmd)가 들어가면 'moru ota apply'");
-	shell_print(sh, "   로 적용할 수 있다. 지금은 적용 경로가 아직 없다.");
+	/*
+	 * 헤더를 채우고 캐시를 밀어낸다. 매직은 **아직 쓰지 않는다** —
+	 * boot.scr 의 적용 경로(3단계)가 없는 상태에서 매직을 쓰면 다음
+	 * 부팅에 아무 일도 일어나지 않지만, 3단계가 들어간 뒤 실수로 반쪽
+	 * 이미지가 적용되는 길을 미리 막아 둔다. apply 가 매직을 쓴다.
+	 */
+	sys_write32(moru_ota.expect, moru_ota.base + MORU_OTA_OFF_SIZE);
+	sys_write32(calc, moru_ota.base + MORU_OTA_OFF_CRC);
+	sys_write32(0U, moru_ota.base + MORU_OTA_OFF_PATTERN);
+	moru_ota_flush(moru_ota.base, MORU_OTA_HDR_SIZE + moru_ota.expect);
+
+	shell_print(sh, "✅ 일치한다. 헤더(크기·CRC)를 쓰고 캐시를 밀어냈다.");
+	shell_print(sh, "   3단계(boot.cmd 의 itest+fatwrite)가 들어가면");
+	shell_print(sh, "   'moru ota apply' 로 적용한다 — 지금은 경로가 없다.");
 	return 0;
 }
 
