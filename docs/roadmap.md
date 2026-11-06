@@ -184,9 +184,18 @@ OTA 남은 작업:
    경로가 인스턴스를 하나만 등록한다. `src/moru_usbd.c` 가 직접 구성하고
    `usbd_register_all_classes()` 로 전부 등록한다. 호스트에 포트 둘,
    인터페이스 4개 확인
-2. **OTA 수신 스레드** — 데이터 포트에서 `size` 바이트를 받아
-   `0x50000000 + 16` 에 쌓는다. 헤더 `[0]=매직 [4]=크기 [8]=CRC32`
-3. `moru ota begin <size> <crc32>` · `status` · `apply` 명령
+2. **OTA 수신** — ⚠ **미해결.** 명령·계측·자동 시험 스크립트는 다 있다
+   (`moru ota begin|status|verify|abort`, `moru usb`, `tools/ota_test.py`).
+   **두 번째 CDC 의 bulk OUT 전송이 큐에 없다** — 콜백 0회, 호스트 EAGAIN
+   9707회, EP·링크는 정상. 상세와 기각된 가설 여섯은
+   [hardware-verified.md](hardware-verified.md) 의 해당 절.
+
+   **다음 수 (실기 1~2회):** `USBD_CDC_ACM_LOG_LEVEL_INF` 로 되돌리고
+   **64바이트만** 보낸다. 드라이버가 이미 갖고 있는 로그
+   (`rx_en: trigger rx_fifo_work` · `ring_buf_put` 뒤 hexdump)가 수신 경로의
+   어디서 끊기는지 직접 보여준다. 앱에만 계측을 넣고 드라이버 내부를
+   계측하지 못한 것이 한계였다.
+3. ~~`moru ota begin/status/verify/abort`~~ — ✅ 완료
 4. **`boot.cmd` 수정** — `itest.l *0x50000000 -eq 0x4d4f5255` 로 확인,
    `fatwrite` 로 `zephyr.bin.old` 백업 + `zephyr.bin` 교체, 매직 지우고 `go`.
    `setexpr` 가 없어 크기를 변수로 읽을 수 없으므로 **고정 256 KiB** 로 쓴다
