@@ -13,6 +13,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/shell/shell.h>
 #include <zephyr/devicetree.h>
+#include <zephyr/device.h>
 #include <zephyr/app_version.h>
 #include <zephyr/version.h>
 #include <zephyr/drivers/hwinfo.h>
@@ -88,6 +89,12 @@ static int cmd_moru_info(const struct shell *sh, size_t argc, char **argv)
 	print_chip_id(sh);
 	shell_print(sh, "  콘솔      %s (셸 같은 포트)",
 		    DT_NODE_FULL_NAME(DT_CHOSEN(zephyr_console)));
+#if DT_NODE_EXISTS(DT_NODELABEL(cdc_acm_uart1))
+	shell_print(sh, "  OTA 포트  %s (%s)",
+		    DT_NODE_FULL_NAME(DT_NODELABEL(cdc_acm_uart1)),
+		    device_is_ready(DEVICE_DT_GET(DT_NODELABEL(cdc_acm_uart1)))
+			    ? "준비됨" : "준비 안 됨");
+#endif
 	shell_print(sh, "  마커 UART %s %u 8N1 (초기 부팅 전용)",
 		    DT_NODE_FULL_NAME(DT_NODELABEL(uart2)),
 		    (unsigned int)DT_PROP(DT_NODELABEL(uart2), current_speed));
