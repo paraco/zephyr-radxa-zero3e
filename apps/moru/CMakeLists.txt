@@ -33,4 +33,5 @@ target_compile_definitions(app PRIVATE MORU_BUILD_TIME="${MORU_BUILD_TIME} UTC")
 # (저장소 루트는 CMakeLists.txt 의 두 단계 위)
 target_include_directories(app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../drivers/hwinfo)
 
-target_sources(app PRIVATE src/main.c src/moru_mark.c src/moru_boot.c src/moru_shell.c)
+target_sources(app PRIVATE src/main.c src/moru_mark.c src/moru_boot.c
+                           src/moru_shell.c src/moru_usbd.c)
