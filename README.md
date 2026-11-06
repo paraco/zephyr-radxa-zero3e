@@ -148,6 +148,30 @@ DT 의 `current-speed`(115200)를 스스로 적용하므로 콘솔로 쓰이지 
 [2][<S][S>][<U][U>][M]    ← USB 가 무음이어도 UART 어댑터만 꽂으면 보인다
 ```
 
+**⚠ 이제 마커뿐 아니라 로그 전체가 UART2 로도 나온다 (2026-11-06).**
+`app.overlay` 의 `chosen zephyr,log-uart` + `CONFIG_LOG_BACKEND_UART=y` 가
+UART 로그 백엔드를 **콘솔과 따로** uart2 에 붙인다. USB 가 죽든 보드가
+재부팅하든 uart2 에는 계속 찍힌다.
+
+왜 필요했나 — 셸·콘솔이 USB 에 있어서 **USB 가 죽으면 관측도 함께 죽었다.**
+USB 전원 관리(suspend/resume)를 시험하려면 포트를 유휴로 둬야 하는데, 그러면
+관측 수단이 사라져 재부팅의 출처조차 가릴 수 없었다. 이 백엔드가 그 사슬을
+끊는다.
+
+```bash
+tio /dev/cu.usbserial-0001 -b 115200
+```
+
+성질 두 가지: 백엔드는 `uart_poll_out`(동기 폴링)을 쓰므로 uart2 의 GIC
+트리거 타입(미검증 항목)이 걸리지 않는다. 115200 은 줄당 약 9 ms 이고
+`LOG_MODE_DEFERRED` 라 로그 처리 스레드가 그 시간을 쓴다(CDC 작업큐와는
+별개 스레드다) — 폭주하면 메시지가 버려지므로 로그 레벨은 올리지 않는다.
+
+**⚠ UART 어댑터를 보드와 같은 허브에 꽂지 않는다.** 보드는 같은 USB-C OTG
+포트에서 PD 로 급전되므로(VCC 미연결), 재부팅 전류 변동이 같은 허브의
+어댑터를 USB 버스에서 밀어낸다 — 실측 2회, 둘 다 OTA `apply` 직후다.
+어댑터는 맥에 직접, 또는 다른 허브에 꽂는다.
+
 **⚠ 열거 전 로그는 터미널을 열 때까지 보이지 않는다.** `LOG_MODE_DEFERRED`
 라 버퍼에 쌓이고 백엔드가 붙은 뒤 쏟아진다(`LOG_BUFFER_SIZE=16384`).
 CDC 의 `poll_out` 은 버퍼가 차면 **버린다**(블록하지 않는다) — 터미널을
@@ -301,7 +325,8 @@ Linux 에서 **사실로서** 확인하고 코드는 직접 작성했다 — 하
 | 명령 | 하는 일 |
 |---|---|
 | `moru info` | 버전·해시·보드·CPU·메모리·칩ID·콘솔·부트로더 시간·가동 |
-| `moru usb` | dwc3 레지스터 + **벌크 mps** + 이벤트 카운터 9개 |
+| `moru usb` | dwc3 레지스터 + **벌크 mps** + 이벤트 카운터 + 전원 상태 |
+| `moru usb pm on\|off` | suspend/resume 을 스택에 올리기. **기본 꺼짐 — 꺼짐이 안전 장치다** |
 | `moru reboot [probe]` | PSCI 재부팅 (`probe` 는 BL31 응답만 확인) |
 | `moru ota begin\|status\|verify\|apply\|abort` | **카드를 빼지 않는 펌웨어 교체** |
 | `moru ota mark\|check` | 재부팅 뒤 DRAM 보존 확인 (진단용) |
@@ -353,6 +378,15 @@ U-Boot 가 EL2 에서 `go` 하고 캐시를 정리하지 않기 때문이다. �
   16)을 단위 없이 비교한 경고였다
 - **CRU 클럭 드라이버** — 지금은 필요한 게이트를 레지스터로 직접 쓴다
 - **pinctrl 드라이버**
-- **USB suspend/resume** (`DWC3_DEVT_U3L2L1_SUSPEND` / `WAKEUP`) 미처리
+- **USB suspend/resume** — 진행 중. 이벤트를 받고 계측·필터·resume 3중
+  경로·런타임 스위치까지 들어갔고, **`pm` 기본값은 꺼짐**이다.
+  확인된 것: 호스트가 실제로 보낸다(링크 3 = HS 의 L2) · HS 에서 resume 은
+  링크가 ON 으로 돌아오는 `LINK_STATE_CHANGE` 로만 나타난다(`REMOTE_WAKEUP`
+  은 0회) · `pm_enabled` 자체는 무해하다(120초, 재부팅 없음).
+  **남은 것:** suspend 를 스택에 올렸을 때 멀쩡한지, 그리고 resume 이
+  정상 경로(`link-to-ON`)로 오는지 — 리셋만이 건져 내는 것이라면 리셋이
+  오지 않는 suspend 에서 영구히 막힌다.
+  시험은 `python3 tools/pm_test.py --seconds 90` 이고 **UART 어댑터가
+  보드와 다른 포트에 꽂혀 있어야** 한다(위 경고 참고)
 - **Zephyr 상류 보고** — 문안이 [docs/upstream-report.md](docs/upstream-report.md)
   에 있다. 사용자가 GitHub 에 올리면 끝난다
