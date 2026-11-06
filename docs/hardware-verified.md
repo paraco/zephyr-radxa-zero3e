@@ -1804,3 +1804,61 @@ SD 의 이미지가 황금 사본으로 남는 구조라 벽돌이 되지 않는
 
 `build f8f3c15c8585` = HEAD. 직전 왕복에서 한 커밋 뒤처진 것을 보고
 체크리스트에 "커밋한 뒤 재빌드했는가" 를 넣었고, 바로 효과가 났다.
+
+## ✅ OTA 1단계 — CDC-ACM 두 개 (2026-11-06)
+
+빌드 `908c1bb` (진단 빌드, 171368 B). **호스트에 포트가 둘 생겼다.**
+
+```
+/dev/cu.usbmodem213101   인터페이스 0(CDC control) + 1(CDC data)  ← 셸
+/dev/cu.usbmodem213103   인터페이스 2(CDC control) + 3(CDC data)  ← OTA 데이터
+```
+
+```
+bInterfaceNumber 0: Class 2  SubClass 2   (CDC Communications / ACM)
+bInterfaceNumber 1: Class 10 SubClass 0   (CDC Data)
+bInterfaceNumber 2: Class 2  SubClass 2
+bInterfaceNumber 3: Class 10 SubClass 0
+```
+
+### 1차 시도는 실패했고, 그 실패가 원인을 가리켰다
+
+DT 에 `cdc_acm_uart1` 노드만 추가한 빌드(`367cb6c`)에서는 **포트가 하나뿐**
+이었다. 그런데 `moru info` 는 `OTA 포트 cdc_acm_uart1 (준비됨)` 을 찍었다 —
+**드라이버 인스턴스는 살아 있는데 USB 디스크립터에는 없다**는 뜻이다.
+`ioreg` 로 인터페이스를 세어 2개(CDC 하나)임을 확인하고 Zephyr 쪽 문제로
+좁혔다.
+
+원인: `CONFIG_CDC_ACM_SERIAL_INITIALIZE_AT_BOOT` 의 자동 경로가 인스턴스를
+**하나만** 등록한다 — `subsys/usb/device_next/app/cdc_acm_serial.c:65` 의
+`usbd_register_class(..., "cdc_acm_0", ...)`, 함수 이름도
+`register_cdc_acm_0` 다. 그 Kconfig help 의 "다른 USB 기능이 필요 없는 앱의
+기본 시리얼 백엔드 전용" 이 정확히 이 뜻이었다.
+
+### 해결 — 앱이 직접 구성한다
+
+`src/moru_usbd.c` 가 usbd 컨텍스트·디스크립터·설정을 만들고
+**`usbd_register_all_classes()`**(`usbd.h:892`)로 사용 가능한 인스턴스를
+전부 등록한다. 이름을 하나씩 대지 않으므로 CDC 를 더 늘려도 코드를 고치지
+않는다. VID·PID·문자열은 이 파일에서 정한다 —
+`CDC_ACM_SERIAL_PID`·`PRODUCT_STRING` 은 `INITIALIZE_AT_BOOT` 하위 심볼이라
+그것을 끄면 사라진다.
+
+`usbd_device_set_code_triple(..., USB_BCC_MISCELLANEOUS, 0x02, 0x01)` 은
+유지했다. 복합 장치(IAD)임을 알리는 코드 트리플이고, 없으면 호스트가 두
+번째 CDC 를 잡지 못한다.
+
+### 안전망이 제 역할을 했다
+
+USB 초기화를 전면 교체하는 변경이라 깨지면 USB 셸을 잃는다. 그래서 **진단
+빌드(`diag-uart.overlay`, 셸이 UART2)로 먼저 구웠다.** 이번엔 한 번에
+성공했지만, 실패했다면 UART 셸에서 `moru_usbd` 의 단계별 실패 로그
+(`설정 추가 실패` / `클래스 등록 실패` / `코드 트리플 설정 실패` /
+`usbd_init 실패`)를 바로 읽을 수 있었다.
+
+### 빌드 전 심볼 확인이 또 값을 했다
+
+USB main 빌드 크기가 이전과 같은 167264 B 여서 설정 누락을 의심했는데,
+`nm` 으로 우리 심볼 7개(`moru_uds`·`moru_add_speed`·`cdc_acm_1` 등)와
+자동 경로 심볼 0개를 확인했다. **오늘 세 번째 "크기가 같아서 의심했다가
+심볼로 확인" 사례다** — 정렬 패딩이 흡수한다.
