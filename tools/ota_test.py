@@ -142,7 +142,22 @@ def main():
     try:
         sh = open_raw(sh_port, os.O_RDWR, args.baud)
     except OSError as e:
-        print('셸 포트를 열 수 없다 (%s) — tio 가 잡고 있으면 먼저 닫는다.' % e)
+        print('셸 포트를 열 수 없다 (%s)' % e)
+        # ⚠ 점유자를 tio 로 단정하지 않는다. 실제로 Xconsole.app 이
+        #   5일째 잡고 있던 적이 있다. lsof 로 누가 쥐고 있는지 보여 준다.
+        import subprocess
+        try:
+            r = subprocess.run(['lsof', sh_port], capture_output=True, text=True,
+                               timeout=5)
+            if r.stdout.strip():
+                print('점유자:')
+                for ln in r.stdout.strip().splitlines():
+                    print('  ' + ln)
+                print('그 프로그램에서 포트를 끊은 뒤 다시 돌린다.')
+            else:
+                print('lsof 에는 점유자가 없다 — 권한이나 장치 상태를 본다.')
+        except Exception:
+            print('lsof 를 돌리지 못했다. 수동으로: lsof %s' % sh_port)
         return 1
 
     try:

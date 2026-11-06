@@ -2146,3 +2146,42 @@ sudo -v && sudo mcopy -i /dev/rdisk4s2 ::/zephyr.bin.old /tmp/old.bin \
 
 ⚠ 카드를 빼야 한다. OTA 는 **앞으로 갈 때만** 카드를 아끼고, 되돌릴 때는
 SD 를 직접 만져야 한다. 그래서 `apply` 전에 `verify` 를 반드시 통과시킨다.
+
+## ✅ B3 — dwc3 진단 API + 카운터 (2026-11-06, OTA 로 올렸다)
+
+빌드 `1775ba8`. **카드를 전혀 건드리지 않고** OTA 로 적용했다 — OTA 의 첫
+실전 사용이다.
+
+```
+dwc3  core 0x5533 release 0x300a · 물리 EP 16
+  GCTL      0x30c12004  DCFG 0x00080820  DCTL 0x80f00000
+  DSTS      0x0082f518  speed=0 (HS) linkstate=0 (U0)
+  GUSB2PHY  0x40101408
+  DALEPENA  0x000002bf  CDC 2개 (셸 + OTA) 정상
+  EP0       state=SETUP wLength=7
+
+카운터
+  reset 1 · connect 1 · disconnect 0 · setup 21
+  xfer_complete 67 · xfer_not_ready 46
+  ⚠ cmd_timeout 0 · trb_hw_owned 0 · no_queued_buf 0
+```
+
+### 수치가 말해주는 것
+
+**리셋 1회, 연결 1회로 열거가 끝난다.** 과거 bring-up 에서는 리셋이
+**26~38회** 반복됐다(`LOG_MODE_IMMEDIATE` 가 `SET_ADDRESS` 50 ms 예산을
+넘겨 호스트가 재시도). 이제 한 번에 붙는다.
+
+**쫓던 증상 셋이 전부 0 이다** — `cmd_timeout`·`trb_hw_owned`·
+`no_queued_buf`. 과거엔 이것들을 로그에서 손으로 셌다
+("재무장 시점" · "TRB still HW-owned" 절들). 이제 한 줄로 본다.
+
+→ **앞으로 USB 가 이상하면 로그를 뒤지기 전에 이 숫자를 먼저 본다.**
+
+### 드라이버 변경은 읽기와 증가로만
+
+`diff` 전수 확인: **순수 추가 60줄, 삭제 0.** 드라이버가 깨지면 USB 셸을
+잃고 그러면 OTA 도 못 쓰므로(카드를 빼야 한다) 동작을 바꾸는 줄을 넣지
+않았다. 스냅샷 하나로 묶은 것은 개별 getter 가 **찢긴 상태**를 보여주기
+때문이고, 출력 형식은 앱이 갖는다(드라이버가 `CONFIG_SHELL` 에 의존하지
+않게).

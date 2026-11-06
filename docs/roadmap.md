@@ -46,8 +46,7 @@
 | ~~1~~ | ~~`FRAME_POINTER=y` 재시험~~ | — | — | **✅ 2026-11-06 완료 — 역추적 복구, `kernel thread unwind` 동작** |
 | **2** | **B1** 부팅 메시지 · `moru_boot.c` 되살리기 · PID 0x0005 · 제품 문자열 | 1 | 낮 | `[    0.123456]` 형식 · `shell stats show` 의 `Lost logs: 0` · 호스트에 `MoruLab Zephyr RTOS` · 열거 유지 |
 | ~~3~~ | ~~**B2** `moru info` · 커널 상태 모듈 **+ `moru reboot`**~~ | — | — | **✅ 2026-11-06 완료 — 전부 통과. `moru reboot probe` 가 PSCI 1.1 응답 확인** |
-| **4** | **B3-a** `moru usb` 를 **진단 빌드**로 검증 | 1 | 높 | UART 셸에서 `moru usb status` 가 `ioreg` 와 일치 · `<err>` 0줄 |
-| **5** | **B3-b** 같은 코드를 USB main 으로 | 1 | 중 | 열거 유지 · USB 셸에서 `moru usb` 동작 |
+| ~~4~~ | ~~**B3** `moru usb` + 드라이버 카운터~~ | — | — | **✅ 2026-11-06 완료 — OTA 로 올렸다(카드 0회). 카운터 9개, 쫓던 증상 셋이 전부 0** |
 | ~~6~~ | ~~**B4** `moru reboot` + `probe`~~ | — | — | **✅ 2026-11-06 완료 — PSCI 1.1 응답, 실제로 재부팅, USB 자동 재열거** |
 | **7** | **OTA 구현** (아래) — B3 보다 먼저 | 2~3 | 중 | 카드를 빼지 않고 펌웨어 교체 |
 | — | Zephyr 상류 보고 (`ARM64_BOOT_DISABLE_DCACHE` 기본값) | 0 | — | QEMU 로 일반 문제임을 확인한 뒤 |
