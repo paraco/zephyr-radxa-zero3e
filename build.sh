@@ -5,6 +5,11 @@
 #   ./rk3566/build.sh                          # hello_world
 #   ./rk3566/build.sh zephyr/samples/subsys/shell/shell_module
 #   ./rk3566/build.sh <앱경로> <빌드디렉터리>
+#   ./rk3566/build.sh <앱경로> <빌드디렉터리> <추가오버레이>
+#
+# 진단 빌드 (콘솔·셸을 UART2 로 되돌린다 — main 은 USB 다):
+#   ./rk3566/build.sh "$PWD/apps/moru" /tmp/claude-501/rz3e-diag \
+#                     "$PWD/apps/moru/diag-uart.overlay"
 #
 # 이 보드는 out-of-tree 라 BOARD_ROOT 를 넘겨야 한다. SoC 는 인트리 rk3568
 # 정의를 재사용하므로 보드 식별자가 `radxa_zero_3e/rk3568` 이다.
@@ -17,6 +22,7 @@ VENV="${PIZZA_ZEPHYR_VENV:-$HOME/.zephyr-venv}"
 
 APP="${1:-$ZEPHYR_WS/zephyr/samples/hello_world}"
 BUILD_DIR="${2:-/tmp/claude-501/rz3e-build}"
+EXTRA_OVERLAY="${3:-}"
 
 export ZEPHYR_BASE="$ZEPHYR_WS/zephyr"
 export ZEPHYR_TOOLCHAIN_VARIANT=cross-compile
@@ -27,8 +33,16 @@ export CROSS_COMPILE="$SDK/gnu/aarch64-zephyr-elf/bin/aarch64-zephyr-elf-"
 source "$VENV/bin/activate"
 
 cd "$ZEPHYR_WS"
+EXTRA_ARGS=()
+if [[ -n "$EXTRA_OVERLAY" ]]; then
+  [[ -f "$EXTRA_OVERLAY" ]] || { echo "오버레이 파일 없음: $EXTRA_OVERLAY" >&2; exit 1; }
+  EXTRA_ARGS+=("-DEXTRA_DTC_OVERLAY_FILE=$EXTRA_OVERLAY")
+  echo "추가 오버레이: $EXTRA_OVERLAY"
+fi
+
 west build -p always -b radxa_zero_3e/rk3568 -d "$BUILD_DIR" -s "$APP" \
-  -- -DBOARD_ROOT="$HERE" -DDTS_ROOT="$HERE" -DZEPHYR_EXTRA_MODULES="$HERE"
+  -- -DBOARD_ROOT="$HERE" -DDTS_ROOT="$HERE" -DZEPHYR_EXTRA_MODULES="$HERE" \
+  "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"
 
 echo
 echo "산출물:"

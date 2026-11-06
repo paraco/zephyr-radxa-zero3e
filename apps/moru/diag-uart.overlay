@@ -1,0 +1,22 @@
+/*
+ * 진단 모드 — 콘솔·셸을 UART2 로 되돌린다.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * 평상시 main 은 USB CDC-ACM 이다 (app.overlay). USB 가 안 되면 이 오버레이로
+ * 빌드해 UART 1개로 들여다본다 — 2026-11-06 사용자 확정 원칙.
+ *
+ *   ./build.sh "$(pwd)/apps/moru" /tmp/claude-501/rz3e-diag \
+ *              "$(pwd)/apps/moru/diag-uart.overlay"
+ *
+ * chosen 은 나중에 적용된 오버레이가 이기므로 app.overlay 의 CDC 지정을
+ * 이 파일이 덮는다. Kconfig 변경은 없다 — 셸 백엔드가 폴링 모드라
+ * (CONFIG_SHELL_BACKEND_SERIAL_API_POLLING) 양쪽에서 같은 코드가 돈다.
+ */
+
+/ {
+	chosen {
+		zephyr,console = &uart2;
+		zephyr,shell-uart = &uart2;
+	};
+};

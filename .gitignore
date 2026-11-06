@@ -20,3 +20,4 @@ build/
 # 내려받은 벤더 문서 (TRM 11 MB 등) — 스크래치패드에 두고 저장소엔 넣지 않는다
 *.pdf
 trm-download/
+sdcard/zephyr-diag-uart.bin

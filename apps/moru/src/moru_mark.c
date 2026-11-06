@@ -13,6 +13,20 @@
  * 초기화되므로 PRE_KERNEL_2 이후라면 안전하다. 이 보드에서 지금까지
  * 모든 콘솔 출력이 이 경로로 나갔다.
  *
+ * ── ⚠ chosen 이 아니라 uart2 에 직접 찍는다 (2026-11-06) ──────────────
+ * main 이 USB CDC-ACM 으로 바뀌었다 (app.overlay). chosen zephyr,console
+ * 을 따르면 이 마커가 CDC 로 가는데, USB 열거 전에는 한 글자도 나가지
+ * 않아 **초기 관측 수단이 사라진다** — 그게 바로 이 파일의 존재 이유다.
+ *
+ * 그래서 노드를 uart2 로 고정한다. 보율은 걱정하지 않아도 된다:
+ * ns16550 드라이버가 DT 의 current-speed(115200)를 스스로 적용한다
+ * (uart_ns16550.c:2079 .uart_config.baudrate = DT_INST_PROP_OR(
+ *  current_speed) → init → pm_action(TURN_ON) → configure →
+ *  set_baud_rate, :654). 즉 **콘솔로 쓰이지 않아도 115200 으로 나온다.**
+ *
+ * 따라서 USB 가 무음일 때도 UART 어댑터만 꽂으면 어디까지 갔는지 보인다.
+ * 진단 빌드(diag-uart.overlay)로 카드를 바꾸기 전에 먼저 이것을 본다.
+ *
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -23,7 +37,8 @@
 
 void moru_mark(const char *s)
 {
-	const struct device *con = DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
+	/* chosen 이 아니라 uart2 고정 — 위 머리말 참고 */
+	const struct device *con = DEVICE_DT_GET(DT_NODELABEL(uart2));
 
 	if (!device_is_ready(con)) {
 		return;

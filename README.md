@@ -124,6 +124,44 @@ cd sdcard && mkimage -A arm64 -O linux -T script -C none -n "PiZZa Zephyr loader
 준다. 이 보드의 Linux 는 같은 LED 에 `heartbeat`(빠른 두 번 + 쉼)를 걸어 두므로
 **빠른 패턴을 쓰면 눈으로 구분되지 않는다** — 느린 네모파를 쓴다.
 
+## 콘솔 원칙 — main 은 USB, 안 되면 UART 1개
+
+**2026-11-06 사용자 확정.** `apps/moru` 의 콘솔·셸은 **USB CDC-ACM** 이다.
+USB 가 동작하지 않으면 **UART 1개만** 써서 들여다본다.
+
+| 모드 | chosen | 빌드 | 보이는 것 |
+|---|---|---|---|
+| **main (USB)** | `app.overlay` → `cdc_acm_uart0` | `./build.sh "$PWD/apps/moru"` | `/dev/cu.usbmodem*` 에 셸·로그 전부 |
+| **진단 (UART)** | `diag-uart.overlay` → `uart2` | `./build.sh "$PWD/apps/moru" /tmp/claude-501/rz3e-diag "$PWD/apps/moru/diag-uart.overlay"` | UART2 115200 에 셸·로그 전부 |
+
+왜 바뀌었나 — 11-05 에는 "둘 다 UART2" 였다. USB 열거가 안정되고(열거 성공·
+OTP 직렬번호·`<err>` 0줄), **USB 가 안 보일 때 원인을 가릴 관측 수단이
+생겼기 때문**이다. 그 수단이 아래 두 줄이다.
+
+**⚠ USB main 에서도 초기 마커는 UART2 로 나온다.** `src/moru_mark.c` 가
+`chosen` 을 따르지 않고 `uart2` 에 직접 찍는다 — USB 열거 전에는 CDC 로
+한 글자도 안 나가므로 그래야 관측이 가능하다. 보율은 ns16550 드라이버가
+DT 의 `current-speed`(115200)를 스스로 적용하므로 콘솔로 쓰이지 않아도
+115200 으로 나온다.
+
+```
+[2][<S][S>][<U][U>][M]    ← USB 가 무음이어도 UART 어댑터만 꽂으면 보인다
+```
+
+**⚠ 열거 전 로그는 터미널을 열 때까지 보이지 않는다.** `LOG_MODE_DEFERRED`
+라 버퍼에 쌓이고 백엔드가 붙은 뒤 쏟아진다(`LOG_BUFFER_SIZE=16384`).
+CDC 의 `poll_out` 은 버퍼가 차면 **버린다**(블록하지 않는다) — 터미널을
+열고 엔터를 한 번 치면 프롬프트가 나온다.
+
+USB 가 무음일 때 가르는 순서는 `apps/moru/prj.conf` 맨 끝에 적어 두었다.
+카드를 진단 빌드로 바꾸는 것은 **마지막 수단**이다(①~④를 먼저 본다).
+
+진단 빌드로 교체:
+
+```bash
+cd /Users/paraco/Projects/PiZZa/rk3566/sdcard && sudo mcopy -i /dev/rdisk4s2 -o zephyr-diag-uart.bin ::/zephyr.bin && sudo mdir -i /dev/rdisk4s2 ::/ && diskutil eject /dev/disk4
+```
+
 ## UART 콘솔 (선택)
 
 | USB-TTL | 보드 40핀 |

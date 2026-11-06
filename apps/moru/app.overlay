@@ -1,8 +1,25 @@
 /*
- * CDC-ACM 클래스 노드만 만든다. chosen zephyr,console 은 건드리지 않아
- * 보드 DTS 의 &uart2 (115200) 가 그대로 콘솔로 쓰인다.
+ * CDC-ACM 노드를 만들고 **콘솔·셸을 그것으로 돌린다.**
  *
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * ── 원칙 (2026-11-06 사용자 확정) ────────────────────────────────────
+ *   main 은 USB 다. 안 되면 UART 1개만 써서 들여다본다.
+ *
+ * 그래서 이 오버레이가 chosen 을 CDC 로 지정하고, 진단용으로
+ * diag-uart.overlay (chosen 을 uart2 로 되돌림) 를 따로 둔다.
+ *
+ * ⚠ 열거 전 로그는 터미널을 열 때까지 보이지 않는다. LOG_MODE_DEFERRED 라
+ *   버퍼에 쌓이고 백엔드가 붙은 뒤 쏟아진다 (그래서 prj.conf 가
+ *   LOG_BUFFER_SIZE 를 16384 로 올려 둔다). 부팅이 열거 전에 죽으면
+ *   아무것도 안 보이므로, src/moru_mark.c 의 동기 마커는 chosen 과
+ *   무관하게 **uart2 에 직접** 찍는다 — 그것이 유일한 초기 관측 수단이다.
+ *
+ * ⚠ CDC 의 poll_out 은 링버퍼가 차면 **버린다** (블록하지 않는다 —
+ *   usbd_cdc_acm.c:1014, flow_ctrl 이 DT hw-flow-control 에서 오고 우리
+ *   노드엔 없으므로 false). 그래서 셸 백엔드를 폴링 모드로 유지할 수 있고
+ *   CONFIG_SHELL_BACKEND_SERIAL_CHECK_DTR(인터럽트 모드 전용) 가 필요 없다.
+ *   대가는 터미널을 열기 전 출력이 버려지는 것 — 열고 엔터를 치면 된다.
  */
 
 #include <zephyr/dt-bindings/interrupt-controller/arm-gic.h>
@@ -28,5 +45,12 @@
 &zephyr_udc0 {
 	cdc_acm_uart0: cdc_acm_uart0 {
 		compatible = "zephyr,cdc-acm-uart";
+	};
+};
+
+/ {
+	chosen {
+		zephyr,console = &cdc_acm_uart0;
+		zephyr,shell-uart = &cdc_acm_uart0;
 	};
 };
