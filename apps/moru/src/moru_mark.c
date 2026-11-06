@@ -51,12 +51,27 @@ void moru_mark(const char *s)
 }
 
 static int m_pk2(void)      { moru_mark("[2]");  return 0; }
+/*
+ * ⚠ POST_KERNEL 의 **맨 앞**(우선순위 0). 2026-11-06 저녁에 추가했다.
+ *
+ *   [2](PRE_KERNEL_2/99)와 [<S](POST_KERNEL/89) 사이가 사각지대였는데 그
+ *   구간에 z_sched_init · 스레드 생성 · **커널의 첫 스레드 전환** ·
+ *   POST_KERNEL 장치 초기화 0~88 이 전부 들어 있다.
+ *   CONFIG_THREAD_RUNTIME_STATS 를 켠 판이 그 안에서 조용히 멈춘다
+ *   (fault 가 아니다 — moru_fatal 의 검증된 핸들러가 한 글자도 찍지 않는다).
+ *
+ *   POST_KERNEL 은 main 스레드 안에서 돌므로 이 마커가 찍히면
+ *   **첫 전환까지는 성공**한 것이다. 안 찍히면 커널 초기화나 첫 전환이다.
+ *   그 한 가지를 가리기 위한 마커다.
+ */
+static int m_pk0(void)      { moru_mark("[P0]"); return 0; }
 static int m_pre_shell(void){ moru_mark("[<S]"); return 0; }
 static int m_post_shell(void){ moru_mark("[S>]"); return 0; }
 static int m_pre_usb(void)  { moru_mark("[<U]"); return 0; }
 static int m_post_usb(void) { moru_mark("[U>]"); return 0; }
 
 SYS_INIT(m_pk2,        PRE_KERNEL_2, 99);
+SYS_INIT(m_pk0,        POST_KERNEL,  0);	/* POST_KERNEL 의 맨 앞 */
 SYS_INIT(m_pre_shell,  POST_KERNEL,  89);	/* enable_shell_uart 는 90 */
 SYS_INIT(m_post_shell, POST_KERNEL,  91);
 SYS_INIT(m_pre_usb,    APPLICATION,  89);	/* cdc_acm_serial_init_device 는 90 */
