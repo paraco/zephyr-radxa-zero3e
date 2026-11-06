@@ -113,10 +113,21 @@ static void htop_collect_cb(const struct k_thread *thread, void *user_data)
 	}
 	r->stack_unused = unused;
 
+	/*
+	 * ⚠ CONFIG_THREAD_RUNTIME_STATS 가 없으면 **구조체에 멤버 자체가
+	 *   없다.** 함수는 링크되고 0 을 돌려주지만(kernel/thread.c:1161-1175)
+	 *   execution_cycles 를 참조하면 컴파일이 깨진다 — 실제로 깨졌다.
+	 *   그래서 가드가 필요하다. 없는 구성에서는 CPU% 가 0.0 으로 나오고
+	 *   htop 의 나머지(스택·우선순위·상태·힙)는 그대로 쓸 수 있다.
+	 */
 	r->cycles = 0;
+#ifdef CONFIG_THREAD_RUNTIME_STATS
 	if (k_thread_runtime_stats_get(tid, &st) == 0) {
 		r->cycles = st.execution_cycles;
 	}
+#else
+	ARG_UNUSED(st);
+#endif
 	r->pct_x10 = 0;
 }
 
@@ -263,13 +274,15 @@ static void htop_render(const struct shell *sh, struct htop_row *rows, int n,
 	/* 커서를 홈으로 — 화면 전체를 지우지 않는다 (함정 ③) */
 	shell_fprintf(sh, SHELL_NORMAL, "\033[H");
 	shell_fprintf(sh, SHELL_NORMAL,
-		      "MoruLab htop — 가동 %ud %02u:%02u:%02u · %u.%03u MHz · 갱신 %u ms · 프레임 %u\033[K\r\n",
+		      "MoruLab htop — 가동 %ud %02u:%02u:%02u · %u.%03u MHz · 갱신 %u ms · 프레임 %u%s\033[K\r\n",
 		      (unsigned int)(up / 86400000),
 		      (unsigned int)((up / 3600000) % 24),
 		      (unsigned int)((up / 60000) % 60),
 		      (unsigned int)((up / 1000) % 60),
 		      freq / 1000000U, (freq % 1000000U) / 1000U,
-		      interval_ms, frame);
+		      interval_ms, frame,
+		      IS_ENABLED(CONFIG_THREAD_RUNTIME_STATS)
+			      ? "" : " · CPU% 없음(THREAD_RUNTIME_STATS 꺼짐)");
 	htop_heap_line(sh);
 	shell_fprintf(sh, SHELL_NORMAL,
 		      "  스레드 %d개%s · q 또는 Ctrl-C 로 나간다\033[K\r\n",
