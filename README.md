@@ -203,6 +203,7 @@ drivers/usb/udc/              udc_dwc3.c + 레지스터 헤더  ← 핵심
 drivers/hwinfo/               OTP 에서 칩 고유 ID 읽기
 apps/                         usbled · usbuart · ledblink · moru (관리 셸)
 sdcard/                       boot.cmd / boot.scr 와 적재 설명
+docs/roadmap.md               남은 작업 계획 (2026-11-06 전면 점검) ← 다음에 할 일
 docs/bringup-rules.md         실기 왕복 규율 ← 작업 시작 전에 읽을 것
 docs/trm-grounding.md         하드웨어 사실의 출처 등급과 TRM 사정권
 docs/hardware-verified.md     실기 검증 기록 (시간순 · 검색해서 쓴다)
