@@ -173,6 +173,13 @@ def main():
                     time.sleep(0.002)
                     continue
                 raise
+        # ⚠ tcdrain 은 커널 버퍼를 비우지만 **USB 전송 완료를 보장하지
+        #   않는다.** 실측: 175456 을 다 write 했는데 보드는 175232 에서
+        #   멈췄고(224 바이트 = 3.5 패킷), 기다려도 변하지 않았다. 그
+        #   224 를 다시 보내자 즉시 100 % 가 됐다 — 보드는 기다리고 있었고
+        #   호스트가 마지막 청크를 내보내지 않은 것이다.
+        termios.tcdrain(fd)
+        time.sleep(0.3)
         el = time.time() - t0
         os.close(fd)
         print('  보낸 바이트 %d / %d · %.2f 초 · %.0f B/s' % (n, size, el, n / max(el, 1e-3)))
@@ -182,7 +189,32 @@ def main():
         # 전송 직후의 드라이버 로그를 그대로 모은다 — 수신 경로 진단의 핵심
         show('전송 직후 로그 (드라이버가 찍는 것)', drain(sh, args.wait))
 
-        show('moru ota status', shell_cmd(sh, 'moru ota status', 3.0))
+        st = shell_cmd(sh, 'moru ota status', 3.0)
+        show('moru ota status', st)
+
+        # 부족분이 있으면 그만큼만 다시 보낸다 — 위 주석의 이유로 호스트가
+        # 마지막 청크를 내보내지 않는 경우가 있다. 보드는 기다리고 있으므로
+        # 나머지를 보내면 그대로 이어받는다 (실측: 2738 -> 2742 콜백).
+        import re as _re
+        plain = _re.sub(r'\x1b\[[0-9;]*m', '', st)
+        m = _re.search(r'(\d+)\s*/\s*(\d+)\s*바이트', plain)
+        if m and int(m.group(1)) < int(m.group(2)):
+            got = int(m.group(1))
+            rest = data[got:]
+            print('── 부족분 %d 바이트 재전송 ' % len(rest) + '─' * 28)
+            fd2 = open_raw(data_port, os.O_WRONLY)
+            k = 0
+            while k < len(rest):
+                k += os.write(fd2, rest[k:k + chunk])
+                termios.tcdrain(fd2)
+                time.sleep(0.002)
+            termios.tcdrain(fd2)
+            time.sleep(0.3)
+            os.close(fd2)
+            print('  보냈다 %d 바이트\n' % k)
+            time.sleep(1.0)
+            show('moru ota status (재전송 뒤)',
+                 shell_cmd(sh, 'moru ota status', 3.0))
         if args.bytes == 0:
             show('moru ota verify', shell_cmd(sh, 'moru ota verify', 12.0))
         else:
