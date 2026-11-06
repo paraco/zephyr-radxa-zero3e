@@ -242,10 +242,10 @@ def main():
             time.sleep(1.0)
             show('moru ota status (재전송 뒤)',
                  shell_cmd(sh, 'moru ota status', 3.0))
-        if args.bytes == 0:
-            show('moru ota verify', shell_cmd(sh, 'moru ota verify', 12.0))
-        else:
-            print('(--bytes 로 일부만 보냈으므로 verify 는 건너뛴다)\n')
+        # --bytes 로 잘라 보냈어도 verify 는 유효하다 — begin 에 준 CRC 가
+        # **잘린 데이터**의 CRC 이기 때문이다. 짧은 패킷·mps 배수 경계를
+        # 검증할 때 이것이 판정 수단이 된다.
+        show('moru ota verify', shell_cmd(sh, 'moru ota verify', 12.0))
     finally:
         os.close(sh)
     return 0
