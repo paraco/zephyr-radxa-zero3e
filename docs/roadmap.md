@@ -43,7 +43,7 @@
 
 | | 묶음 | 왕복 | 위험 | 종료 조건 |
 |---|---|---|---|---|
-| **1** | **`FRAME_POINTER`·`EXCEPTION_STACK_TRACE` 재시험** | 1 | 중 | 부팅 + `Moru >` · 의도적 오류에서 역추적이 나오는가 |
+| **1** | **`FRAME_POINTER=y` 재시험** (역추적 체인 전체) | 1 | 중 | 부팅 + `Moru >` · `.config` 에 체인 넷이 켜짐 · `nm` 에 `arch_stack_walk` |
 | **2** | **B1** 부팅 메시지 · `moru_boot.c` 되살리기 · PID 0x0005 · 제품 문자열 | 1 | 낮 | `[    0.123456]` 형식 · `shell stats show` 의 `Lost logs: 0` · 호스트에 `MoruLab Zephyr RTOS` · 열거 유지 |
 | **3** | **B2** `moru info` · 커널 상태 셸 모듈 | 1 | 낮 | `moru info` 값이 맞다 · `kernel heap`·`hwinfo devid`·`log status` 동작 |
 | **4** | **B3-a** `moru usb` 를 **진단 빌드**로 검증 | 1 | 높 | UART 셸에서 `moru usb status` 가 `ioreg` 와 일치 · `<err>` 0줄 |
@@ -58,9 +58,28 @@
 `INIT_STACKS` 와 **증상이 똑같았다**(무음). 같은 EL2 캐시 원인일 수 있다.
 맞으면 역추적을 되찾아 **2~6 전부의 디버깅 비용이 내려간다.** 그래서 먼저 둔다.
 
+**`CONFIG_FRAME_POINTER=y` 한 줄이 전부다.** 체인이 자동으로 따라온다
+(`arch/arm64/core/Kconfig:210`, `CPU_CORTEX_A` 안):
+
+```
+ARCH_HAS_STACKWALK  default y, depends on FRAME_POINTER, imply THREAD_STACK_INFO
+  → ARCH_STACKWALK        default y, depends on ARCH_HAS_STACKWALK (arch/Kconfig:489)
+    → EXCEPTION_STACK_TRACE  default y, depends on ARCH_STACKWALK (subsys/debug/Kconfig:317)
+```
+
+그래서 `EXCEPTION_STACK_TRACE` 를 따로 시험할 수 없다 — `FRAME_POINTER` 없이는
+**선택 자체가 보이지 않는다**(지금 `.config` 에 그 세 심볼이 아예 없는 이유다).
+README 함정 ④가 "둘 다"로 적은 것은 사실상 하나였다.
+
 전제조건은 이미 넣었다 — `SHELL_STACK_SIZE=4096`(실측 71 % 근거). 프레임
 포인터는 스택을 더 쓰므로, 3072 에서 시험하면 "기동 실패"와 "셸 스택 넘침"을
 가릴 수 없었다.
+
+**역추적을 일부러 깨뜨려 확인하지 않는다.** 그러려면 고장 코드를 넣어야 하고,
+그것이 `moru_stage.c` 가 태어난 패턴이다(규칙 5). 대신:
+- 빌드 후 `.config` 에 체인 넷이 켜졌는지, `nm` 에 `arch_stack_walk` 가 있는지
+  확인한다 (실기 0회) — "역추적이 준비됨" 의 증거다
+- 실제 출력은 2~6 중 **자연히 깨질 때** 본다. 그때가 이 설정이 값을 내는 때다
 
 단독 왕복으로 돌린다(기동 실패가 입증된 설정이라 묶지 않는다). 실패해도
 지금 구성은 그대로 남는다.
@@ -75,7 +94,15 @@
   시간**을 읽을 수 있어 가치는 남는다
 - **로그 버퍼를 종료 조건으로 확인한다** — 부팅 메시지가 ~15줄 늘어 총 60줄
   남짓이 터미널 열기 전까지 쌓인다. `shell stats show` 의 `Lost logs: 0` 을
-  본다. 넘치면 `LOG_BUFFER_SIZE` 를 올린다
+  본다. 넘치면 `LOG_BUFFER_SIZE` 를 올린다.
+
+  ⚠ **기준선을 먼저 받아야 한다.** 11-06 에 본 `Lost logs: 0` 은 **UART 셸**
+  빌드에서 나온 값이다. 그때는 백엔드가 `POST_KERNEL 90` 에 바로 붙어 버퍼가
+  0.1 초 만에 비워졌다. USB main 에서는 사람이 터미널을 열 때까지(수십 초)
+  쌓이므로 **조건이 다르고, 그 0 은 지금 구성의 증거가 아니다**(규칙 6).
+  USB 셸에서 `shell stats show` 를 한 번 쳐서 현재 기준선을 기록한 뒤 B1 로
+  간다. 이 수치 없이 가면 "부팅 메시지가 안 나온다"가 버퍼 넘침인지
+  `moru_boot.c` 문제인지 가를 수 없다
 
 ### 3 — B2
 
@@ -91,6 +118,10 @@ CONFIG_LOG_CMDS=y
 
 `moru info` 의 콘솔 항목은 "USB CDC-ACM" 으로 쓴다. `kernel thread list`·
 `stacks` 가 살아 있으니 중복 구현하지 않는다.
+
+`HWINFO_SHELL` 은 링크 걱정이 없다 — `drivers/hwinfo/CMakeLists.txt:8` 이
+`CONFIG_HWINFO` 면 `hwinfo_weak_impl.c` 를 **항상** 링크한다. 우리가 구현하지
+않은 `hwinfo reset_cause` 는 `-ENOSYS` 를 돌려주고 끝난다(확인 완료).
 
 ### 4·5 — B3 을 둘로 쪼갠다
 
@@ -110,8 +141,17 @@ BL31 이 응답하지 않으면 무음으로 죽어 원인 구분이 불가능�
 
 **USB main 때문에 새로 생긴 것:** 재부팅하면 USB 가 끊겨 셸도 끊긴다.
 재부팅 성공 여부는 **UART2 의 동기 마커**로 판정한다 — 마커가 다시 나오면
-재부팅된 것이다. 그리고 `moru reboot` 은 재부팅 전에 로그를 비우고 한 줄
-안내한다(CDC 가 끊기면 버퍼가 날아간다).
+재부팅된 것이다.
+
+핸들러 안의 순서를 지킨다 — **CDC 가 끊긴 뒤 비우는 것은 의미가 없다**:
+
+```
+  ① shell_print 로 안내 한 줄
+  ② log flush (log_panic() 또는 동등한 것)
+  ③ k_msleep(50)  — CDC 의 tx_fifo_work 가 K_MSEC(1) 로 예약되고 USB
+                    프레임 몇 개가 더 나가야 한다
+  ④ arm_smccc_smc(PSCI_SYSTEM_RESET, ...)
+```
 
 `probe` 를 먼저 둔다 — `PSCI_VERSION` 만 쏘아 BL31 응답을 확인한다. 거기서
 보드가 얼면 그 자체가 결론이고, 콘솔에 "issuing..." 이 남아 원인이 명확하다.
