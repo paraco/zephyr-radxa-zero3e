@@ -23,3 +23,7 @@ trm-download/
 sdcard/zephyr-diag-uart.bin
 sdcard/zephyr-usbmain.bin
 sdcard/boot.scr.known-good
+
+# Python 바이트코드 — tools/ 의 스크립트를 import 할 때 생긴다
+__pycache__/
+*.pyc
