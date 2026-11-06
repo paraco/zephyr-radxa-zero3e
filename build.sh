@@ -38,6 +38,13 @@ if [[ -n "$EXTRA_OVERLAY" ]]; then
   [[ -f "$EXTRA_OVERLAY" ]] || { echo "오버레이 파일 없음: $EXTRA_OVERLAY" >&2; exit 1; }
   EXTRA_ARGS+=("-DEXTRA_DTC_OVERLAY_FILE=$EXTRA_OVERLAY")
   echo "추가 오버레이: $EXTRA_OVERLAY"
+  # 같은 이름의 .conf 가 있으면 함께 적용한다 (예: diag-uart.overlay +
+  # diag-uart.conf). 진단 빌드는 셸 백엔드를 폴링으로 되돌려야 한다.
+  EXTRA_CONF="${EXTRA_OVERLAY%.overlay}.conf"
+  if [[ -f "$EXTRA_CONF" ]]; then
+    EXTRA_ARGS+=("-DEXTRA_CONF_FILE=$EXTRA_CONF")
+    echo "추가 설정:   $EXTRA_CONF"
+  fi
 fi
 
 west build -p always -b radxa_zero_3e/rk3568 -d "$BUILD_DIR" -s "$APP" \
