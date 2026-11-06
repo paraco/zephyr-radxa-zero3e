@@ -794,7 +794,7 @@ static uint32_t dwc3_evt_buf[DWC3_EVT_BUF_BYTES / sizeof(uint32_t)]
  * pm_suspended 로 막아 **중복 submit 을 하지 않는다** — 링크 상태 변화는
  * 7 초에 4번 올 정도로 빈번하다(실측).
  */
-static void dwc3_pm_resume(const struct device *dev)
+static void dwc3_pm_resume(const struct device *dev, const char *why)
 {
 	struct udc_dwc3_data *priv = udc_get_private(dev);
 
@@ -805,11 +805,18 @@ static void dwc3_pm_resume(const struct device *dev)
 	priv->pm_suspended = false;
 	priv->stats.wakeup++;
 
+	/*
+	 * ⚠ **어느 경로가 건져 냈는지 찍는다.** 실기 첫 관측에서 resume 이
+	 *   "USB reset" 바로 앞 7 µs 에 찍혀, 정상 경로(링크 복귀)인지
+	 *   리셋 경로인지 로그만으로 구분할 수 없었다. 같은 이벤트 배치
+	 *   안이라 시각으로는 못 가린다. 출처를 문자열로 남긴다 —
+	 *   정상 경로가 실제로 도는지가 이 설계의 안전성을 가른다.
+	 */
 	if (priv->pm_enabled) {
-		LOG_INF("resume — 스택에 알린다");
+		LOG_INF("resume [%s] — 스택에 알린다", why);
 		udc_submit_event(dev, UDC_EVT_RESUME, 0);
 	} else {
-		LOG_INF("resume (pm 꺼짐 — 스택에 올리지 않는다)");
+		LOG_INF("resume [%s] (pm 꺼짐 — 올리지 않는다)", why);
 	}
 }
 
@@ -2242,7 +2249,7 @@ static void dwc3_handle_events(const struct device *dev)
 			case DWC3_DEVT_USB_RESET:
 				priv->stats.reset++;
 				/* suspend 중의 리셋도 "깨어났다" 다 */
-				dwc3_pm_resume(dev);
+				dwc3_pm_resume(dev, "usb-reset");
 				/*
 				 * 리셋은 컨트롤러의 엔드포인트 상태를 날린다.
 				 * EP0 을 다시 설정하고 SETUP 을 재무장한다.
@@ -2381,7 +2388,7 @@ static void dwc3_handle_events(const struct device *dev)
 
 				priv->stats.connect_done++;
 				/* 열거를 다시 했으면 깨어 있다 */
-				dwc3_pm_resume(dev);
+				dwc3_pm_resume(dev, "connection-done");
 
 				LOG_INF("connected: CONNECTSPD=%u DSTS=0x%08x",
 					(unsigned int)FIELD_GET(
@@ -2446,7 +2453,7 @@ static void dwc3_handle_events(const struct device *dev)
 				break;
 			}
 			case DWC3_DEVT_REMOTE_WAKEUP:
-				dwc3_pm_resume(dev);
+				dwc3_pm_resume(dev, "remote-wakeup");
 				break;
 			case DWC3_DEVT_LINK_STATE_CHANGE:
 				/*
@@ -2462,7 +2469,7 @@ static void dwc3_handle_events(const struct device *dev)
 					(uint8_t)(FIELD_GET(DWC3_DEVT_INFO, raw) &
 						  DWC3_LINK_STATE_MASK);
 				if (priv->stats.last_linkst == DWC3_LINK_STATE_ON) {
-					dwc3_pm_resume(dev);
+					dwc3_pm_resume(dev, "link-to-ON");
 				}
 				break;
 			case DWC3_DEVT_DISCONNECT:
@@ -2802,7 +2809,7 @@ int udc_dwc3_pm_set(const struct device *dev, bool enable)
 		priv->pm_suspended = false;
 		priv->stats.wakeup++;
 		if (priv->pm_enabled) {
-			LOG_INF("pm 끄기 — 서 있던 suspend 를 먼저 푼다");
+			LOG_INF("pm 끄기 [pm-off] — 서 있던 suspend 를 먼저 푼다");
 			udc_submit_event(dev, UDC_EVT_RESUME, 0);
 		}
 	}
