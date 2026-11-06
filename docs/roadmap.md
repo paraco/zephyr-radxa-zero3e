@@ -43,7 +43,7 @@
 
 | | 묶음 | 왕복 | 위험 | 종료 조건 |
 |---|---|---|---|---|
-| **1** | **`FRAME_POINTER=y` 재시험** (역추적 체인 전체) | 1 | 중 | 부팅 + `Moru >` · **`kernel thread unwind` 가 콜 스택을 찍는다** · 열거 유지 |
+| ~~1~~ | ~~`FRAME_POINTER=y` 재시험~~ | — | — | **✅ 2026-11-06 완료 — 역추적 복구, `kernel thread unwind` 동작** |
 | **2** | **B1** 부팅 메시지 · `moru_boot.c` 되살리기 · PID 0x0005 · 제품 문자열 | 1 | 낮 | `[    0.123456]` 형식 · `shell stats show` 의 `Lost logs: 0` · 호스트에 `MoruLab Zephyr RTOS` · 열거 유지 |
 | **3** | **B2** `moru info` · 커널 상태 셸 모듈 | 1 | 낮 | `moru info` 값이 맞다 · `kernel heap`·`hwinfo devid`·`log status` 동작 |
 | **4** | **B3-a** `moru usb` 를 **진단 빌드**로 검증 | 1 | 높 | UART 셸에서 `moru usb status` 가 `ioreg` 와 일치 · `<err>` 0줄 |

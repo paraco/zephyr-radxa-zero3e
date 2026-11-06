@@ -241,12 +241,28 @@ CRU 드라이버가 없어 되살릴 수 없고, 컨트롤러 레지스터가 �
 `GSNPSID` 검사에서 init 이 중단된다. U-Boot 의 `preboot=usb start` 가 켜 둔
 클럭을 그대로 물려받아야 한다.
 
-**④ `CONFIG_FRAME_POINTER` / `CONFIG_EXCEPTION_STACK_TRACE` — 재시험 대상.**
-켜면 Zephyr 가 기동조차 못 했다 (LED·콘솔 모두 무음). ⚠ 다만 그 증상은
-`INIT_STACKS` 와 **똑같았고, 그쪽은 EL2 데이터 캐시가 원인이었다**(위 절).
-프레임 포인터도 스택을 더 건드리므로 같은 원인일 수 있다 — 캐시 두 설정을
-켠 상태에서 다시 시험해 볼 거리다(실기 1회). 그때까지는 역추적 대신 ②의
-`STACK_SENTINEL` + `THREAD_NAME` 을 쓴다.
+**④ 역추적은 쓸 수 있다 — 과거 기록이 틀렸다 (2026-11-06 정정).**
+전에는 `CONFIG_FRAME_POINTER`/`EXCEPTION_STACK_TRACE` 를 켜면 기동조차
+못 했다. **그 증상은 `INIT_STACKS` 와 똑같았고 원인도 같았다 — EL2 데이터
+캐시다**(위 절). 캐시 두 설정이 켜진 지금 구성에서는 그냥 동작한다.
+
+`CONFIG_FRAME_POINTER=y` 한 줄이 체인 넷을 켠다
+(`arch/arm64/core/Kconfig:210` → `arch/Kconfig:489` →
+`subsys/debug/Kconfig:317`), 덤으로 `kernel thread unwind` 명령까지:
+
+```
+Moru > kernel thread unwind
+Unwinding 0x40037340 shell_uart
+ra: 0x40005b28   ← addr2line 으로 cmd_kernel_thread_unwind unwind.c:50
+...
+```
+
+```bash
+~/zephyr-sdk-1.0.1/gnu/aarch64-zephyr-elf/bin/aarch64-zephyr-elf-addr2line -e /tmp/claude-501/rz3e-build/zephyr/zephyr.elf -f -C -s 0x40005b28
+```
+
+**EL2 캐시 하나가 두 기능(`INIT_STACKS`·역추적)을 막고 있었다.** 그래서
+위 절의 캐시 두 줄은 이 보드에서 선택이 아니다.
 
 ## 출처와 라이선스
 

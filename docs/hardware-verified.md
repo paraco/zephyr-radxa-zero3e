@@ -1565,3 +1565,67 @@ Zephyr CDC-ACM 이 HS 전용 디스크립터를 따로 두지 않는 것으로 �
 `boot.cmd` 분기(`zephyr-uart.bin` 우선 읽기)는 **넣지 않았다**. `boot.scr`
 재생성이 따르고 실패 시 후보가 하나 늘기 때문이다. 진단 전환은 `mcopy -o`
 덮어쓰기로 한다 — `sdcard/zephyr-diag-uart.bin` (150152 B) 을 준비해 뒀다.
+
+## 🎯 역추적 복구 — EL2 캐시가 막고 있던 두 번째 기능 (2026-11-06)
+
+`CONFIG_FRAME_POINTER=y` 한 줄로 **부팅하고 역추적이 동작한다.**
+빌드 `48b8c20`, 154240 B. 실기 1회.
+
+```
+Moru > kernel thread unwind
+Unwinding 0x40037340 shell_uart
+ra: 0x40005b28   cmd_kernel_thread_unwind      unwind.c:50
+ra: 0x40006a30   exec_cmd                      shell.c:983
+ra: 0x40007650   state_collect                 shell.c:1526
+ra: 0x40007948   z_flag_processing_set         shell_ops.h:127
+ra: 0x40007b14   shell_thread                  shell.c:1851
+ra: 0x4000af58   k_sched_current_thread_query  kernel.h:265
+```
+
+주소 → 함수 변환:
+
+```bash
+~/zephyr-sdk-1.0.1/gnu/aarch64-zephyr-elf/bin/aarch64-zephyr-elf-addr2line \
+  -e /tmp/claude-501/rz3e-build/zephyr/zephyr.elf -f -C -s <주소>
+```
+
+### 과거 기록이 틀렸다 — 그리고 왜 틀렸는지도 안다
+
+README 함정 ④는 "`FRAME_POINTER`/`EXCEPTION_STACK_TRACE` 를 켜면 Zephyr 가
+기동조차 못 한다" 였다. **그 증상은 `INIT_STACKS` 와 똑같았고, 원인도 같았다 —
+EL2 데이터 캐시다.** 캐시 두 설정이 켜진 구성에서는 그냥 동작한다.
+
+**EL2 캐시 하나가 두 기능을 막고 있었다.** 기전을 "설명되지 않음"으로 정직하게
+남긴 값이 두 번 돌아왔다 — "해결" 로 닫았다면 역추적을 영구히 포기했을 것이다
+([bringup-rules.md](bringup-rules.md) 규칙 4).
+
+### Kconfig 하나가 체인 넷을 켠다
+
+`arch/arm64/core/Kconfig:210` (`CPU_CORTEX_A` 안):
+
+```
+ARCH_HAS_STACKWALK       default y, depends on FRAME_POINTER, imply THREAD_STACK_INFO
+  → ARCH_STACKWALK       default y  (arch/Kconfig:489)
+    → EXCEPTION_STACK_TRACE  default y  (subsys/debug/Kconfig:317)
+```
+
+그래서 `EXCEPTION_STACK_TRACE` 를 따로 시험할 수 없다 — `FRAME_POINTER` 없이는
+**선택 자체가 보이지 않는다.** 과거 기록이 "둘 다" 로 적은 것은 사실상 하나였다.
+
+`.config` diff 는 9줄이었고 전부 그 체인 + `KERNEL_THREAD_SHELL_UNWIND` ·
+`ARCH_STACKWALK_MAX_FRAMES=8` · `OVERRIDE_FRAME_POINTER_DEFAULT` 다. 번짐 없음.
+크기 146048 → 154240 B (+8 KiB, unwinder 코드).
+
+### 고장 코드를 넣지 않고 검증했다
+
+`CONFIG_KERNEL_THREAD_SHELL_UNWIND` 가 체인에 함께 켜져
+**`kernel thread unwind [<id16진수>]`** 가 붙는다 (`unwind.c:53`, 인자를 빼면
+현재 스레드). 살아 있는 스레드의 콜 스택을 찍으므로 일부러 깨뜨릴 필요가 없다 —
+그것은 `moru_stage.c` 가 태어난 패턴이다(규칙 5).
+
+### 로그 버퍼 기준선 (USB main)
+
+같은 세션에서 USB 셸로 `shell stats show` → **`Lost logs: 0`**.
+이것이 USB main 구성의 기준선이다. 앞서 본 0 은 UART 빌드 값이라 조건이
+달랐다(백엔드가 `POST_KERNEL 90` 에 바로 붙어 0.1 초에 비워진다).
+B1 이 부팅 메시지를 ~15줄 늘린 뒤 다시 확인한다.
