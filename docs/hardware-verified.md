@@ -2519,9 +2519,49 @@ htop 코드를 고정한 채 Kconfig 만 빼서 성공을 얻었으므로 코드
 않았다. 크기는 4 KB 늘 뿐이고 `boot.cmd` 가 항상 0x40000 을 적재하므로 적재
 범위는 같다 — **크기는 원인이 아니다.**
 
-**다음에 볼 것.** uart2 점퍼를 복구하면 어디서 죽는지 바로 보인다. 지금은
-보드가 도는 상태에서도 uart2 가 0 바이트인 것이 확인됐다(점퍼 단절).
-`moru_mark.c` 의 동기 마커가 어디까지 나오는지가 1차 단서다.
+### 죽는 지점이 확정됐다 — 커널의 첫 스레드 전환 (uart2 복구 후)
+
+uart2 점퍼를 복구하고(먼저 **채널이 살아 있음을 증명**했다 — 보낸 명령의
+로그가 uart2 에 나오는 것을 확인) `THREAD_RUNTIME_STATS=y`
++ `SCHED_THREAD_USAGE_ALL=n` 판을 올렸다.
+
+```
+uart2 바이트: 505
+마커: [2]          ← 이것뿐이다
+```
+
+`moru_mark.c` 의 마커 단계:
+
+| 마커 | SYS_INIT |
+|---|---|
+| `[2]` | PRE_KERNEL_2 / 99 (그 단계의 마지막) |
+| `[<S]` | **POST_KERNEL / 89** |
+| `[S>]` | POST_KERNEL / 91 |
+| `[<U]` · `[U>]` | APPLICATION / 89 · 91 |
+
+`[2]` 는 나오고 `[<S]` 는 안 나온다. **POST_KERNEL 은 main 스레드 안에서
+돈다.** 그래서 죽는 구간은 PRE_KERNEL_2 의 끝과 POST_KERNEL 사이, 곧
+**커널이 main 스레드로 처음 전환하는 그 자리**다 —
+`z_sched_usage_start()`/`z_sched_usage_stop()` 이 처음 실행되는 지점이다.
+
+### 좁혀진 것과 배제된 것
+
+| 항목 | 판정 | 근거 |
+|---|---|---|
+| 메모리 고갈 | **배제** | 두 빌드의 `_end` 가 0x4005b000 / 0x4005c000, `__kernel_ram_end` 는 0x40100000 — 650 KB 넘게 남는다 |
+| `SCHED_THREAD_USAGE_ALL`(= `_kernel.cpus[].usage` 추가) | **배제** | 끈 판도 똑같이 `[2]` 에서 멈춘다 |
+| `struct _cpu` 배치가 어셈블리 오프셋을 밀었다 | **약함** | `usage0` 는 `struct _cpu` **맨 끝**이다(`kernel_structs.h:184`). 어셈블리가 쓰는 `nested`·`irq_stack`·`current`(146·149·152)보다 뒤다 |
+| 낡은/고정 오프셋 | **약함** | arm64 어셈블리는 `_thread_offset_to_*` 생성 값을 쓴다 — 구조체가 커지면 따라간다 |
+| 스레드별 계측(`z_sched_usage_start/stop`) | **남은 용의자** | 위 구간이 정확히 그 코드가 처음 도는 자리다 |
+
+**기전은 여전히 설명되지 않았다.** 더 좁히려면 Kconfig 로는 안 된다 —
+`SCHED_THREAD_USAGE_AUTO_ENABLE` 은 **끌 수 없다**(Zephyr 이 `IS_ENABLED`
+없이 값으로 써서 `init.c:401` 에서 컴파일이 깨진다). 다음 단계는 전환 경로
+안에 마커를 넣거나 `usage.c` 를 손보는 것, 즉 Zephyr 트리를 건드리는 일이다.
+
+**복구.** 이 실험은 부팅 불가를 만들므로 카드에서 `zephyr.bin.old` 를
+`zephyr.bin` 으로 되돌려야 한다(사람 손, 명령 1줄). OTA 가 적용 전에 남겨
+두는 그 파일이다.
 
 **영향.** `moru htop` 의 창 단위 CPU% 를 쓸 수 없고, 내장
 `kernel thread list` 의 부팅 이후 비율도 쓸 수 없다. htop 의 나머지(스택
