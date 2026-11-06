@@ -401,9 +401,10 @@ U-Boot 가 EL2 에서 `go` 하고 캐시를 정리하지 않기 때문이다. �
   오지 않는 suspend 에서 영구히 막힌다.
   시험은 `python3 tools/pm_test.py --seconds 90` 이고 **UART 어댑터가
   보드와 다른 포트에 꽂혀 있어야** 한다(위 경고 참고)
-- ~~**Zephyr 상류 보고 3건**~~ — **✅ 2026-11-07 올렸다.** 원고는
-  [docs/upstream-report.md](docs/upstream-report.md) 에 남아 있다. 남은 일은
-  답변을 기다려 그 판단을 반영하는 것뿐이다. 세 건은
+- **Zephyr 상류 보고 3건** — 원고는
+  [docs/upstream-report.md](docs/upstream-report.md) 에 완성돼 있다.
+  **올림 여부는 미확정이다**(2026-11-07 — GitHub 검색에서 확인되지 않았다).
+  세 건은
   1. EL2 에서 캐시를 켠 채 부팅하면 조용히 멈춘다 (`ARM64_BOOT_DISABLE_DCACHE`)
   2. `SCHED_THREAD_USAGE_AUTO_ENABLE` 을 끌 수 없다 (빌드 깨짐)
   3. Rockchip UART 트리거가 트리 안에서 모순되고(rk3588 과 rk3588s 가 **같은
