@@ -17,7 +17,13 @@
 
 #ifdef CONFIG_HWINFO_RK3566_OTP
 
-/** OTP 에서 실제로 읽은 ID 인가. false 면 자리표다. */
+/**
+ * OTP 에서 실제로 읽은 ID 인가. false 면 자리표다.
+ *
+ * ⚠ **첫 hwinfo_get_device_id() 호출 뒤에만 의미가 있다.** 드라이버는 OTP
+ *   를 지연 읽기하므로, 그 전에 부르면 아직 읽지 않았다는 뜻의 false 가
+ *   돌아온다 — "자리표" 와 구분되지 않는다. 반드시 get 을 먼저 부른다.
+ */
 bool rk3566_otp_id_is_valid(void);
 
 #else

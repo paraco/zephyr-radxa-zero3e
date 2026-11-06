@@ -26,12 +26,6 @@ LOG_MODULE_REGISTER(moru, LOG_LEVEL_INF);
 #define MORU_BUILD_TIME "unknown"
 #endif
 
-/*
- * 보드 모델. DT 루트의 model 속성은 바인딩에 없어 매크로가 생성되지 않으므로
- * (DT_PROP 불가, dt_prop() 도 빈 값) 고정 문자열로 둔다. 이 앱은 이미 보드
- * 전용이다 — 아래 SoC 문구와 main.c 의 GPIO0 주소도 하드코딩이다.
- */
-
 #define SEP "===================================================="
 
 /*
@@ -127,7 +121,14 @@ static int moru_boot_banner(void)
 	 * U-Boot(TF-A BL31 포함)가 전원 투입부터 go 까지 쓴 시간이다.
 	 */
 	if (moru_preboot_us() != 0U) {
-		LOG_INF("Bootloader: %llu.%03llu s before Zephyr entry",
+		/*
+		 * ⚠ 구간은 "전원 투입(CNTVCT_EL0 = 0) → Zephyr 의 PRE_KERNEL_1"
+		 *   이다. U-Boot·TF-A BL31 뿐 아니라 Zephyr 자신의 arm64 초기
+		 *   부팅(reset.S 의 MMU·캐시 설정, EL 전환, bss 지우기)도 포함
+		 *   된다. 그 구간은 따로 측정한 적이 없다. 그래서 "Bootloader"
+		 *   가 아니라 "Pre-kernel" 로 적는다.
+		 */
+		LOG_INF("Pre-kernel: %llu.%03llu s (power-on → PRE_KERNEL_1)",
 			moru_preboot_us() / 1000000ULL,
 			(moru_preboot_us() % 1000000ULL) / 1000ULL);
 	}

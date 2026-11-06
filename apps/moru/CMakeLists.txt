@@ -15,20 +15,20 @@ target_compile_definitions(app PRIVATE MORU_BUILD_TIME="${MORU_BUILD_TIME} UTC")
 # dt_prop() 도 비어 돌아온다. zephyr.dts 를 정규식으로 긁는 방법은 되지만,
 # 이 앱은 이미 보드 전용이고(GPIO0 주소·SoC 문구가 하드코딩) 이 값은 배너
 # 장식 한 줄이라 그 취약함을 안고 갈 값이 아니다.
+# → 그래서 src/moru.h 의 MORU_MODEL 고정 문자열로 둔다.
 
-# ⚠ 1단계 격리 시험 중이다. main.c 만 빌드한다.
+# 소스 네 개를 모두 빌드한다 (2026-11-06, B1·B2 완료 상태).
+#   main.c       LED 하트비트 + main
+#   moru_mark.c  초기 부팅 동기 마커 — uart2 에 직접 (USB 가 무음일 때의 눈)
+#   moru_boot.c  Linux dmesg 형식 부팅 메시지 + 로그 타임스탬프 기준점
+#   moru_shell.c `moru` 명령 (info · reboot)
 #
-#   src/moru_stage.c 는 빼둔다 — PRE_KERNEL_1 에서 device_map() 을 불렀고
-#   그건 불법이다. kernel/init.c 를 보면 z_mem_manage_init()(:293)이
-#   PRE_KERNEL_1(:560)·PRE_KERNEL_2(:564) 보다 뒤, POST_KERNEL(:300) 바로
-#   앞에서 돈다. 즉 메모리 관리자가 초기화되기 전에 매핑을 요청한 것이다.
-#   진단 장치가 피검체를 죽였다. 고쳐서 되살리려면 POST_KERNEL 이후로
-#   옮겨야 하고, 그러면 PRE_KERNEL 단계는 표시할 수 없다.
-#
-#   src/moru_boot.c 도 빼둔다 — PRE_KERNEL_1/0 에서 로그 타임스탬프를
-#   바꾸므로 역시 후보다. 셸이 먼저 뜨는 것을 확인한 뒤 되돌려 넣는다.
-# moru_stage.c 는 2026-11-06 에 삭제했다 — PRE_KERNEL_1 에서 device_map() 을
-# 불러 보드를 죽이는 파일이었다. 남겨 두면 다음 사람이 빌드에 넣고 당한다.
+# ⚠ 과거에 moru_stage.c 가 있었고 2026-11-06 에 삭제했다 — PRE_KERNEL_1 에서
+#   device_map() 을 불러 보드를 죽이는 파일이었다. kernel/init.c 의
+#   z_mem_manage_init()(:293)이 PRE_KERNEL_1(:560)·PRE_KERNEL_2(:564) 보다
+#   뒤, POST_KERNEL(:300) 바로 앞에서 돈다. 진단 장치가 피검체를 죽인
+#   사례이고 (docs/bringup-rules.md 규칙 5), 남겨 두면 다음 사람이 빌드에
+#   넣고 같은 함정을 밟으므로 지웠다.
 # drivers/hwinfo/hwinfo_rk3566.h 를 "hwinfo_rk3566.h" 로 쓸 수 있게 한다.
 # (저장소 루트는 CMakeLists.txt 의 두 단계 위)
 target_include_directories(app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../drivers/hwinfo)

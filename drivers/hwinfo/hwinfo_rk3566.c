@@ -43,6 +43,8 @@
 #include <zephyr/sys/device_mmio.h>
 #include <zephyr/sys/util.h>
 #include <zephyr/logging/log.h>
+
+#include "hwinfo_rk3566.h"
 #include <string.h>
 #include <errno.h>
 
