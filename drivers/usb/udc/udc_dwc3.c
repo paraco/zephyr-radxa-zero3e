@@ -2679,11 +2679,34 @@ static int udc_dwc3_init(const struct device *dev)
 	hwp3 = dwc3_read32(dev, DWC3_GHWPARAMS3);
 	priv->hw_num_eps = FIELD_GET(DWC3_GHWPARAMS3_NUM_EPS, hwp3);
 
-	if (priv->hw_num_eps != config->num_of_eps) {
-		LOG_WRN("endpoint count mismatch: HW=%u, DT num-bidir-endpoints=%u",
-			priv->hw_num_eps, (unsigned int)config->num_of_eps);
+	/*
+	 * ⚠ 단위를 맞춰 비교한다 (2026-11-06 정정).
+	 *
+	 * 예전 코드는 hw_num_eps(HW 의 **물리/단방향** EP 수)와
+	 * config->num_of_eps(DT 의 **양방향** 수)를 바로 비교해, 실제로는
+	 * 맞는 구성에서도 매 부팅마다 경고를 냈다:
+	 *   "endpoint count mismatch: HW=16, DT num-bidir-endpoints=8"
+	 * 이 보드는 GHWPARAMS3.NUM_EPS = 16 이고 DT 는 8 양방향 = 16 물리
+	 * 이므로 **일치**한다. 그 경고가 OTA 작업 중 "EP 부족" 을 의심하게
+	 * 만들어 왕복을 쓰게 했다 (docs/hardware-verified.md 의 기각된 가설).
+	 *
+	 * 그리고 방향을 구분한다 — DT 가 HW 보다 **많이** 선언하면 없는 EP 를
+	 * 쓰려 하므로 오류이고, **적게** 선언하면 보수적이라 무해하다.
+	 */
+	if (DWC3_NUM_PHYS_EPS > priv->hw_num_eps) {
+		LOG_ERR("DT 가 HW 보다 많은 EP 를 선언했다 — "
+			"DT %u 물리(num-bidir-endpoints=%u) > HW %u",
+			(unsigned int)DWC3_NUM_PHYS_EPS,
+			(unsigned int)config->num_of_eps,
+			priv->hw_num_eps);
+	} else if (DWC3_NUM_PHYS_EPS < priv->hw_num_eps) {
+		LOG_INF("endpoints: DT %u 물리 사용 / HW %u 보유 (IN %u) — 여유 있음",
+			(unsigned int)DWC3_NUM_PHYS_EPS, priv->hw_num_eps,
+			(unsigned int)FIELD_GET(DWC3_GHWPARAMS3_NUM_IN_EPS, hwp3));
 	} else {
-		LOG_INF("endpoints: %u (HW matches DT)", priv->hw_num_eps);
+		LOG_INF("endpoints: %u 물리 (DT %u 양방향, HW 와 일치, IN %u)",
+			priv->hw_num_eps, (unsigned int)config->num_of_eps,
+			(unsigned int)FIELD_GET(DWC3_GHWPARAMS3_NUM_IN_EPS, hwp3));
 	}
 
 	err = dwc3_core_soft_reset(dev);
