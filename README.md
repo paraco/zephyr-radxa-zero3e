@@ -380,19 +380,23 @@ U-Boot 가 EL2 에서 `go` 하고 캐시를 정리하지 않기 때문이다. �
 | HS 속도 확정 | 벌크 mps 64 → **512** (`UDC_EVT_RESET` 을 `CONNECTION_DONE` 으로) |
 | 로그 잘림 | 두 단계(CDC `poll_out` + 셸 로그 큐)에서 버려지고 있었다. **드롭 0** |
 
-## 온디바이스 LLM (계획 단계)
+## 이 보드의 자리 — Zephyr 함대의 Hub
 
-`LiquidAI/LFM2.5-350M` 을 **이 보드의 Zephyr 위에서** 추론하는 계획을
-[docs/ondevice-llm-plan.md](docs/ondevice-llm-plan.md) 에 세웠다.
+이 포팅은 단독 실험이 아니다. **Edge(RP2350·Teensy) ↔ HaLow ↔ Hub(Cortex-A)**
+2계층 함대에서 **Hub 플랫폼**이고, 양쪽 모두 Zephyr 다.
 
-핵심은 하나다 — **메모리가 아니라 포팅이 막는다.** DRAM 2 GB 에 모델은 Q4 로
-0.25 GB 라 8배 여유인데, Zephyr 에 ggml/llama.cpp 를 올린 전례가 없다.
-그래서 추론 엔진 포팅(2~6주) **앞에 싼 관문 둘**을 두었다:
+차별화를 한 문장으로: **Linux 없이 Edge 부터 Hub 까지 전부 Zephyr 로 돌아가는
+AI 함대.** Edge 는 MMU 없는 MCU 에서 100 ms 실시간 인터록을, Hub 는 Cortex-A
+에서 집계와 설명을 한다.
 
-1. 같은 실리콘의 Linux 기준선에서 tg 5 t/s 이상 나오는가 (1~2일)
-2. 빈 C++17 앱이 이 보드에서 뜨는가 (1~2일)
+전략: [docs/ai-on-rtos-strategy.md](docs/ai-on-rtos-strategy.md)
+Hub LLM 실행 계획: [docs/ondevice-llm-plan.md](docs/ondevice-llm-plan.md)
 
-둘 중 하나가 막히면 포팅에 들어가지 않는다.
+**⚠ Hub 의 LLM 은 tinyML 이 아니다.** Edge 모델은 `.xmb` 로 15~84 KB 이고
+LFM2.5-350M 은 Q4 로 0.25 GB — 약 3,000배 차이다. 그 단어는 Edge 에만 쓴다.
+
+**dotprod 가 Hub 를 가른다** — A55(이 보드)·A76(Pi 5)은 있고 A53(Pi Zero 2 W)·
+A72(Pi 4B)는 **없다**. 그래서 LLM 급 Hub 는 이 보드와 Pi 5 다.
 
 ## 다음에 할 만한 것
 
