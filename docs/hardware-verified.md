@@ -2370,3 +2370,33 @@ Hello World! qemu_cortex_a53/qemu_cortex_a53
 
 보고 문안은 [upstream-report.md](upstream-report.md) 에 있다 — 사용자가
 GitHub 에 올리면 된다(제가 계정으로 올릴 수 없다).
+
+## ✅ EP 개수 경고 정리 — 단위가 다른 값을 비교했다 (2026-11-06)
+
+빌드 `000ff55`. OTA 로 올렸다(카드 0회).
+
+```
+이전:  udc_dwc3: endpoint count mismatch: HW=16, DT num-bidir-endpoints=8
+지금:  udc_dwc3: endpoints: 16 물리 (DT 8 양방향, HW 와 일치, IN 10)
+```
+
+| 값 | 단위 | 실측 |
+|---|---|---|
+| `GHWPARAMS3.NUM_EPS` (17:12) | HW 의 **물리(단방향)** EP 수 | 16 |
+| `GHWPARAMS3.NUM_IN_EPS` (22:18) | 그중 IN 전용 | 10 |
+| DT `num-bidir-endpoints` | **양방향** 수 | 8 |
+| `DWC3_NUM_PHYS_EPS` | `2 × 8` | **16** |
+
+`GHWPARAMS3 = 0x08290085`. 즉 **16 == 16 으로 처음부터 일치**했는데,
+8(양방향)과 16(물리)을 비교해 매 부팅 경고를 냈다.
+
+### 이 경고가 진단을 흐렸다
+
+OTA 1단계에서 수신이 0 바이트일 때 이 경고를 보고 **"두 CDC 가 물리 EP
+0~9 를 쓰는데 DT 가 8 이라 부족하다"** 고 의심했다. 코드를 읽어
+`DWC3_NUM_PHYS_EPS = 2 * num_bidir_endpoints` 임을 확인하고서야 기각했다
+(위 "기각된 가설" 표). **잘못된 경고는 로그 소음이 아니라 진단 비용이다.**
+
+수정은 단위를 맞추고 방향을 구분한다 — DT 물리 > HW 면 `LOG_ERR`(없는 EP
+를 쓰려 한다), < 면 `LOG_INF`(여유), 같으면 `LOG_INF`(일치). IN 전용 수도
+함께 찍는다(IN 한계가 따로 있다). diff 는 조건식과 로그 문구뿐이다.

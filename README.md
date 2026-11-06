@@ -344,10 +344,15 @@ U-Boot 가 EL2 에서 `go` 하고 캐시를 정리하지 않기 때문이다. �
 
 ## 다음에 할 만한 것
 
-- 일반 엔드포인트 실사용 검증 (CDC 벌크는 동작하지만 대량 전송·ZLP·짧은 패킷
-  경계는 아직 본격적으로 시험하지 않았다)
-- CRU 클럭 드라이버 — 지금은 필요한 게이트를 레지스터로 직접 쓴다
-- pinctrl 드라이버
-- `DWC3_NUM_PHYS_EPS` 와 DT `num-bidir-endpoints` 불일치 정리
-  (HW=16, DT=8 로 경고가 난다)
-- USB suspend/resume (`DWC3_DEVT_U3L2L1_SUSPEND` / `WAKEUP`) 미처리
+- ~~일반 엔드포인트 실사용 검증~~ — **✅ 2026-11-06.** OTA 로 175 KB 를
+  수십 회 전송했고, mps(512) 배수와 ±1 경계를 CRC 로 검증했다
+  (512·513·1023·1024·2048·175104). ZLP 자체는 CDC-ACM 에서 호스트
+  드라이버가 다루므로 이 경로로는 직접 드러나지 않는다
+- ~~`DWC3_NUM_PHYS_EPS` 와 DT `num-bidir-endpoints` 불일치~~ —
+  **✅ 2026-11-06.** 불일치가 아니었다. HW 16(물리)과 DT 8(양방향 = 물리
+  16)을 단위 없이 비교한 경고였다
+- **CRU 클럭 드라이버** — 지금은 필요한 게이트를 레지스터로 직접 쓴다
+- **pinctrl 드라이버**
+- **USB suspend/resume** (`DWC3_DEVT_U3L2L1_SUSPEND` / `WAKEUP`) 미처리
+- **Zephyr 상류 보고** — 문안이 [docs/upstream-report.md](docs/upstream-report.md)
+  에 있다. 사용자가 GitHub 에 올리면 끝난다
