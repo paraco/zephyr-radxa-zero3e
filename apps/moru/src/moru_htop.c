@@ -108,9 +108,22 @@ static void htop_collect_cb(const struct k_thread *thread, void *user_data)
 	 * 값이 남아 있는 구간을 센다 — prj.conf 가 켜 둔다).
 	 */
 	r->stack_size = thread->stack_info.size;
+	/*
+	 * ⚠ k_thread_stack_space_get() 은 **CONFIG_INIT_STACKS 가 있어야
+	 *   링크된다** (z_impl_k_thread_stack_space_get 미정의로 링크가 깨진다 —
+	 *   실제로 깨졌다). 쓰지 않은 양을 세는 방식이 '칠해 둔 값이 남아
+	 *   있는 구간' 이라 당연하다.
+	 *   없는 구성에서는 사용량을 모른다고 표시하고(바 대신 '—') 나머지
+	 *   (우선순위·상태·CPU%·힙)는 그대로 쓴다.
+	 */
+#ifdef CONFIG_INIT_STACKS
 	if (k_thread_stack_space_get(thread, &unused) != 0) {
 		unused = 0;
 	}
+#else
+	unused = 0;
+	r->stack_size = 0;	/* 0 = 모른다는 표시 */
+#endif
 	r->stack_unused = unused;
 
 	/*
@@ -282,7 +295,12 @@ static void htop_render(const struct shell *sh, struct htop_row *rows, int n,
 		      freq / 1000000U, (freq % 1000000U) / 1000U,
 		      interval_ms, frame,
 		      IS_ENABLED(CONFIG_THREAD_RUNTIME_STATS)
-			      ? "" : " · CPU% 없음(THREAD_RUNTIME_STATS 꺼짐)");
+			      ? (IS_ENABLED(CONFIG_INIT_STACKS)
+					 ? ""
+					 : " · 스택 없음(INIT_STACKS 꺼짐)")
+			      : (IS_ENABLED(CONFIG_INIT_STACKS)
+					 ? " · CPU% 없음(THREAD_RUNTIME_STATS 꺼짐)"
+					 : " · CPU%·스택 없음"));
 	htop_heap_line(sh);
 	shell_fprintf(sh, SHELL_NORMAL,
 		      "  스레드 %d개%s · q 또는 Ctrl-C 로 나간다\033[K\r\n",
@@ -299,6 +317,14 @@ static void htop_render(const struct shell *sh, struct htop_row *rows, int n,
 			? (unsigned int)((used * 100U) / r->stack_size) : 0;
 		char bar[16];
 
+		if (r->stack_size == 0U) {
+			shell_fprintf(sh, SHELL_NORMAL,
+				      " %4d  %3u.%1u  %-22s %-11s %s\033[K\r\n",
+				      r->prio, r->pct_x10 / 10U,
+				      r->pct_x10 % 10U, "—",
+				      r->state, r->name);
+			continue;
+		}
 		htop_bar(bar, sizeof(bar), spct);
 		shell_fprintf(sh, SHELL_NORMAL,
 			      " %4d  %3u.%1u  %s %3u%% %5zu/%-5zu %-11s %s\033[K\r\n",
