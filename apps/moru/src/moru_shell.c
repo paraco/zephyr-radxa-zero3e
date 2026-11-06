@@ -539,6 +539,14 @@ static int cmd_moru_usb(const struct shell *sh, size_t argc, char **argv)
 	}
 	shell_print(sh, "  EP0       state=%s wLength=%u",
 		    ep0_state_name(d.ep0_state), (unsigned int)d.ep0_wlength);
+	shell_print(sh, "  bulk mps  CDC0 in=%u out=%u · CDC1 in=%u out=%u",
+		    (unsigned int)d.bulk_in_mps, (unsigned int)d.bulk_out_mps,
+		    (unsigned int)d.bulk_in1_mps, (unsigned int)d.bulk_out1_mps);
+	if (d.bulk_in_mps == 512U) {
+		shell_print(sh, "     ✅ 512 — HS 디스크립터가 쓰인다");
+	} else if (d.bulk_in_mps == 64U) {
+		shell_warn(sh, "     ❌ 64 — FS 디스크립터다. 속도 확정 시점 문제");
+	}
 
 	shell_print(sh, "");
 	shell_print(sh, "카운터 (bring-up 에서 쫓던 증상은 ⚠ 표시)");

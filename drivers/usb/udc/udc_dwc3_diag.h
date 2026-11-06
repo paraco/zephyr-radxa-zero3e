@@ -57,6 +57,16 @@ struct udc_dwc3_diag {
 	/* EP0 상태 기계 */
 	uint8_t  ep0_state;
 	uint16_t ep0_wlength;
+	/*
+	 * 벌크 EP 의 mps — **HS 적용 여부를 판정하는 값**이다.
+	 * HS 는 512, FS 는 64. 로그로 확인하려 했지만 터미널 출력이 매번
+	 * 중간에 잘려 보이지 않았다(2026-11-06). 그래서 여기에 넣는다.
+	 * 0 이면 그 EP 가 아직 켜지지 않았다.
+	 */
+	uint16_t bulk_in_mps;	/* 0x82 — 첫 CDC 의 bulk IN */
+	uint16_t bulk_out_mps;	/* 0x01 — 첫 CDC 의 bulk OUT */
+	uint16_t bulk_in1_mps;	/* 0x84 — 둘째 CDC (OTA 데이터) */
+	uint16_t bulk_out1_mps;	/* 0x02 */
 	/* 카운터 */
 	struct udc_dwc3_stats stats;
 };

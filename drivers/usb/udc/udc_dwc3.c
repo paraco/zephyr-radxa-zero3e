@@ -2618,6 +2618,20 @@ int udc_dwc3_diag_get(const struct device *dev, struct udc_dwc3_diag *out)
 	out->gusb2phycfg0 = dwc3_read32(dev, DWC3_GUSB2PHYCFG(0));
 	out->ep0_state    = (uint8_t)priv->ep0_state;
 	out->ep0_wlength  = priv->ep0_wlength;
+
+	/* 벌크 EP mps — HS(512) 인지 FS(64) 인지 판정용 */
+	{
+		static const uint8_t addrs[4] = { 0x82U, 0x01U, 0x84U, 0x02U };
+		uint16_t *dst[4] = { &out->bulk_in_mps, &out->bulk_out_mps,
+				     &out->bulk_in1_mps, &out->bulk_out1_mps };
+
+		for (int i = 0; i < 4; i++) {
+			struct udc_ep_config *c = udc_get_ep_cfg(dev, addrs[i]);
+
+			*dst[i] = (c != NULL) ? c->mps : 0U;
+		}
+	}
+
 	out->stats        = priv->stats;
 
 	return 0;
