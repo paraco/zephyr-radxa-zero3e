@@ -202,8 +202,11 @@ CRU 드라이버가 없어 되살릴 수 없고, 컨트롤러 레지스터가 �
 `GSNPSID` 검사에서 init 이 중단된다. U-Boot 의 `preboot=usb start` 가 켜 둔
 클럭을 그대로 물려받아야 한다.
 
-**④ `CONFIG_FRAME_POINTER` / `CONFIG_EXCEPTION_STACK_TRACE` 는 쓸 수 없다.**
-켜면 Zephyr 가 기동조차 못 한다 (LED·콘솔 모두 무음). 역추적 대신 ②의
+**④ `CONFIG_FRAME_POINTER` / `CONFIG_EXCEPTION_STACK_TRACE` — 재시험 대상.**
+켜면 Zephyr 가 기동조차 못 했다 (LED·콘솔 모두 무음). ⚠ 다만 그 증상은
+`INIT_STACKS` 와 **똑같았고, 그쪽은 EL2 데이터 캐시가 원인이었다**(위 절).
+프레임 포인터도 스택을 더 건드리므로 같은 원인일 수 있다 — 캐시 두 설정을
+켠 상태에서 다시 시험해 볼 거리다(실기 1회). 그때까지는 역추적 대신 ②의
 `STACK_SENTINEL` + `THREAD_NAME` 을 쓴다.
 
 ## 출처와 라이선스
@@ -244,25 +247,40 @@ Available commands:
 
 UART2 셸 + USB CDC-ACM 열거(HS) + OTP 직렬번호가 동시에 살아 있고 `<err>` 0줄.
 
-### ⛔ 이 보드에서 쓸 수 없는 것
+### ⚠ 이 보드의 필수 설정 — EL2 데이터 캐시 (2026-11-06 해결)
 
-**`CONFIG_INIT_STACKS=y` 를 켜면 보드가 완전히 무음이 된다** (실기 3회 확인).
-U-Boot 는 정상이고 `go` 까지 가지만 Zephyr 가 한 글자도 못 찍는다.
-기전은 아직 설명되지 않았다 — 자세한 내용과 수치는
-`docs/hardware-verified.md`.
+**이 보드에서 Zephyr 를 쓰려면 다음 두 줄이 있어야 한다.**
 
-그래서 지금은 **`kernel thread list` 와 `kernel thread stacks` 를 쓸 수 없다**
-(둘 다 `INIT_STACKS` 를 요구한다). `kernel thread suspend`/`resume`/`kill` 과
-`uptime`/`cycles`/`version` 은 쓴다.
+```conf
+CONFIG_ARM64_DCACHE_ALL_OPS=y
+CONFIG_ARM64_BOOT_DISABLE_DCACHE=y
+```
 
-**다만 이 포기는 조건부다.** EL2 데이터 캐시 가설이 서 있고, 그것이 맞으면
-`CONFIG_ARM64_DCACHE_ALL_OPS=y` + `CONFIG_ARM64_BOOT_DISABLE_DCACHE=y` 로
-두 명령을 되찾는다 — **실기 1회**로 가린다. 근거와 실험 설계는
-[docs/trm-grounding.md](docs/trm-grounding.md) §7.
+없으면 `CONFIG_INIT_STACKS=y` 를 켜는 순간 **보드가 완전히 무음이 된다**
+(실기 3회 확인). U-Boot 는 정상이고 `go` 까지 가지만 Zephyr 가 한 글자도
+못 찍는다 — 동기 마커조차 안 나오므로 `PRE_KERNEL_2` 보다 앞에서 죽는다.
 
-⚠ `CONFIG_SHELL=y` 는 `KERNEL_SHELL` 을 통해 `INIT_STACKS` 를 **imply** 한다.
-그래서 `apps/moru/prj.conf` 가 명시적으로 `CONFIG_INIT_STACKS=n` 을 쓴다.
-**이 줄을 지우면 보드가 부팅하지 않는다.**
+**원인.** `INIT_STACKS` 자체가 아니라 **EL2 에서 부팅할 때 데이터 캐시를
+정리하지 않는 것**이었다. U-Boot 가 EL2(SPSR 0x3c9)에서 `go` 하고, `go` 는
+`booti` 와 달리 캐시를 정리하지 않으므로 MMU·dcache 가 켜진 채 진입한다.
+`reset.S:199-215` 의 0xAA 칠하기가 ISR 스택 4 KiB 를 dcache 에 dirty 로
+남기고, EL1 은 SCTLR 초기값이라 MMU·C 가 꺼져 스택 접근이 캐시를 우회한다 →
+나중에 그 stale dirty 줄이 evict 되며 EL1 이 DRAM 에 쓴 값을 덮는다.
+
+`arch/arm64/core/Kconfig:446` 이 정확히 이 위험을 적어 두었다 — "if data
+cache is enabled in case of Zephyr is booting from EL2, enable this option".
+그런데 **기본값이 꺼짐**이고, 의존하는 `ARM64_DCACHE_ALL_OPS` 도 꺼짐이라
+선택 자체가 보이지 않는다. 그래서 찾기 어려웠다.
+
+실기 판정 (`INIT_STACKS` 는 양쪽 다 `y`, 캐시 설정만 토글):
+
+| 빌드 | 캐시 두 설정 | 결과 |
+|---|---|---|
+| `464a4ce` | 없음 | 무음 ❌ |
+| `ef6780f` | **y** | 부팅 ✅ `kernel thread list`·`stacks` 동작 |
+
+되찾은 것: `kernel thread list` · `kernel thread stacks` (`IRQ 00` ISR 스택
+포함). 그 덕에 셸 스택이 71% 인 것을 즉시 알아 `SHELL_STACK_SIZE` 를 올렸다.
 
 ### 다음에 이어서 할 일
 

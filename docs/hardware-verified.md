@@ -1436,3 +1436,80 @@ EL1(MMU 꺼짐)이 DRAM 에 쓴 값을 나중에 덮는다는 가설이다.
   (손으로 빼도 같다). `mdir` 출력을 실제로 확인해야 한다.
 - `sudo` 비밀번호 오류로 `&&` 사슬이 끊기면 복사가 조용히 안 된다.
   `sudo -v` 로 먼저 받아 두면 피할 수 있다.
+
+
+## 🎯 INIT_STACKS 무음 해결 — EL2 데이터 캐시 (2026-11-06)
+
+**실기 1회로 확정했다.** 빌드 `ef6780f`, `sdcard/zephyr.bin` 150152 B.
+
+```conf
+CONFIG_INIT_STACKS=y
+CONFIG_ARM64_DCACHE_ALL_OPS=y
+CONFIG_ARM64_BOOT_DISABLE_DCACHE=y
+```
+
+### 결과
+
+```
+[2][<S][S>][<U][U>][M]
+*** Booting Zephyr OS build v4.4.0-3902-gfb0fa3dd488d ***
+...
+[00:00:00.356,000] <inf> usbd_cdc_acm: Configuration enabled
+Moru > kernel thread stacks
+0x40036340 shell_uart   (real size 3072):  unused  876  usage 2196 / 3072 (71 %)
+...
+0x400401c0 IRQ 00       (real size 4096):  unused 3596  usage  500 / 4096 (12 %)
+```
+
+`<err>` 0줄. `kernel thread list`·`stacks` 둘 다 동작하고, 후자가 `IRQ 00`
+(ISR 스택)까지 보여준다 — **`reset.S` 의 0xAA 칠하기가 정상 작동한다는 직접
+증거다.**
+
+### 판정 — `INIT_STACKS` 는 무죄였다
+
+`INIT_STACKS` 를 양쪽 다 `y` 로 두고 캐시 설정만 토글해 두 방향을 재현했다:
+
+| 빌드 | `INIT_STACKS` | 캐시 두 설정 | 결과 |
+|---|---|---|---|
+| `464a4ce` | y | 없음 | 무음 ❌ |
+| `ef6780f` | y | **y** | 부팅 ✅ |
+
+앞서 "유죄 입증" 으로 판정한 것은 **방아쇠**였고 원인이 아니었다. 원인은
+U-Boot 가 EL2 에서 `go` 하고 `go` 가 캐시를 정리하지 않는 것, 그리고
+Zephyr 의 `ARM64_BOOT_DISABLE_DCACHE` 가 기본으로 꺼져 있어 그 상황을
+처리하지 않는 것이다. 기전은 [trm-grounding.md](trm-grounding.md) §7.
+
+"유죄 입증" 과 "기전 설명" 을 따로 적어 둔 덕에 이 수정이 가능했다 — 기전을
+모르는 채 "해결" 로 닫았다면 `FRAME_POINTER` 도 영구히 포기했을 것이다
+([bringup-rules.md](bringup-rules.md) 규칙 4).
+
+### 굽기 전 확인이 왕복 하나를 아꼈다
+
+빌드 크기가 무음 빌드(`464a4ce`)와 **똑같은 150152 B** 였다. 설정이 안 켜진
+것으로 보였지만, 디스어셈블로 확인하니 `z_arm64_el2_init` 안에 `dc cisw`
+(캐시 clean+invalidate by set/way)와 `tlbi alle2`(`reset.c:170`, 그 `#ifdef`
+안에만 있는 명령)가 들어 있었다. 인라인 코드가 정렬 패딩에 흡수된 것이다.
+**크기만 보고 "안 켜졌다" 고 판단했으면 왕복 하나를 헛되게 썼다.**
+
+`.config` diff 도 정확히 7줄이었다 — 의도한 셋과, 자동으로 켜진
+`KERNEL_THREAD_SHELL_LIST`·`_STACKS` 둘. 번짐이 없었다.
+
+### USB CDC-ACM 에는 셸이 없다 (설계대로)
+
+`/dev/cu.usbmodem*` 를 열고 `help` 를 치면 UART 로그에
+`<inf> usbd_cdc_acm: 68 65 6c 70 0d 0a |help..` 가 찍히지만 응답은 없다.
+**정상이다.** `zephyr,shell-uart = &uart2` 이므로 셸은 UART2 에만 있고,
+CDC-ACM 은 데이터 포트일 뿐이다. 저 hexdump 는 오히려 호스트→보드 수신
+경로가 정상이라는 증거다(소비자가 없어 로그로만 남는다).
+
+셸을 USB 로 옮기려면 `chosen zephyr,shell-uart` 를 CDC 노드로 바꾸면 되지만
+**UART 셸을 잃는다** — USB 열거 전 부팅 로그를 못 보게 되므로 bring-up 에
+불리하다. 양쪽 동시 구동은 `shell_transport` 를 새로 구현하는 별개 작업이다
+(`shell_uart.c:527` 의 serial 백엔드는 인스턴스가 하나다).
+
+### 남은 관찰 — USB 속도
+
+`usbd_core: Actual device speed 1`(FS)과 bulk `mps=64`(FS 값, HS 면 512)가
+보인다. USB 코드는 이번에 건드리지 않았으므로 이 변경 탓은 아니다. 다만
+이전 기록의 "High Speed 열거" 와 어긋나므로 동작판 로그와 비교할 거리다.
+`CONNECTSPD=0`(= HS)과도 어긋난다. 단정하지 않고 남긴다.
