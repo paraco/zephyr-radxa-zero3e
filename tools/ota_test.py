@@ -56,29 +56,65 @@ def shell_cmd(fd, line, wait=2.5):
 
 
 def show(title, text):
+    '''받은 것을 거의 그대로 보여 준다.
+
+    ⚠ 필터를 공격적으로 두면 드라이버 로그를 버린다 — 진단에서 그것이
+    가장 중요한 줄이다. ANSI 색만 지우고 빈 줄만 접는다.
+    '''
+    import re
     print('── %s ' % title + '─' * max(0, 58 - len(title)))
+    text = re.sub(r'\x1b\[[0-9;]*m', '', text)
+    prev_blank = False
     for ln in text.splitlines():
         ln = ln.rstrip()
-        if ln and not ln.startswith('Moru >') or '>' in ln and len(ln) > 8:
-            print('  ' + ln)
+        if not ln:
+            if not prev_blank:
+                print()
+            prev_blank = True
+            continue
+        prev_blank = False
+        print('  ' + ln)
     print()
 
 
 def main():
-    path = sys.argv[1] if len(sys.argv) > 1 else os.path.join(
+    import argparse
+    ap = argparse.ArgumentParser(description='OTA 수신 자동 시험')
+    ap.add_argument('file', nargs='?', help='보낼 파일 (기본 sdcard/zephyr.bin)')
+    ap.add_argument('--shell', help='셸 포트. 진단 빌드면 UART '
+                                    '(예: /dev/cu.usbserial-0001)')
+    ap.add_argument('--data', help='OTA 데이터 포트 (기본: usbmodem 둘째)')
+    ap.add_argument('--bytes', type=int, default=0,
+                    help='앞에서 N 바이트만 보낸다 (0=전체). 진단용 — '
+                         'CDC 로그를 INF 로 켠 상태에서는 64 정도만 보낸다')
+    ap.add_argument('--wait', type=float, default=3.0,
+                    help='전송 뒤 로그를 모을 시간(초)')
+    args = ap.parse_args()
+
+    path = args.file or os.path.join(
         os.path.dirname(os.path.abspath(__file__)), '..', 'sdcard', 'zephyr.bin')
     path = os.path.abspath(path)
 
     ports = sorted(glob.glob('/dev/cu.usbmodem*'))
-    if len(ports) < 2:
-        print('CDC 포트가 둘이 아니다: %r' % ports)
-        print('보드가 켜져 있는지, 두 번째 CDC 가 열거됐는지 확인한다.')
-        return 1
-    sh_port, data_port = ports[0], ports[1]
+    sh_port = args.shell
+    data_port = args.data
+    if data_port is None:
+        if len(ports) < 2:
+            print('CDC 포트가 둘이 아니다: %r' % ports)
+            print('보드가 켜져 있는지, 두 번째 CDC 가 열거됐는지 확인한다.')
+            return 1
+        data_port = ports[1]
+    if sh_port is None:
+        if not ports:
+            print('CDC 포트가 없다.')
+            return 1
+        sh_port = ports[0]
     print('셸   포트: %s' % sh_port)
     print('데이터 포트: %s' % data_port)
 
     data = open(path, 'rb').read()
+    if args.bytes > 0:
+        data = data[:args.bytes]
     size = len(data)
     crc = zlib.crc32(data) & 0xffffffff
     print('보낼 파일: %s' % path)
@@ -117,9 +153,14 @@ def main():
         print('  EAGAIN %d회 (장치가 흐름 제어를 한 횟수 — 받고 있다는 뜻)' % eagain)
         print()
 
-        time.sleep(1.0)
+        # 전송 직후의 드라이버 로그를 그대로 모은다 — 수신 경로 진단의 핵심
+        show('전송 직후 로그 (드라이버가 찍는 것)', drain(sh, args.wait))
+
         show('moru ota status', shell_cmd(sh, 'moru ota status', 3.0))
-        show('moru ota verify', shell_cmd(sh, 'moru ota verify', 12.0))
+        if args.bytes == 0:
+            show('moru ota verify', shell_cmd(sh, 'moru ota verify', 12.0))
+        else:
+            print('(--bytes 로 일부만 보냈으므로 verify 는 건너뛴다)\n')
     finally:
         os.close(sh)
     return 0
