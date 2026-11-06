@@ -45,6 +45,11 @@ if [[ -n "${L_BLOB:-}" ]]; then
 	[[ -f $L_BLOB ]] || { echo "L_BLOB 파일 없음: $L_BLOB" >&2; exit 3; }
 	QEMU_ARGS+=(-device "loader,file=$L_BLOB,addr=0x60000000,force-raw=on")
 	echo "── 블롭: $L_BLOB → 0x60000000"
+elif [[ -f "$APP/app.overlay" ]] && grep -q "model_blob" "$APP/app.overlay"; then
+	# 이 앱은 모델 창을 선언한다. 블롭 없이 돌리면 전부 0 을 읽는데, 역양자화
+	# 결과가 ±0.0 이라 그럴듯해 보여 "포팅이 틀렸다" 로 오진한다 — 실제로 겪었다.
+	echo "⚠ $NAME 은 model_blob 창을 선언하는데 L_BLOB 이 없다 — 전부 0 을 읽는다" >&2
+	echo "   L_BLOB=<파일> $0 $APP" >&2
 fi
 
 echo "── 실행 (제한 ${LIMIT}s)"
