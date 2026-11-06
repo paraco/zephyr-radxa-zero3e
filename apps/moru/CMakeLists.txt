@@ -29,4 +29,8 @@ target_compile_definitions(app PRIVATE MORU_BUILD_TIME="${MORU_BUILD_TIME} UTC")
 #   바꾸므로 역시 후보다. 셸이 먼저 뜨는 것을 확인한 뒤 되돌려 넣는다.
 # moru_stage.c 는 2026-11-06 에 삭제했다 — PRE_KERNEL_1 에서 device_map() 을
 # 불러 보드를 죽이는 파일이었다. 남겨 두면 다음 사람이 빌드에 넣고 당한다.
-target_sources(app PRIVATE src/main.c src/moru_mark.c src/moru_boot.c)
+# drivers/hwinfo/hwinfo_rk3566.h 를 "hwinfo_rk3566.h" 로 쓸 수 있게 한다.
+# (저장소 루트는 CMakeLists.txt 의 두 단계 위)
+target_include_directories(app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../drivers/hwinfo)
+
+target_sources(app PRIVATE src/main.c src/moru_mark.c src/moru_boot.c src/moru_shell.c)

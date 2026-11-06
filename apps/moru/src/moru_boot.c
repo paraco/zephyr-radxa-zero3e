@@ -18,6 +18,8 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/logging/log_ctrl.h>
 
+#include "moru.h"
+
 LOG_MODULE_REGISTER(moru, LOG_LEVEL_INF);
 
 #ifndef MORU_BUILD_TIME
@@ -29,7 +31,6 @@ LOG_MODULE_REGISTER(moru, LOG_LEVEL_INF);
  * (DT_PROP 불가, dt_prop() 도 빈 값) 고정 문자열로 둔다. 이 앱은 이미 보드
  * 전용이다 — 아래 SoC 문구와 main.c 의 GPIO0 주소도 하드코딩이다.
  */
-#define MORU_MODEL "Radxa ZERO 3E"
 
 #define SEP "===================================================="
 
@@ -47,9 +48,25 @@ LOG_MODULE_REGISTER(moru, LOG_LEVEL_INF);
  * 앞선 줄들의 시각이 틀리게 찍힌다. k_cycle_get_64() 는 CNTVCT_EL0 를 읽을
  * 뿐이고 그 카운터는 리셋부터 돌므로 이 시점에도 안전하다.
  */
+static uint64_t moru_cycle_base;   /* Zephyr 진입 시점의 CNTVCT_EL0 */
+static uint64_t moru_preboot;      /* 그 값을 µs 로 바꾼 것 */
+
+uint64_t moru_preboot_us(void)
+{
+	return moru_preboot;
+}
+
+/*
+ * ⚠ 진입 시점을 0 으로 맞춘다 (2026-11-06).
+ *
+ * CNTVCT_EL0 는 SoC 리셋부터 돌기 때문에 그대로 쓰면 첫 로그가
+ * "[    6.699229]" 로 찍힌다 — U-Boot 가 쓴 ~6.3 초가 포함된 값이다.
+ * Linux dmesg 는 커널 시작을 0 으로 하므로 기준을 맞춘다. 부트로더가
+ * 쓴 시간은 버리지 않고 moru_preboot_us() 로 남겨 배너에 한 줄 찍는다.
+ */
 static log_timestamp_t moru_cycle_timestamp(void)
 {
-	return (log_timestamp_t)k_cycle_get_64();
+	return (log_timestamp_t)(k_cycle_get_64() - moru_cycle_base);
 }
 
 static int moru_boot_timestamp(void)
@@ -65,6 +82,9 @@ static int moru_boot_timestamp(void)
 		return 0;
 	}
 
+	moru_cycle_base = k_cycle_get_64();
+	moru_preboot = (moru_cycle_base * 1000000ULL) / freq;
+
 	(void)log_set_timestamp_func(moru_cycle_timestamp, (uint32_t)freq);
 	return 0;
 }
@@ -74,7 +94,7 @@ SYS_INIT(moru_boot_timestamp, PRE_KERNEL_1, 0);
 #define read_midr_el1()	read_sysreg(midr_el1)
 #define read_ctr_el0()	read_sysreg(ctr_el0)
 
-static const char *cpu_part_name(uint32_t implementer, uint32_t part)
+const char *moru_cpu_part_name(uint32_t implementer, uint32_t part)
 {
 	if (implementer != 0x41) {
 		return "unknown";
@@ -102,11 +122,20 @@ static int moru_boot_banner(void)
 	LOG_INF("MoruLab Zephyr RTOS %s (build %s)", APP_VERSION_STRING,
 		STRINGIFY(APP_BUILD_VERSION));
 	LOG_INF("Zephyr %s, built %s", KERNEL_VERSION_STRING, MORU_BUILD_TIME);
+	/*
+	 * 타임스탬프는 여기서부터 0 이므로 부트로더 구간은 이 줄로만 남는다.
+	 * U-Boot(TF-A BL31 포함)가 전원 투입부터 go 까지 쓴 시간이다.
+	 */
+	if (moru_preboot_us() != 0U) {
+		LOG_INF("Bootloader: %llu.%03llu s before Zephyr entry",
+			moru_preboot_us() / 1000000ULL,
+			(moru_preboot_us() % 1000000ULL) / 1000ULL);
+	}
 	LOG_INF(SEP);
 	LOG_INF("Machine model: %s", MORU_MODEL);
 	LOG_INF("SoC: Rockchip RK3566 (%s SoC 정의 재사용)", CONFIG_SOC);
 	LOG_INF("CPU: %s, MIDR 0x%08llx, EL%u, MPIDR 0x%08llx",
-		cpu_part_name(impl, part), (unsigned long long)midr,
+		moru_cpu_part_name(impl, part), (unsigned long long)midr,
 		(unsigned int)GET_EL(read_currentel()),
 		(unsigned long long)read_mpidr_el1());
 	{

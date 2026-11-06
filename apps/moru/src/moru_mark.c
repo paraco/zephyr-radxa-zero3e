@@ -35,6 +35,8 @@
 #include <zephyr/device.h>
 #include <zephyr/drivers/uart.h>
 
+#include "moru.h"
+
 void moru_mark(const char *s)
 {
 	/* chosen 이 아니라 uart2 고정 — 위 머리말 참고 */

@@ -298,3 +298,12 @@ ssize_t z_impl_hwinfo_get_device_id(uint8_t *buffer, size_t length)
 
 	return (ssize_t)n;
 }
+
+/*
+ * 외부 공개 접근자 — 선언은 hwinfo_rk3566.h.
+ * `moru info` 가 실제 OTP ID 와 자리표를 구분해 찍는 데 쓴다.
+ */
+bool rk3566_otp_id_is_valid(void)
+{
+	return rk_otp_id_valid;
+}

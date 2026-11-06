@@ -14,7 +14,7 @@
 
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 
-void moru_mark(const char *s);
+#include "moru.h"
 
 #define GPIO0_PHYS		0xfdd60000UL
 #define GPIO0_SIZE		0x100
