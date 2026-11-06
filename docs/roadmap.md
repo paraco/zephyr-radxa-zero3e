@@ -43,7 +43,7 @@
 
 | | 묶음 | 왕복 | 위험 | 종료 조건 |
 |---|---|---|---|---|
-| **1** | **`FRAME_POINTER=y` 재시험** (역추적 체인 전체) | 1 | 중 | 부팅 + `Moru >` · `.config` 에 체인 넷이 켜짐 · `nm` 에 `arch_stack_walk` |
+| **1** | **`FRAME_POINTER=y` 재시험** (역추적 체인 전체) | 1 | 중 | 부팅 + `Moru >` · **`kernel thread unwind` 가 콜 스택을 찍는다** · 열거 유지 |
 | **2** | **B1** 부팅 메시지 · `moru_boot.c` 되살리기 · PID 0x0005 · 제품 문자열 | 1 | 낮 | `[    0.123456]` 형식 · `shell stats show` 의 `Lost logs: 0` · 호스트에 `MoruLab Zephyr RTOS` · 열거 유지 |
 | **3** | **B2** `moru info` · 커널 상태 셸 모듈 | 1 | 낮 | `moru info` 값이 맞다 · `kernel heap`·`hwinfo devid`·`log status` 동작 |
 | **4** | **B3-a** `moru usb` 를 **진단 빌드**로 검증 | 1 | 높 | UART 셸에서 `moru usb status` 가 `ioreg` 와 일치 · `<err>` 0줄 |
@@ -75,11 +75,21 @@ README 함정 ④가 "둘 다"로 적은 것은 사실상 하나였다.
 포인터는 스택을 더 쓰므로, 3072 에서 시험하면 "기동 실패"와 "셸 스택 넘침"을
 가릴 수 없었다.
 
-**역추적을 일부러 깨뜨려 확인하지 않는다.** 그러려면 고장 코드를 넣어야 하고,
-그것이 `moru_stage.c` 가 태어난 패턴이다(규칙 5). 대신:
-- 빌드 후 `.config` 에 체인 넷이 켜졌는지, `nm` 에 `arch_stack_walk` 가 있는지
-  확인한다 (실기 0회) — "역추적이 준비됨" 의 증거다
-- 실제 출력은 2~6 중 **자연히 깨질 때** 본다. 그때가 이 설정이 값을 내는 때다
+**역추적을 일부러 깨뜨려 확인하지 않는다** — 고장 코드를 넣어야 하고 그것이
+`moru_stage.c` 가 태어난 패턴이다(규칙 5). 그럴 필요도 없어졌다:
+
+`CONFIG_KERNEL_THREAD_SHELL_UNWIND` 가 체인에 함께 켜져
+**`kernel thread unwind [<id16진수>]`** 명령이 붙는다(`unwind.c:53`, 인자를
+빼면 현재 스레드). 살아 있는 스레드의 콜 스택을 찍으므로 안전하게 검증된다.
+
+빌드 후 확인한 것 (실기 0회):
+- `.config` diff 9줄 — `FRAME_POINTER`·`ARCH_HAS_STACKWALK`·`ARCH_STACKWALK`·
+  `ARCH_STACKWALK_MAX_FRAMES=8`·`EXCEPTION_STACK_TRACE`·
+  `KERNEL_THREAD_SHELL_UNWIND`·`OVERRIDE_FRAME_POINTER_DEFAULT`. 번짐 없음
+- `nm` 에 `arch_stack_walk`(T)와 `cmd_kernel_thread_unwind` 존재
+- 크기 146048 → 154240 B (+8 KiB, unwinder 코드)
+
+주소를 함수 이름으로 바꾸려면 `aarch64-zephyr-elf-addr2line -e <elf> -f -C <주소>`.
 
 단독 왕복으로 돌린다(기동 실패가 입증된 설정이라 묶지 않는다). 실패해도
 지금 구성은 그대로 남는다.
