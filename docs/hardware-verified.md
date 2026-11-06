@@ -2100,3 +2100,49 @@ Zephyr                                    U-Boot (boot.scr)
 ⚠ `boot.cmd`·`boot.scr` 자체를 바꿀 때는 여전히 카드를 뺀다. 그리고
 `zephyr.bin.old` 가 SD 에 남으므로 롤백은 그것을 `zephyr.bin` 으로
 되돌리면 된다(카드를 맥에 꽂아서).
+
+## ✅ 롤백 시험 — 안전망이 작동한다 (2026-11-06)
+
+OTA 적용 뒤 SD 상태와 롤백을 실기로 확인했다.
+
+```
+적용 뒤 SD
+  zephyr.bin      262144   ← boot.scr 의 고정 256 KiB 쓰기
+  zephyr.bin.old  175456   ← boot.scr 이 만든 백업
+  boot.scr          3792
+
+cmp zephyr.bin.old  (OTA 전 이미지)  →  ✅ 바이트 단위로 일치
+
+롤백 (.old → zephyr.bin) 뒤 부팅
+  빌드 2026-11-06 09:07:06 UTC   ← 되돌아왔다
+```
+
+**양방향이 검증됐다** — OTA 로 `09:07:06` → `09:08:51`, 롤백으로 그 반대.
+`boot.scr` 의 백업이 정확하므로 **벽돌이 되지 않는다.**
+
+### 뜻밖의 수확 — 전원 차단에는 DRAM 이 남지 않는다
+
+롤백을 위해 카드를 빼며 전원을 끊었다. 그 뒤 `moru ota check` 가 이렇게
+나왔다:
+
+```
+0x50000000: magic 0xd9a7dfc6 pattern 0x63f76ea7 count 1735915518
+```
+
+즉 **쓰레기**다. 앞서 확인한 "DRAM 보존"은 **PSCI 따뜻한 재부팅에서만**
+유효하고, 전원을 끊으면 DDR 재초기화가 내용을 바꾼다.
+
+**이것이 설계를 의도보다 더 안전하게 만든다.** OTA 전송 중 전원이 끊기면
+매직도 사라지므로 **반쪽 이미지가 적용될 길이 아예 없다.** 매직이 우연히
+`0x4d4f5255` 와 일치할 확률은 2^-32 다.
+
+### 롤백 방법 (기록)
+
+```bash
+sudo -v && sudo mcopy -i /dev/rdisk4s2 ::/zephyr.bin.old /tmp/old.bin \
+  && sudo mcopy -i /dev/rdisk4s2 -o /tmp/old.bin ::/zephyr.bin \
+  && diskutil eject /dev/disk4
+```
+
+⚠ 카드를 빼야 한다. OTA 는 **앞으로 갈 때만** 카드를 아끼고, 되돌릴 때는
+SD 를 직접 만져야 한다. 그래서 `apply` 전에 `verify` 를 반드시 통과시킨다.
