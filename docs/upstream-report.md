@@ -1,10 +1,24 @@
-# Zephyr 상류 보고 문안 — `ARM64_BOOT_DISABLE_DCACHE` 기본값
+# Zephyr 상류 보고 문안 — 3건
 
 **상태:** 초안. 사용자가 Zephyr GitHub 에 올리면 된다(제가 계정으로 올릴 수
-없다). 아래 본문을 그대로 붙이거나 줄여 쓸 수 있다.
+없다). 각 보고는 **독립적**이라 따로 올려도 된다.
 
 **보낼 곳:** https://github.com/zephyrproject-rtos/zephyr/issues
-**분류:** `area: ARM64`, `bug` 또는 `enhancement`
+**버전:** `v4.4.0-3902-gfb0fa3dd488d` (`dev` 브랜치)
+
+| # | 제목 | 분류 | 세기 |
+|---|---|---|---|
+| 1 | EL2 에서 캐시를 켠 채 부팅하면 조용히 멈춘다 (`ARM64_BOOT_DISABLE_DCACHE`) | `area: ARM64` | 실기 3회, QEMU 비재현 확인 |
+| 2 | `SCHED_THREAD_USAGE_AUTO_ENABLE` 을 끌 수 없다 (빌드 깨짐) | `area: Kernel` | 빌드 로그 |
+| 3 | Rockchip UART 인터럽트 트리거가 트리 안에서 모순되고, ns16550 이 쓰지 않는 포트의 IRQ 를 켠다 | `area: UART`, `area: Devicetree` | 실기 실측 + 트리 내부 모순 |
+
+3번이 가장 쓸모 있을 것이다 — **트리 안에서 같은 UART 를 서로 다르게
+선언한 곳**을 찾았고, 그것이 실기에서 부팅 불가로 이어지는 경로를 끝까지
+추적했다.
+
+---
+
+# 보고 1 — `ARM64_BOOT_DISABLE_DCACHE`
 
 ---
 
@@ -133,3 +147,187 @@ hands over with caches enabled, which is why it is invisible in CI.
 - [trm-grounding.md](trm-grounding.md) §7 — 기전 분석과 기각된 가설들
 - [bringup-rules.md](bringup-rules.md) 규칙 4 — "유죄 입증" 과 "기전 설명" 을
   구분해 적어 둔 것이 이 수정을 가능하게 했다
+
+---
+
+# 보고 2 — `SCHED_THREAD_USAGE_AUTO_ENABLE` 을 끌 수 없다
+
+**분류:** `area: Kernel`, `bug`
+
+## 제목 (영문)
+
+`kernel: CONFIG_SCHED_THREAD_USAGE_AUTO_ENABLE=n does not build`
+
+## 본문 (영문)
+
+### Summary
+
+`CONFIG_SCHED_THREAD_USAGE_AUTO_ENABLE` is a `bool` with `default y`
+(`kernel/Kconfig`), so it looks like something a user may turn off. Setting it
+to `n` does not build:
+
+```
+kernel/init.c:401:17: error: 'CONFIG_SCHED_THREAD_USAGE_AUTO_ENABLE' undeclared
+  (first use in this function); did you mean 'CONFIG_SCHED_THREAD_USAGE_ALL'?
+```
+
+### Why
+
+Two places use the symbol as a *value* rather than through `IS_ENABLED()`:
+
+- `kernel/init.c:401` — `_kernel.cpus[id].usage->track_usage = CONFIG_SCHED_THREAD_USAGE_AUTO_ENABLE;`
+- `kernel/thread.c:718` — same pattern
+
+For a Kconfig `bool` set to `n`, `autoconf.h` does not define the macro at
+all, so the expression references an undeclared identifier.
+
+### Why it matters
+
+We hit this while bisecting a boot failure. `THREAD_RUNTIME_STATS` brings in
+three sub-options; the natural way to narrow the cause is to turn them off one
+at a time. `AUTO_ENABLE` is the only one that *cannot* be turned off, and the
+failure mode is a confusing compile error rather than a Kconfig message. It
+cost a round trip to discover that the knob is not a knob.
+
+### Suggestions (any one is enough)
+
+1. Use `IS_ENABLED(CONFIG_SCHED_THREAD_USAGE_AUTO_ENABLE)` at both sites.
+2. Make it an `int` (0/1) instead of a `bool`.
+3. If it is genuinely not meant to be disabled, drop the symbol or mark it
+   with a help text that says so.
+
+### Environment
+
+Zephyr `v4.4.0-3902-gfb0fa3dd488d`, `aarch64`, out-of-tree Cortex-A55 board,
+`CONFIG_USE_SWITCH=y`, `CONFIG_SMP=n`.
+
+---
+
+# 보고 3 — Rockchip UART 인터럽트: 트리 내부 모순 + 쓰지 않는 포트의 IRQ
+
+**분류:** `area: UART`, `area: Devicetree`, `bug`
+
+이것은 두 부분이고, 하나로 올려도 되고 나누어도 된다. (a) 는 사실 확인만으로
+고칠 수 있고, (b) 는 설계 판단이 필요하다.
+
+## 제목 (영문)
+
+`dts/arm64/rockchip: UART interrupt trigger type is inconsistent in-tree (EDGE vs LEVEL for the same UART), and ns16550 enables the IRQ line for instances nothing uses`
+
+## 본문 (영문)
+
+### (a) The in-tree Rockchip DTs contradict each other
+
+| file | node | trigger |
+|---|---|---|
+| `dts/arm64/rockchip/rk3399.dtsi:95` | `uart2: serial@ff1a0000` | `IRQ_TYPE_LEVEL` |
+| `dts/arm64/rockchip/rk3568.dtsi:81` | `uart2: serial@fe660000` | **`IRQ_TYPE_EDGE`** |
+| `dts/arm64/rockchip/rk3588.dtsi:79` | `uart2: serial@feb50000`, `GIC_SPI 333` | **`IRQ_TYPE_EDGE`** |
+| `dts/arm64/rockchip/rk3588s.dtsi:98` | `uart2: serial@feb50000`, `GIC_SPI 333` | `IRQ_TYPE_LEVEL` |
+
+The last two describe **the same UART at the same address with the same SPI
+number** and disagree. They cannot both be right.
+
+Linux declares these level-high:
+`arch/arm64/boot/dts/rockchip/rk356x-base.dtsi` and the rk3588 equivalents use
+`IRQ_TYPE_LEVEL_HIGH` for the DW_apb_uart instances.
+
+This is not cosmetic: `drivers/interrupt_controller/intc_gicv3.c` writes the
+GIC `ICFGR` from this flag, so the wrong value configures the SPI as edge.
+
+### (b) ns16550 enables the IRQ line for unused instances, and its ISR can be a no-op
+
+With `CONFIG_UART_INTERRUPT_DRIVEN=y`, `drivers/serial/uart_ns16550.c:1947`
+calls `irq_enable(DT_INST_IRQN(n))` for **every** enabled instance, whether or
+not anything ever installs a callback.
+
+If nothing installs a callback, `uart_ns16550_isr()`
+(`drivers/serial/uart_ns16550.c:1405-1416`) does nothing at all — it does not
+even read IIR — **unless** `CONFIG_UART_NS16550_DW8250_DW_APB=y`, in which case
+it reads IIR and, for `IID == 0x7` (DesignWare busy detect), reads USR to clear
+it.
+
+On Rockchip (the UART *is* a Synopsys DW_apb_uart) that combination is a trap:
+
+- DesignWare raises a **busy detect** interrupt when LCR is written while the
+  UART is busy. It is **not maskable through IER** and is cleared only by
+  reading USR (or IIR).
+- So with `IER == 0x00` the line can still be asserted.
+- With the (correct) level trigger from (a), the GIC re-asserts for as long as
+  the condition stands, which is forever if the ISR never clears it.
+
+### Measured on hardware (Rockchip RK3566, Cortex-A55)
+
+A shell command reading uart2's 16550 registers, with the UART used **only**
+through `uart_poll_out` (console/shell live on USB CDC-ACM, so uart2 has no
+callback):
+
+```
+read 1:  IER 0x00  (no source enabled)   IIR 0xc7  -> IID 0x7 = DW busy detect
+read 2:  IER 0x00                        IIR 0xc1  -> no interrupt pending
+```
+
+`IER == 0` while an interrupt is pending is the whole point: it cannot be
+masked. The second read shows it was latched and that one read clears it.
+
+Logging the GIC IAR for the first 24 interrupts gave `0x0096` = 150 every time
+(= `GIC_SPI 118` + 32 = uart2).
+
+### How it turns into a boot failure
+
+With the defaults this is survivable — the board boots and runs. Turn on
+`CONFIG_THREAD_RUNTIME_STATS=y` and it is not: `arch/arm64/core/isr_wrapper.S:53`
+calls `z_sched_usage_stop` at interrupt entry under
+`CONFIG_SCHED_THREAD_USAGE`, and the result is an endless
+switch-then-interrupt loop that never reaches the first `POST_KERNEL` init.
+
+Measured with temporary markers in `kernel/usage.c` / `kernel/include/usage.h`
+(887 KB of UART output):
+
+```
+context switches (z_sched_usage_switch) : 48,936 enter / 48,936 exit
+z_sched_usage_stop                      : 97,871 enter / 97,871 exit
+POST_KERNEL priority-0 marker           : 0
+```
+
+`stop` is entered exactly twice per switch — once from the switch path, once
+from the ISR entry. Entries and exits are balanced, so this is neither
+recursion nor a deadlock: it returns every time and never makes progress.
+Without the markers the loop runs at full speed and the board is simply
+silent, which is why it first looked like a dead hang.
+
+Setting `CONFIG_UART_NS16550_DW8250_DW_APB=y` fixes it completely: the board
+boots, and `IIR` reads `0xc1` on the first read.
+
+### Suggestions
+
+1. **(a)** Make the Rockchip UART trigger types consistent and level, matching
+   Linux. The rk3588 / rk3588s disagreement is a concrete, checkable bug.
+2. **(b1)** Have `rockchip,rk3568-uart` (and the rk3588 equivalents) `select`
+   `UART_NS16550_DW8250_DW_APB`, since those parts *are* DW_apb_uart. A user
+   should not have to know the IP vendor to get a working ISR.
+3. **(b2)** Either do not `irq_enable()` an instance that has no interrupt
+   user, or make `uart_ns16550_isr()` always read IIR so an unexpected,
+   un-maskable source cannot latch forever. Today a correct devicetree
+   (level-triggered) is what makes the latch fatal, which is an unpleasant
+   trap for anyone fixing their DT.
+
+### Environment
+
+Zephyr `v4.4.0-3902-gfb0fa3dd488d`, out-of-tree `radxa_zero_3e/rk3568` board
+(Rockchip RK3566, Cortex-A55), `CONFIG_GIC_V3=y`, `CONFIG_SMP=n`,
+`CONFIG_USE_SWITCH=y`, shell and console on USB CDC-ACM, uart2 used only for
+`uart_poll_out` (markers plus `chosen zephyr,log-uart`).
+
+---
+
+## 올리기 전 확인할 것 (보고 2·3)
+
+- 보고 2: 지금 `dev` 브랜치에서 `CONFIG_SCHED_THREAD_USAGE_AUTO_ENABLE=n` 로
+  빌드해 같은 오류가 나는지 한 번 더 확인한다(우리는 확인했다).
+- 보고 3(a): rk3588 / rk3588s 의 해당 줄이 지금도 그대로인지 확인한다 —
+  고쳐졌다면 rk3568 만 남은 것이고 보고가 더 짧아진다.
+- 보고 3(b): 비슷한 이슈가 이미 있는지 찾아본다. 검색에서 #117634
+  (`TRACING_ASYNC` 가 `USE_SWITCH` 에서 전환 중 커널 타이머를 건다)를 찾았는데
+  **다른 버그**다(우리 구성에는 `CONFIG_TRACING` 이 없다). 다만 같은 영역에
+  아키텍처별 함정이 있다는 맥락으로 링크할 만하다.

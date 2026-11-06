@@ -401,5 +401,11 @@ U-Boot 가 EL2 에서 `go` 하고 캐시를 정리하지 않기 때문이다. �
   오지 않는 suspend 에서 영구히 막힌다.
   시험은 `python3 tools/pm_test.py --seconds 90` 이고 **UART 어댑터가
   보드와 다른 포트에 꽂혀 있어야** 한다(위 경고 참고)
-- **Zephyr 상류 보고** — 문안이 [docs/upstream-report.md](docs/upstream-report.md)
-  에 있다. 사용자가 GitHub 에 올리면 끝난다
+- **Zephyr 상류 보고 3건** — 문안이
+  [docs/upstream-report.md](docs/upstream-report.md) 에 있다. 각각 독립적이라
+  따로 올려도 된다. 사용자가 GitHub 에 올리면 끝난다
+  1. EL2 에서 캐시를 켠 채 부팅하면 조용히 멈춘다 (`ARM64_BOOT_DISABLE_DCACHE`)
+  2. `SCHED_THREAD_USAGE_AUTO_ENABLE` 을 끌 수 없다 (빌드 깨짐)
+  3. Rockchip UART 트리거가 트리 안에서 모순되고(rk3588 과 rk3588s 가 **같은
+     UART** 를 EDGE/LEVEL 로 다르게 선언한다), ns16550 이 쓰지 않는 포트의
+     IRQ 를 켠다 — 우리 부팅 불가의 근본 원인이었다
