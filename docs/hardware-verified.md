@@ -1629,3 +1629,49 @@ ARCH_HAS_STACKWALK       default y, depends on FRAME_POINTER, imply THREAD_STACK
 이것이 USB main 구성의 기준선이다. 앞서 본 0 은 UART 빌드 값이라 조건이
 달랐다(백엔드가 `POST_KERNEL 90` 에 바로 붙어 0.1 초에 비워진다).
 B1 이 부팅 메시지를 ~15줄 늘린 뒤 다시 확인한다.
+
+## ✅ B1 — Linux dmesg 형식 부팅 메시지 (2026-11-06)
+
+빌드 `8266c9b`, 150152 B. 실기 1회. 종료 조건 ①~④ 전부 통과.
+
+```
+[    6.699229] moru: ====================================================
+[    6.699234] moru: MoruLab Zephyr RTOS 0.1.0 (build 69e1000b0df2)
+[    6.699237] moru: Zephyr 4.4.99, built 2026-11-06 06:37:19 UTC
+[    6.699238] moru: Machine model: Radxa ZERO 3E
+[    6.699241] moru: SoC: Rockchip RK3566 (rk3568 SoC 정의 재사용)
+[    6.699242] moru: CPU: Cortex-A55, MIDR 0x412fd050, EL1, MPIDR 0x81000000
+[    6.699244] moru: Cache: min D-line 64 B (CTR_EL0 0x84448004)
+[    6.699245] moru: Memory: 0x40000000 + 1024 KiB (zephyr,sram)
+[    6.699248] moru: Timer: ARM arch timer 24.000000 MHz, 10000 ticks/s, tickless
+[    6.953704] hwinfo_rk3566: OTP 칩 ID: 4d425737333500000000000000032106
+```
+
+| | 조건 | 결과 |
+|---|---|---|
+| ① | `[    0.123456]` Linux 형식, `<inf>`·스레드 이름 없음, `moru:` 태그 유지 | ✅ |
+| ② | `shell stats show` → `Lost logs: 0` (부팅 메시지 +15줄 뒤) | ✅ |
+| ③ | 호스트에 `MoruLab Zephyr RTOS`, `idProduct = 5` (ioreg) | ✅ |
+| ④ | `kernel thread unwind` 6프레임 유지 | ✅ |
+
+### µs 해상도가 실제로 나온다
+
+`699229 → 699234 → 699237` 로 수 µs 간격이 보인다. `moru_boot.c` 의
+24 MHz 사이클 카운터 override(`log_set_timestamp_func` + `k_cycle_get_64`)가
+작동한다는 증거다 — 기본 타임스탬프(1 ms)였다면 전부 `699000` 으로 찍힌다.
+
+### ⚠ 기준점이 Linux 와 다르다 (SoC 리셋 기준)
+
+`6.699` 초는 **SoC 전원 투입 기준**이다. `CNTVCT_EL0` 가 리셋부터 돌기
+때문에 U-Boot 가 쓴 ~6.3 초가 포함된다. Linux dmesg 는 **커널 시작을 0** 으로
+한다. "Linux 부팅처럼" 이 원래 요구였으므로 B2 에서 오프셋을 빼 0 부터
+세게 한다.
+
+덤으로 얻는 사실: **이 보드의 U-Boot 는 Zephyr 진입까지 약 6.3 초 쓴다.**
+오프셋을 뺀 뒤에도 그 값을 배너에 한 줄로 남긴다.
+
+### CPU 식별
+
+`MIDR 0x412fd050` → Cortex-A55 **r2p0** (0x41=ARM, 0x2=variant 2,
+0xd05=A55, 0x0=revision 0). `MPIDR 0x81000000` → Aff0=0, 즉 primary core.
+`CTR_EL0 0x84448004` → 최소 D-line 64 B.
