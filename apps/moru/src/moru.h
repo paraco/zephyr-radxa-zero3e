@@ -38,4 +38,14 @@ const char *moru_cpu_part_name(uint32_t implementer, uint32_t part);
  */
 uint64_t moru_preboot_us(void);
 
+/**
+ * `moru htop` 핸들러 (moru_htop.c). 명령 등록은 moru_shell.c 가 한다.
+ *
+ * ⚠ 이 핸들러는 **돌아오지 않고 루프를 돈다** (q · Ctrl-C · 600초 상한).
+ *   그동안 shell_process() 가 멈추므로 다른 셸 명령도, 셸 로그 백엔드
+ *   비우기도 함께 멈춘다. 로그는 uart2 백엔드로 계속 나간다.
+ */
+struct shell;
+int cmd_moru_htop(const struct shell *sh, size_t argc, char **argv);
+
 #endif /* MORU_H_ */

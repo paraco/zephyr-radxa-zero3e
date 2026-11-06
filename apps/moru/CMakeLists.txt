@@ -38,4 +38,5 @@ target_include_directories(app PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/../../drivers/usb/udc)
 
 target_sources(app PRIVATE src/main.c src/moru_mark.c src/moru_boot.c
-                           src/moru_shell.c src/moru_usbd.c)
+                           src/moru_shell.c src/moru_usbd.c
+                           src/moru_htop.c)
