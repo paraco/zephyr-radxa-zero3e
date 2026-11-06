@@ -115,7 +115,13 @@ static int moru_boot_banner(void)
 	LOG_INF(SEP);
 	LOG_INF("MoruLab Zephyr RTOS %s (build %s)", APP_VERSION_STRING,
 		STRINGIFY(APP_BUILD_VERSION));
-	LOG_INF("Zephyr %s, built %s", KERNEL_VERSION_STRING, MORU_BUILD_TIME);
+	/*
+	 * 커밋 해시를 함께 찍는다 — 4.4.99 는 릴리스가 아니라 main 개발
+	 * 표시이고 같은 문자열이 수천 커밋을 가리킨다. 부팅 로그는 그대로
+	 * 붙여 전달되는 것이므로 여기에 식별자가 있어야 한다.
+	 */
+	LOG_INF("Zephyr %s (%s), built %s", KERNEL_VERSION_STRING,
+		STRINGIFY(BUILD_VERSION), MORU_BUILD_TIME);
 	/*
 	 * 타임스탬프는 여기서부터 0 이므로 부트로더 구간은 이 줄로만 남는다.
 	 * U-Boot(TF-A BL31 포함)가 전원 투입부터 go 까지 쓴 시간이다.

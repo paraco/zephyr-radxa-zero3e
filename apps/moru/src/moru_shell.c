@@ -84,7 +84,23 @@ static int cmd_moru_info(const struct shell *sh, size_t argc, char **argv)
 	shell_print(sh, "  버전      %s (build %s)", APP_VERSION_STRING,
 		    STRINGIFY(APP_BUILD_VERSION));
 	shell_print(sh, "  빌드      %s", MORU_BUILD_TIME);
-	shell_print(sh, "  Zephyr    %s", KERNEL_VERSION_STRING);
+	/*
+	 * ⚠ 버전 문자열만으로는 재현이 안 된다. 4.4.99 는 릴리스가 아니라
+	 *   "4.4.0 을 낸 뒤 4.5.0 으로 가는 main" 을 뜻하는 개발 표시다
+	 *   (.99 가 Zephyr 의 관례). 같은 4.4.99 가 수천 커밋 범위를
+	 *   가리키므로 **커밋 해시가 실제 식별자다.**
+	 *
+	 *   실제로 이 세션에서 그 차이가 판정 근거가 됐다 —
+	 *   RESET_ON_FATAL_ERROR Kconfig 가 이 시점에는 존재하지 않아
+	 *   "fatal 로 재부팅" 가설을 무죄로 가렸다. 다른 시점에서는 그
+	 *   근거가 성립하지 않을 수 있다.
+	 *
+	 *   BUILD_VERSION 은 zephyr/version.h 가 ZEPHYR_BASE 의
+	 *   git describe 로 만들어 둔다 — 따옴표 없는 토큰이라
+	 *   STRINGIFY 가 필요하다.
+	 */
+	shell_print(sh, "  Zephyr    %s  (%s)", KERNEL_VERSION_STRING,
+		    STRINGIFY(BUILD_VERSION));
 	shell_print(sh, "  보드      %s  (%s)", CONFIG_BOARD_TARGET, MORU_MODEL);
 	shell_print(sh, "  SoC       Rockchip RK3566 (%s 정의 재사용)", CONFIG_SOC);
 	shell_print(sh, "  CPU       %s r%up%u, MIDR 0x%08llx, EL%u",
