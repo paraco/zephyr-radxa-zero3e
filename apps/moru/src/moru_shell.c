@@ -990,6 +990,93 @@ static int cmd_moru_usb_pm(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+/*
+ * uart2 의 16550 레지스터를 읽는다 — IRQ 150 폭주의 원인을 가리기 위한 것.
+ *
+ * 왜: ns16550 이 init 에서 uart2 의 GIC 라인을 무조건 켜는데
+ * (uart_ns16550.c:1947) uart2 를 인터럽트 모드로 쓰는 것이 없어 조건을
+ * 지우는 콜백이 없다. 거기에 트리거가 LEVEL 이라(app.overlay:42) 조건이
+ * 서 있는 동안 끝없이 재발화한다. **무엇이 그 조건을 세우는가** 가 남은
+ * 질문이고, 그것은 IER(어떤 원인이 켜졌나)과 IIR(지금 무엇이 걸렸나)에
+ * 적혀 있다.
+ *
+ * ⚠ 이 읽기는 **피검체를 바꾼다.** 16550 에서
+ *   - IIR 을 읽으면 THR-empty 원인이 지워진다
+ *   - LSR 을 읽으면 오버런·패리티·프레이밍·브레이크 비트가 지워진다
+ *   그래서 순서를 IER(부작용 없음) → IIR → LSR 로 고정한다. 한 번 읽고
+ *   나면 상태가 달라지므로 **연속으로 두 번 쳐 보는 것**이 의미가 있다.
+ *
+ * ⚠ 드라이버가 이미 매핑한 영역을 device_map 으로 **한 번 더** 매핑한다.
+ *   장치 메모리라 중복 매핑이 문제되지 않지만 xlat 테이블을 하나 쓴다
+ *   (MAX_XLAT_TABLES=16).
+ *
+ * 레지스터 간격은 DT 의 reg-shift=2 라서 4바이트다.
+ */
+#define MORU_U2_PHYS	DT_REG_ADDR(DT_NODELABEL(uart2))
+#define MORU_U2_IER	(1U << 2)
+#define MORU_U2_IIR	(2U << 2)
+#define MORU_U2_LCR	(3U << 2)
+#define MORU_U2_MCR	(4U << 2)
+#define MORU_U2_LSR	(5U << 2)
+#define MORU_U2_MSR	(6U << 2)
+#define MORU_U2_USR	0x7cU	/* DW_apb_uart 전용 — BUSY 등 */
+
+static int cmd_moru_uart2(const struct shell *sh, size_t argc, char **argv)
+{
+	static mm_reg_t base;
+	uint32_t ier, iir, lsr, lcr, mcr, msr, usr;
+
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+
+	if (base == 0) {
+		device_map(&base, MORU_U2_PHYS, 0x100, K_MEM_CACHE_NONE);
+		if (base == 0) {
+			shell_error(sh, "uart2 레지스터를 매핑하지 못했다");
+			return -ENOMEM;
+		}
+	}
+
+	/* 순서 고정 — 위 주석 참고 */
+	ier = sys_read32(base + MORU_U2_IER) & 0xffU;
+	iir = sys_read32(base + MORU_U2_IIR) & 0xffU;
+	lsr = sys_read32(base + MORU_U2_LSR) & 0xffU;
+	lcr = sys_read32(base + MORU_U2_LCR) & 0xffU;
+	mcr = sys_read32(base + MORU_U2_MCR) & 0xffU;
+	msr = sys_read32(base + MORU_U2_MSR) & 0xffU;
+	usr = sys_read32(base + MORU_U2_USR) & 0xffU;
+
+	shell_print(sh, "uart2 @0x%08lx (IRQ 150 = GIC_SPI 118 + 32)",
+		    (unsigned long)MORU_U2_PHYS);
+	shell_print(sh, "  IER 0x%02x  %s%s%s%s%s", ier,
+		    (ier & BIT(0)) ? "RX수신 " : "",
+		    (ier & BIT(1)) ? "THR빔 " : "",
+		    (ier & BIT(2)) ? "선로상태 " : "",
+		    (ier & BIT(3)) ? "모뎀상태 " : "",
+		    (ier & 0x0fU) ? "" : "(켜진 원인 없음)");
+	shell_print(sh, "  IIR 0x%02x  → %s", iir,
+		    ((iir & 0x0fU) == 0x01U) ? "걸린 것 없음" :
+		    ((iir & 0x0fU) == 0x02U) ? "THR 빔 (TX)" :
+		    ((iir & 0x0fU) == 0x04U) ? "RX 데이터 있음" :
+		    ((iir & 0x0fU) == 0x06U) ? "선로 상태 (오류)" :
+		    ((iir & 0x0fU) == 0x00U) ? "모뎀 상태" :
+		    ((iir & 0x0fU) == 0x0cU) ? "문자 타임아웃 (RX)" :
+		    ((iir & 0x0fU) == 0x07U) ? "BUSY 감지 (DW)" : "기타");
+	shell_print(sh, "  LSR 0x%02x  %s%s%s%s%s%s%s", lsr,
+		    (lsr & BIT(0)) ? "DR " : "",
+		    (lsr & BIT(1)) ? "오버런 " : "",
+		    (lsr & BIT(2)) ? "패리티 " : "",
+		    (lsr & BIT(3)) ? "프레이밍 " : "",
+		    (lsr & BIT(4)) ? "브레이크 " : "",
+		    (lsr & BIT(5)) ? "THRE " : "",
+		    (lsr & BIT(6)) ? "TEMT" : "");
+	shell_print(sh, "  LCR 0x%02x · MCR 0x%02x · MSR 0x%02x · USR 0x%02x%s",
+		    lcr, mcr, msr, usr, (usr & BIT(0)) ? " (BUSY)" : "");
+	shell_print(sh, "  ⚠ IIR·LSR 읽기가 원인을 지운다 — 한 번 더 쳐 보면");
+	shell_print(sh, "    원인이 계속 되살아나는지(= 폭주) 알 수 있다.");
+	return 0;
+}
+
 SHELL_STATIC_SUBCMD_SET_CREATE(moru_usb_subcmds,
 	SHELL_CMD_ARG(pm, NULL,
 		      "suspend/resume 을 스택에 올리기 on|off (기본 off)",
@@ -1030,6 +1117,9 @@ SHELL_STATIC_SUBCMD_SET_CREATE(moru_subcmds,
 		      cmd_moru_reboot, 1, 1),
 	SHELL_CMD(ota, &moru_ota_subcmds,
 		  "OTA — 수신·검증·DRAM 보존 확인", NULL),
+	SHELL_CMD_ARG(uart2, NULL,
+		      "uart2 16550 레지스터 (IRQ 150 폭주 진단)",
+		      cmd_moru_uart2, 1, 0),
 	SHELL_CMD_ARG(htop, NULL,
 		      "전체화면 실시간 모니터 [갱신ms] (q 로 나간다)",
 		      cmd_moru_htop, 1, 1),
