@@ -308,62 +308,74 @@ static int cmd_moru_ota_mark(const struct shell *sh, size_t argc, char **argv)
  * 데이터는 두 번째 CDC-ACM(cdc_acm_uart1, 호스트의 두 번째 포트)으로 온다.
  * 셸은 첫 번째 포트에 있으므로 전송 중에도 상태를 물어볼 수 있다.
  *
- * 왜 poll_in 폴링인가: usbd_cdc_acm.c:980-994 의 poll_in 은 링버퍼에서
- * 읽고 **읽은 만큼만** USB OUT 전송을 다시 큐에 넣는다(rx_fifo_work 재제출).
- * 즉 링버퍼가 차면 호스트가 NAK 를 받아 기다리므로 **흐름 제어가 있고
- * 데이터 손실이 없다.** 1바이트씩이라 느리지만 카드 교체 왕복에 비하면
- * 공짜다. 인터럽트 API 를 쓰면 빠르지만 콜백·링버퍼를 직접 다뤄야 하고,
- * 지금은 단순함이 더 값지다.
+ * ── 왜 콜백 + 블록 읽기인가 (2026-11-06 수정) ─────────────────────────
+ *
+ * 처음에는 전용 스레드가 uart_poll_in() 을 1바이트씩 돌렸다. 실기에서
+ * 120초를 넘겨도 끝나지 않았다. 원인 둘을 코드에서 확인했다:
+ *
+ *   ① usbd_cdc_acm.c:315 의 LOG_HEXDUMP_INF(buf->data, buf->len, "") 가
+ *      **수신한 모든 바이트를 hexdump** 한다. LOG_LEVEL 이 INF 였으므로
+ *      171 KB 가 전부 로그로 쏟아지고, 그것을 다시 CDC 로 내보내려 하면서
+ *      전송이 사실상 멈췄다. → prj.conf 에서 WRN 으로 내렸다 (진짜 병목)
+ *   ② cdc_acm_poll_in(:990-992)이 **1바이트 읽을 때마다**
+ *      cdc_acm_work_submit(&rx_fifo_work) 를 한다. 171360 바이트면 워크큐
+ *      왕복이 17만 번이다
+ *
+ * 블록 읽기(uart_fifo_read)로 ②를 64배 줄인다. ⚠ 그런데 그 함수는
+ * **CDC 워크큐 문맥에서만** 부를 수 있다 — cdc_acm_fifo_read(:807)가
+ * check_wq_ctx() 를 확인하고 아니면 __ASSERT_NO_MSG(false) 로 죽는다.
+ * 콜백은 :317-318 에서 irq_cb_work 워크 항목으로 제출되므로 그 문맥이
+ * 맞다. 따라서 **전용 스레드가 아니라 콜백**이어야 하고, 그러면 스레드
+ * 자체가 필요 없어진다.
+ *
+ * 코드로 미리 확인해 왕복 하나를 아꼈다 — 스레드에서 fifo_read 를 불렀다면
+ * 보드가 assert 로 죽었을 것이다 (docs/bringup-rules.md 규칙 5).
  */
 static struct {
 	bool		active;
 	uint32_t	expect;
 	uint32_t	got;
 	uint32_t	crc;		/* 호스트가 알려준 기대 CRC32 */
+	uint32_t	overrun;	/* 기대보다 더 온 바이트 (버린다) */
 	mm_reg_t	base;
 } moru_ota;
 
-static void moru_ota_thread(void *a, void *b, void *c)
+static void moru_ota_rx_cb(const struct device *dev, void *user_data)
 {
-	const struct device *dev = DEVICE_DT_GET(DT_NODELABEL(cdc_acm_uart1));
-	unsigned char ch;
+	uint8_t buf[64];
+	int n, i;
 
-	ARG_UNUSED(a);
-	ARG_UNUSED(b);
-	ARG_UNUSED(c);
+	ARG_UNUSED(user_data);
 
-	for (;;) {
-		if (!moru_ota.active) {
-			k_msleep(100);
-			continue;
+	/* uart_irq_update() 는 void 다 — 조건으로 쓸 수 없고 먼저 부른다 */
+	uart_irq_update(dev);
+
+	while (uart_irq_rx_ready(dev)) {
+		n = uart_fifo_read(dev, buf, sizeof(buf));
+		if (n <= 0) {
+			break;
 		}
 
-		if (uart_poll_in(dev, &ch) == 0) {
+		if (!moru_ota.active) {
+			continue;	/* 수신 중이 아니면 버린다 */
+		}
+
+		for (i = 0; i < n; i++) {
 			if (moru_ota.got < moru_ota.expect) {
-				sys_write8(ch, moru_ota.base + MORU_OTA_HDR_SIZE +
-						       moru_ota.got);
+				sys_write8(buf[i], moru_ota.base +
+						   MORU_OTA_HDR_SIZE +
+						   moru_ota.got);
 				moru_ota.got++;
+			} else {
+				moru_ota.overrun++;
 			}
-			if (moru_ota.got >= moru_ota.expect) {
-				moru_ota.active = false;
-			}
-		} else {
-			k_yield();
+		}
+
+		if (moru_ota.got >= moru_ota.expect) {
+			moru_ota.active = false;
 		}
 	}
 }
-
-/*
- * 스택 4096 — arm64 에서 1024 로 두 번 넘쳤다 (docs/bringup-rules.md 함정 ②).
- * 이 스레드가 하는 일은 얕지만(poll_in + sys_write8) 2048 로 아껴 봐야
- * 2 KiB 이고, 넘치면 "열거는 되는데 데이터가 안 온다" 같은 모호한 증상이
- * 된다. 실측은 `kernel thread stacks` 로 할 수 있다.
- *
- * 우선순위 12 — 셸(14)보다 높고 USB(-8)·로그(14)를 방해하지 않는 자리.
- * 데이터가 없으면 k_yield() 하므로 바쁜 대기가 길게 이어지지 않는다.
- */
-K_THREAD_DEFINE(moru_ota_tid, 4096, moru_ota_thread, NULL, NULL, NULL,
-		K_PRIO_PREEMPT(12), 0, 0);
 
 static int cmd_moru_ota_begin(const struct shell *sh, size_t argc, char **argv)
 {
@@ -397,7 +409,22 @@ static int cmd_moru_ota_begin(const struct shell *sh, size_t argc, char **argv)
 	/* 받는 중에 재부팅되어도 적용되지 않게 매직을 먼저 지운다 */
 	sys_write32(0U, base + MORU_OTA_OFF_MAGIC);
 
-	moru_ota.active = true;
+	moru_ota.overrun = 0;
+
+	{
+		const struct device *dev =
+			DEVICE_DT_GET(DT_NODELABEL(cdc_acm_uart1));
+
+		if (!device_is_ready(dev)) {
+			shell_error(sh, "OTA 포트가 준비되지 않았다");
+			return -ENODEV;
+		}
+
+		uart_irq_rx_disable(dev);
+		uart_irq_callback_user_data_set(dev, moru_ota_rx_cb, NULL);
+		moru_ota.active = true;
+		uart_irq_rx_enable(dev);
+	}
 
 	shell_print(sh, "수신 시작 — %lu 바이트, 기대 CRC32 0x%08lx", size, crc);
 	shell_print(sh, "호스트에서 두 번째 CDC 포트로 부어 넣는다:");
@@ -420,6 +447,10 @@ static int cmd_moru_ota_status(const struct shell *sh, size_t argc, char **argv)
 		    moru_ota.active ? "받는 중" : "멈춤/완료",
 		    moru_ota.got, moru_ota.expect,
 		    (unsigned int)((uint64_t)moru_ota.got * 100U / moru_ota.expect));
+	if (moru_ota.overrun != 0U) {
+		shell_warn(sh, "기대보다 %u 바이트 더 왔다 (버렸다) — 크기가 틀렸나?",
+			   moru_ota.overrun);
+	}
 	return 0;
 }
 
@@ -460,8 +491,10 @@ static int cmd_moru_ota_abort(const struct shell *sh, size_t argc, char **argv)
 	ARG_UNUSED(argv);
 
 	moru_ota.active = false;
+	uart_irq_rx_disable(DEVICE_DT_GET(DT_NODELABEL(cdc_acm_uart1)));
 	moru_ota.got = 0;
 	moru_ota.expect = 0;
+	moru_ota.overrun = 0;
 	if (moru_ota.base != 0) {
 		sys_write32(0U, moru_ota.base + MORU_OTA_OFF_MAGIC);
 	}
