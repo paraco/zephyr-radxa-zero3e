@@ -2554,6 +2554,69 @@ uart2 바이트: 505
 | 낡은/고정 오프셋 | **약함** | arm64 어셈블리는 `_thread_offset_to_*` 생성 값을 쓴다 — 구조체가 커지면 따라간다 |
 | 스레드별 계측(`z_sched_usage_start/stop`) | **남은 용의자** | 위 구간이 정확히 그 코드가 처음 도는 자리다 |
 
+### QEMU 는 재현하지 않는다 — 그리고 **구조적으로 할 수 없다**
+
+`samples/synchronization` + `CONFIG_THREAD_RUNTIME_STATS=y` 를
+`qemu_cortex_a53` 에서 돌렸다. main 이 바로 끝나는 `hello_world` 로는 타이머
+인터럽트를 거의 안 받으므로(그러면 `z_sched_usage_stop` 이 안 돈다) 두 스레드가
+`k_sleep` 으로 번갈아 도는 샘플을 썼다.
+
+| 조합 | 결과 |
+|---|---|
+| `THREAD_RUNTIME_STATS` | ✅ 45초간 74회 출력 |
+| + `INIT_STACKS` | ✅ |
+| + `STACK_SENTINEL` | ✅ |
+| + 둘 다 | ✅ |
+
+**⚠ 그러나 이 비재현은 생각보다 적게 증명한다.** 우리 보드와 QEMU 의 설정
+차이 넷 중 셋이 이 보드의 기존 버그 혈통이다:
+
+| 설정 | 우리 | QEMU |
+|---|---|---|
+| `ARM64_BOOT_DISABLE_DCACHE` | y | n |
+| `ARM64_DCACHE_ALL_OPS` | y | n |
+| `INIT_STACKS` | y | n |
+| `STACK_SENTINEL` | y | n |
+
+그리고 `ARM64_BOOT_DISABLE_DCACHE` 는 **`z_arm64_el2_init()` 안에서만**
+동작한다(`arch/arm64/core/reset.c:158`) — **EL2 로 진입할 때만**이다. QEMU 는
+EL1 로 들어가므로 그 경로가 아예 돌지 않는다. 즉 QEMU 에서 이 설정을 켜고
+끄는 것은 의미가 없고, **EL2 혈통은 QEMU 로 시험할 수 없다.**
+
+결론: QEMU 비재현이 증명하는 것은 **"EL1 로 진입하는 일반 경로의 Zephyr 은
+정상"** 까지다. 우리 보드의 EL2 진입·캐시·스택 칠하기 묶음은 그대로 용의자로
+남는다.
+
+### 어디서 불리는가 — arm64 는 ISR 진입 어셈블리에서 부른다
+
+`USE_SWITCH=y` 라서 `kernel/thread.c:1134/1145` 의 호출부는 **컴파일되지
+않는다**(`!defined(CONFIG_USE_SWITCH)` 가드). 실제 호출부는 둘이다:
+
+- `kernel/sched.c:682,736` · `kernel/include/kswap.h:134` — 전환 경로
+- **`arch/arm64/core/isr_wrapper.S:53` — `bl z_sched_usage_stop`**
+
+마지막 것이 눈에 걸린다. IRQ 스택으로 바꾸고 옛 `sp` 를 그 위에 밀어 넣은
+**직후**, 아무것도 저장하지 않은 상태에서 C 함수를 부른다. 가드는 정확히
+`CONFIG_SCHED_THREAD_USAGE` — 우리가 유죄로 가린 그 Kconfig 다.
+
+### 상류 검색 결과
+
+| 찾은 것 | 우리 건과의 관계 |
+|---|---|
+| #117634 `CONFIG_TRACING_ASYNC` 가 `USE_SWITCH` 에서 전환 중 커널 타이머를 건다 | **우리 건이 아니다** — 우리 `.config` 에 `CONFIG_TRACING` 이 아예 없다. 다만 이 영역에 아키텍처별 함정이 있음을 보여 준다 |
+| #46366 arm64 FVP 에서 `thread_runtime_stats` 시험 실패 | 증상이 다르다(시험 단정 실패). arm64 + usage 조합에 전력이 있다는 정도 |
+| #116475 `SCHED_THREAD_USAGE_ALL=n` 의 컴파일 경고 | 우리가 쓴 조합이지만 경고 얘기다 |
+| `THREAD_RUNTIME_STATS` 가 arm64 에서 부팅을 막는다 | **같은 보고를 찾지 못했다** (못 찾은 것이 없다는 증명은 아니다) |
+| `SCHED_THREAD_USAGE_AUTO_ENABLE=n` 의 빌드 깨짐 | **같은 보고를 찾지 못했다** — 두 번째 상류 보고감 |
+
+### 다음 왕복 — 변수 하나
+
+`THREAD_RUNTIME_STATS=y` + **`INIT_STACKS=n`**. 이유: `INIT_STACKS` 는 이
+보드가 이미 데인 설정이고(EL2 더티 캐시 라인이 DRAM 을 덮었다), QEMU 로는
+그 혈통을 시험할 수 없으며, 변수가 하나다. 뜨면 스택 칠하기와의 상호작용이
+걸린 것이고, 그때는 **`kernel thread stacks` 와 htop 의 CPU% 중 하나를
+고르는 문제**가 된다.
+
 **기전은 여전히 설명되지 않았다.** 더 좁히려면 Kconfig 로는 안 된다 —
 `SCHED_THREAD_USAGE_AUTO_ENABLE` 은 **끌 수 없다**(Zephyr 이 `IS_ENABLED`
 없이 값으로 써서 `init.c:401` 에서 컴파일이 깨진다). 다음 단계는 전환 경로
