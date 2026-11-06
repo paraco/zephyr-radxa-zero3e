@@ -1738,3 +1738,69 @@ Zephyr 가 EL1 에서 쏜 SMC 가 거기 닿는다.
 그 코드가 없어 혼란을 준다.
 
 → **순서를 "커밋 → 재빌드 → 복사" 로 한다.** 굽기 전 체크리스트에 넣었다.
+
+## 🎯 B4 완료 + DRAM 이 재부팅을 넘어 보존된다 (2026-11-06)
+
+빌드 `f8f3c15`, 166576 B. **실기 1회에 세 가지를 가렸다.**
+
+```
+Moru > moru ota mark
+0x50000000 에 표시했다 — magic 0x4d4f5255 pattern 0xa5c3f00d count 1
+
+Moru > moru reboot
+재부팅한다 (PSCI_SYSTEM_RESET).
+⚠ Connection lost — auto-reconnecting...
+✓ Reconnected
+
+[    0.000090] moru: ====================================================
+[    0.000097] moru: MoruLab Zephyr RTOS 0.1.0 (build f8f3c15c8585)
+[    0.000098] moru: Zephyr 4.4.99, built 2026-11-06 07:15:45 UTC
+[    0.000100] moru: Pre-kernel: 6.698 s (power-on → PRE_KERNEL_1)
+[    0.000102] moru: Machine model: Radxa ZERO 3E
+...
+[    0.358092] hwinfo_rk3566: OTP 칩 ID: 4d4257373335...
+
+Moru > moru ota check
+0x50000000: magic 0x4d4f5255 pattern 0xa5c3f00d count 1
+✅ 보존됐다 — 재부팅을 넘어 DRAM 이 남는다.
+```
+
+### ① `moru reboot` 이 동작한다 — B4 완료
+
+`arm_smccc_smc(PSCI_SYSTEM_RESET)` 이 실제로 보드를 리셋한다. `CONFIG_REBOOT`
+도 `CONFIG_PM_CPU_OPS` 도 켜지 않았다 — Kconfig 추가 0개로 얻었다(계획
+보정 2 의 설계가 맞았다).
+
+**USB 가 자동으로 재열거된다.** `tio` 가 `Connection lost` → `Reconnected`
+로 스스로 복귀했다. 즉 재부팅 뒤 UART 로 넘어갈 필요조차 없었다 — USB 셸
+하나로 재부팅과 확인이 끝난다.
+
+### ② 타임스탬프 기준점이 맞다 — B2 ② ③ 완료
+
+첫 로그가 `[    0.000090]` 이다. B1 의 `[    6.699229]` 에서 U-Boot 구간이
+빠졌고, 그 시간은 `Pre-kernel: 6.698 s` 로 따로 남는다. 두 값이 일치한다
+(6.699 ≈ 6.698).
+
+### ③ 🎯 DRAM 이 PSCI 리셋을 넘어 보존된다
+
+`0x50000000` 에 쓴 매직·패턴·카운터가 **재부팅 뒤에도 그대로 남았다.**
+BL31 과 DDR 초기화가 이 영역을 지우지 않는다.
+
+**이것이 `docs/ota-strategy.md` §2 의 유일한 미지수였다.** 이제 그 설계가
+실현 가능하다:
+
+```
+Zephyr OTA 수신 → 0x50000000 에 쌓기 → 매직 헤더 → moru reboot
+  → boot.scr 의 itest 로 확인 → fatwrite 로 .old 백업 + zephyr.bin 교체
+  → go → 새 펌웨어.  카드도 전원도 건드리지 않는다
+```
+
+⚠ **보존은 "지우지 않는다" 는 관찰이고 보장은 아니다.** BL31·U-Boot 버전이
+바뀌거나 DDR 재학습이 일어나면 달라질 수 있다. 그래서 OTA 는 매직 + CRC32
+를 반드시 검사하고, 어긋나면 **기존 `zephyr.bin` 을 그대로 부팅**해야 한다.
+SD 의 이미지가 황금 사본으로 남는 구조라 벽돌이 되지 않는다.
+
+### 버전 스탬프가 맞았다 — 규칙 7-b 의 효과
+
+`build f8f3c15c8585` = HEAD. 직전 왕복에서 한 커밋 뒤처진 것을 보고
+체크리스트에 "커밋한 뒤 재빌드했는가" 를 넣었고, 바로 효과가 났다.
