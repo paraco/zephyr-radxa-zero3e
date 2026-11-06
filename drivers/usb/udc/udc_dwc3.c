@@ -56,6 +56,7 @@
 #include <zephyr/kernel/internal/mm.h>
 
 #include "udc_dwc3_regs.h"
+#include "udc_dwc3_diag.h"
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(udc_dwc3, CONFIG_UDC_DRIVER_LOG_LEVEL);
@@ -175,6 +176,8 @@ struct udc_dwc3_data {
 	 * enable 에서 되돌린다.
 	 */
 	bool started_cfg2;
+	/* 진단 카운터 — 동작에 영향이 없다. udc_dwc3_diag.h 참고 */
+	struct udc_dwc3_stats stats;
 };
 
 static inline uint32_t dwc3_read32(const struct device *dev, uint32_t off)
@@ -1012,6 +1015,12 @@ static int dwc3_dep_cmd_ioc(const struct device *dev, uint8_t ep,
 		dwc3_write32(dev, DWC3_GUSB2PHYCFG(0), phycfg_saved);
 	}
 
+	if (ret == -ETIMEDOUT) {
+		struct udc_dwc3_data *p = udc_get_private(dev);
+
+		p->stats.cmd_timeout++;
+	}
+
 	return ret;
 }
 
@@ -1340,6 +1349,8 @@ static void dwc3_ep0_setup_received(const struct device *dev, uint32_t raw)
 	const uint8_t *b = dwc3_ep0_setup_buf;
 	int rc;
 
+	priv->stats.setup++;
+
 	/*
 	 * ⚠ 200 us 폴링을 시도했으나 무용했다 — write-back 경합이 아니다.
 	 *   실기에서 이 경로는 36번 중 2번만 타고, 그때는 리셋 처리가
@@ -1362,6 +1373,7 @@ static void dwc3_ep0_setup_received(const struct device *dev, uint32_t raw)
 		sys_cache_data_invd_range(dwc3_ep0_setup_buf,
 					  sizeof(dwc3_ep0_setup_buf));
 		LOG_WRN("EP0 XferComplete but TRB still HW-owned");
+		priv->stats.trb_hw_owned++;
 		LOG_WRN("  depevt=0x%08x  trb0 ctl=0x%08x st=0x%08x  trb1 ctl=0x%08x st=0x%08x",
 			raw, trb->control, trb->status, t1->control, t1->status);
 		LOG_WRN("  buf=%02x %02x %02x %02x %02x %02x %02x %02x",
@@ -1434,6 +1446,7 @@ static void dwc3_ep0_xfer_complete(const struct device *dev, uint8_t ep)
 
 	if (dwc3_trb_reclaim(trb, &trbsts) != 0) {
 		LOG_WRN("ep%u XferComplete but TRB still HW-owned", ep);
+		priv->stats.trb_hw_owned++;
 		return;
 	}
 
@@ -1455,6 +1468,7 @@ static void dwc3_ep0_xfer_complete(const struct device *dev, uint8_t ep)
 	buf = udc_buf_peek(ep_cfg);
 	if (buf == NULL) {
 		LOG_WRN("ep%u XferComplete with no queued buffer", ep);
+		priv->stats.no_queued_buf++;
 		udc_ep_set_busy(ep_cfg, false);
 		return;
 	}
@@ -2151,6 +2165,7 @@ static void dwc3_handle_events(const struct device *dev)
 
 			switch (type) {
 			case DWC3_DEVT_USB_RESET:
+				priv->stats.reset++;
 				/*
 				 * 리셋은 컨트롤러의 엔드포인트 상태를 날린다.
 				 * EP0 을 다시 설정하고 SETUP 을 재무장한다.
@@ -2273,6 +2288,8 @@ static void dwc3_handle_events(const struct device *dev)
 			case DWC3_DEVT_CONNECTION_DONE: {
 				uint32_t dsts = dwc3_read32(dev, DWC3_DSTS);
 
+				priv->stats.connect_done++;
+
 				LOG_INF("connected: CONNECTSPD=%u DSTS=0x%08x",
 					(unsigned int)FIELD_GET(
 						DWC3_DSTS_CONNECTSPD, dsts),
@@ -2292,6 +2309,7 @@ static void dwc3_handle_events(const struct device *dev)
 				break;
 			}
 			case DWC3_DEVT_DISCONNECT:
+				priv->stats.disconnect++;
 				/*
 				 * VBUS_READY / VBUS_REMOVED 는 올리지 않는다 —
 				 * 이 컨트롤러는 VBUS 상태 변화를 감지하지 않고
@@ -2335,9 +2353,11 @@ static void dwc3_handle_events(const struct device *dev)
 
 				switch (type) {
 				case DWC3_DEPEVT_XFER_COMPLETE:
+					priv->stats.xfer_complete++;
 					dwc3_ep_xfer_complete(dev, ep);
 					break;
 				case DWC3_DEPEVT_XFER_NOT_READY:
+					priv->stats.xfer_not_ready++;
 					/*
 					 * 일반 엔드포인트는 이 이벤트를 한 번
 					 * 받은 뒤에야 첫 DEPSTRTXFER 를 낼 수
@@ -2378,6 +2398,7 @@ static void dwc3_handle_events(const struct device *dev)
 				dwc3_handle_cmd_cmplt(dev, ep, raw);
 				break;
 			case DWC3_DEPEVT_XFER_COMPLETE:
+				priv->stats.xfer_complete++;
 				if (ep == DWC3_EP0_OUT &&
 				    priv->ep0_state == DWC3_EP0_SETUP) {
 					dwc3_ep0_setup_received(dev, raw);
@@ -2386,6 +2407,7 @@ static void dwc3_handle_events(const struct device *dev)
 				}
 				break;
 			case DWC3_DEPEVT_XFER_NOT_READY:
+				priv->stats.xfer_not_ready++;
 				/*
 				 * ⚠ [임시 계측] 원시 워드와 상태 필드 전체를 찍는다.
 				 *
@@ -2543,6 +2565,44 @@ static void dwc3_rk_log_phy_status(const struct device *dev, const char *when)
 		(st & DWC3_RK_ST_IDDIG) ? 1U : 0U,
 		(st & DWC3_RK_ST_HOSTDISC) ? 1U : 0U,
 		(st & DWC3_RK_ST_LS_FS_RCV) ? 1U : 0U);
+}
+
+/*
+ * 진단 스냅샷 — 셸이 한 번에 읽는다 (udc_dwc3_diag.h).
+ *
+ * ⚠ 레지스터를 **읽기만** 한다. 드라이버 동작에 영향이 없다. 읽는 사이
+ *   링크 상태가 바뀌어 찢긴 값을 보는 것을 줄이려고 한 번에 모아 준다.
+ */
+int udc_dwc3_diag_get(const struct device *dev, struct udc_dwc3_diag *out)
+{
+	struct udc_dwc3_data *priv;
+
+	if (out == NULL) {
+		return -EINVAL;
+	}
+	if (dev == NULL || !device_is_ready(dev)) {
+		return -ENODEV;
+	}
+
+	priv = udc_get_private(dev);
+	if (priv == NULL || priv->base == 0) {
+		return -ENODEV;
+	}
+
+	out->gsnpsid      = dwc3_read32(dev, DWC3_GSNPSID);
+	out->ghwparams3   = dwc3_read32(dev, DWC3_GHWPARAMS3);
+	out->hw_num_eps   = priv->hw_num_eps;
+	out->gctl         = dwc3_read32(dev, DWC3_GCTL);
+	out->dctl         = dwc3_read32(dev, DWC3_DCTL);
+	out->dcfg         = dwc3_read32(dev, DWC3_DCFG);
+	out->dsts         = dwc3_read32(dev, DWC3_DSTS);
+	out->dalepena     = dwc3_read32(dev, DWC3_DALEPENA);
+	out->gusb2phycfg0 = dwc3_read32(dev, DWC3_GUSB2PHYCFG(0));
+	out->ep0_state    = (uint8_t)priv->ep0_state;
+	out->ep0_wlength  = priv->ep0_wlength;
+	out->stats        = priv->stats;
+
+	return 0;
 }
 
 static int udc_dwc3_init(const struct device *dev)

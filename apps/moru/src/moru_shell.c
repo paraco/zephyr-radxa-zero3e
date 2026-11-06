@@ -33,6 +33,7 @@
 #include "moru.h"
 #include "hwinfo_rk3566.h"
 #include "udc_dwc3_regs.h"
+#include "udc_dwc3_diag.h"
 
 #ifndef MORU_BUILD_TIME
 #define MORU_BUILD_TIME "unknown"
@@ -483,43 +484,75 @@ K_THREAD_DEFINE(moru_ota_poll_tid, 4096, moru_ota_poll_thread, NULL, NULL, NULL,
  * 것은 읽기뿐이므로 앱에서 매핑해 읽는다. 드라이버를 안 건드리므로
  * 위험이 낮고(USB 셸을 잃지 않는다) 왕복도 아낀다.
  */
-#define MORU_DWC3_PHYS		0xfcc00000UL
-#define MORU_DWC3_MAP_SIZE	0x10000U
+/*
+ * dwc3 진단 — 드라이버의 스냅샷 API 를 쓴다 (udc_dwc3_diag.h).
+ *
+ * 처음에는 앱에서 device_map 으로 레지스터를 직접 읽었다. 그것으로
+ * DALEPENA 를 확인해 EP 6개가 켜진 것을 알아냈고(로그가 잘려 보이지 않던
+ * 것), 그 덕에 "두 번째 CDC EP 미설정" 가설을 기각했다. 이제 드라이버가
+ * 스냅샷 API 를 제공하므로 그것을 쓴다 — 읽는 사이 상태가 바뀌어 **찢긴
+ * 값**을 보는 것을 줄이고, 카운터도 함께 받는다.
+ */
+static const char *ep0_state_name(uint8_t st)
+{
+	switch (st) {
+	case 0:  return "SETUP";
+	case 1:  return "DATA_IN";
+	case 2:  return "DATA_OUT";
+	case 3:  return "STATUS_IN";
+	case 4:  return "STATUS_OUT";
+	default: return "?";
+	}
+}
 
 static int cmd_moru_usb(const struct shell *sh, size_t argc, char **argv)
 {
-	static mm_reg_t dwc3;
-	uint32_t dalepena, dsts, ghw3;
+	const struct device *udc = DEVICE_DT_GET(DT_NODELABEL(zephyr_udc0));
+	struct udc_dwc3_diag d;
+	int err;
 
 	ARG_UNUSED(argc);
 	ARG_UNUSED(argv);
 
-	if (dwc3 == 0) {
-		device_map(&dwc3, MORU_DWC3_PHYS, MORU_DWC3_MAP_SIZE,
-			   K_MEM_CACHE_NONE);
-		if (dwc3 == 0) {
-			shell_error(sh, "device_map 실패");
-			return -ENOMEM;
-		}
+	err = udc_dwc3_diag_get(udc, &d);
+	if (err != 0) {
+		shell_error(sh, "진단을 읽지 못했다 (%d)", err);
+		return err;
 	}
 
-	ghw3 = sys_read32(dwc3 + DWC3_GHWPARAMS3);
-	dsts = sys_read32(dwc3 + DWC3_DSTS);
-	dalepena = sys_read32(dwc3 + DWC3_DALEPENA);
+	shell_print(sh, "dwc3  core 0x%04x release 0x%04x · 물리 EP %u",
+		    (unsigned int)FIELD_GET(DWC3_GSNPSID_CORE_ID, d.gsnpsid),
+		    (unsigned int)FIELD_GET(DWC3_GSNPSID_RELEASE, d.gsnpsid),
+		    (unsigned int)d.hw_num_eps);
+	shell_print(sh, "  GCTL      0x%08x  DCFG 0x%08x  DCTL 0x%08x",
+		    d.gctl, d.dcfg, d.dctl);
+	shell_print(sh, "  DSTS      0x%08x  speed=%u linkstate=%u",
+		    d.dsts,
+		    (unsigned int)FIELD_GET(DWC3_DSTS_CONNECTSPD, d.dsts),
+		    (unsigned int)FIELD_GET(DWC3_DSTS_USBLNKST, d.dsts));
+	shell_print(sh, "  GUSB2PHY  0x%08x", d.gusb2phycfg0);
+	shell_print(sh, "  DALEPENA  0x%08x  ← 활성 EP 비트맵", d.dalepena);
+	if (d.dalepena == 0x2bfU) {
+		shell_print(sh, "     CDC 2개 (셸 + OTA) 정상");
+	} else if (d.dalepena == 0x2fU) {
+		shell_warn(sh, "     CDC 1개뿐이다");
+	}
+	shell_print(sh, "  EP0       state=%s wLength=%u",
+		    ep0_state_name(d.ep0_state), (unsigned int)d.ep0_wlength);
 
-	shell_print(sh, "dwc3 @0x%08lx", MORU_DWC3_PHYS);
-	shell_print(sh, "  GSNPSID    0x%08x", sys_read32(dwc3 + DWC3_GSNPSID));
-	shell_print(sh, "  GHWPARAMS3 0x%08x  (HW EP 수 %u)", ghw3,
-		    (unsigned int)FIELD_GET(DWC3_GHWPARAMS3_NUM_EPS, ghw3));
-	shell_print(sh, "  DSTS       0x%08x", dsts);
-	shell_print(sh, "  DALEPENA   0x%08x  ← EP 설정 판정", dalepena);
-	shell_print(sh, "     기대: CDC 하나 0x0000002f · CDC 둘 0x000002bf");
-	if (dalepena == 0x2bfU) {
-		shell_print(sh, "     ✅ EP 6개 + ep0 둘 다 켜졌다 (CDC 2개)");
-	} else if (dalepena == 0x2fU) {
-		shell_warn(sh, "     ❌ CDC 하나뿐이다 — 두 번째 EP 가 안 켜졌다");
-	} else {
-		shell_warn(sh, "     ⚠ 예상 밖의 값이다 — 비트를 손으로 읽는다");
+	shell_print(sh, "");
+	shell_print(sh, "카운터 (bring-up 에서 쫓던 증상은 ⚠ 표시)");
+	shell_print(sh, "  reset %u · connect %u · disconnect %u · setup %u",
+		    d.stats.reset, d.stats.connect_done, d.stats.disconnect,
+		    d.stats.setup);
+	shell_print(sh, "  xfer_complete %u · xfer_not_ready %u",
+		    d.stats.xfer_complete, d.stats.xfer_not_ready);
+	shell_print(sh, "  ⚠ cmd_timeout %u · trb_hw_owned %u · no_queued_buf %u",
+		    d.stats.cmd_timeout, d.stats.trb_hw_owned,
+		    d.stats.no_queued_buf);
+	if (d.stats.cmd_timeout || d.stats.trb_hw_owned ||
+	    d.stats.no_queued_buf) {
+		shell_warn(sh, "  → 0 이 아니다. 과거 열거 실패를 일으킨 증상들이다");
 	}
 	return 0;
 }
