@@ -174,17 +174,29 @@ def main():
     boots = len(re.findall(r'Pre-kernel', txt))
     print('suspend(L2) %d회 · resume %d회 %s · 부팅 %d회'
           % (sus, len(res), sorted(set(res)) or '', boots))
+    # ⚠ 판정에서 **리셋으로 끝난 suspend** 와 **resume 으로 끝난 suspend** 를
+    #   섞으면 안 된다(처음 판정이 이걸 섞어 과하게 말했다).
+    #   열거 중의 suspend 는 호스트가 곧 USB 리셋으로 끝낸다 —
+    #   링크가 SUSPEND→RESET→ON 으로 가므로 resume [usb-reset] 이 정상이다.
+    #   설계가 걸리는 경우는 **리셋 없이 깨어나는 suspend** 이고, 그것은
+    #   호스트가 진짜로 포트를 재웠다 깨울 때만 생긴다.
     if sus == 0:
-        print('→ suspend 가 오지 않았다. 포트를 쥐고 있는 것이 없는지,')
-        print('  호스트가 이 포트를 재우는지 확인한다.')
+        print('→ suspend 가 오지 않았다. 유휴만으로는 호스트가 CDC 장치를')
+        print('  재우지 않는다(실측: 포트를 닫고 86초를 두어도 0회).')
+        print('  진짜 suspend 는 호스트가 잠들 때 온다 — 그런데 맥이 자면')
+        print('  이 기록기도 함께 멈추므로 맥에서는 관측할 수 없다.')
     elif len(res) < sus:
         print('→ ⚠ resume 이 모자라다. 막혔을 수 있다 — 전원을 다시 넣으면')
         print('  pm 꺼짐 기본값으로 돌아온다.')
+    elif res == ['usb-reset'] * len(res):
+        print('→ 리셋으로 끝난 suspend 만 봤다. 이것은 정상이다 —')
+        print('  열거 중의 suspend 는 호스트가 리셋으로 끝낸다.')
+        print('  ⚠ 다만 **리셋 없이 깨어나는 suspend 는 아직 본 적이 없다.**')
+        print('  거기서 link-to-ON 이 도는지가 미확인으로 남는다.')
     elif 'link-to-ON' in res:
-        print('→ ✅ 정상 경로(link-to-ON)가 돈다.')
+        print('→ ✅ 리셋 없이 깨어나는 경로(link-to-ON)가 돈다.')
     else:
-        print('→ ⚠ 정상 경로가 돌지 않았다. 리셋이 건져 낸 것뿐이라면,')
-        print('  리셋 없는 suspend 에서는 영구히 막힌다. 설계를 다시 본다.')
+        print('→ resume 출처:', sorted(set(res)))
     if boots:
         print('→ 재부팅 %d회. suspend 와 무관한 전원 사건일 수 있다 —' % boots)
         print('  보드는 같은 USB-C 포트에서 급전된다.')
