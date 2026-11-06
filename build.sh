@@ -25,10 +25,29 @@ BUILD_DIR="${2:-/tmp/claude-501/rz3e-build}"
 EXTRA_OVERLAY="${3:-}"
 
 export ZEPHYR_BASE="$ZEPHYR_WS/zephyr"
-export ZEPHYR_TOOLCHAIN_VARIANT=cross-compile
-export CROSS_COMPILE="$SDK/gnu/aarch64-zephyr-elf/bin/aarch64-zephyr-elf-"
-
-[[ -x "${CROSS_COMPILE}gcc" ]] || { echo "aarch64 툴체인 없음: ${CROSS_COMPILE}gcc" >&2; exit 1; }
+# ⚠ 툴체인 변종 — 호출자가 미리 정해 두면 그것을 존중한다.
+#
+#   기본은 cross-compile 이다. moru 앱이 그것으로 부팅하는 것이 확인돼 있어
+#   기본값을 바꾸지 않는다.
+#
+#   그런데 **C++ 앱은 cross-compile 로 빌드되지 않는다.** 그 변종에서는
+#   TOOLCHAIN_HAS_GLIBCXX 가 n 이 되어(cmake/modules/kconfig.cmake:134)
+#   GLIBCXX_LIBCPP 의 의존성이 깨지고, 조용히 MINIMAL_LIBCPP 로 떨어져
+#   <vector> 조차 못 찾는다. 실제로 llm_l0 에서 겪었다.
+#
+#   그래서 C++ 앱은 SDK 툴체인으로 부른다:
+#     ZEPHYR_TOOLCHAIN_VARIANT=zephyr ZEPHYR_SDK_INSTALL_DIR=~/zephyr-sdk-1.0.1 \
+#       ./build.sh "$PWD/apps/llm_l0"
+if [[ -z "${ZEPHYR_TOOLCHAIN_VARIANT:-}" ]]; then
+  export ZEPHYR_TOOLCHAIN_VARIANT=cross-compile
+fi
+if [[ "$ZEPHYR_TOOLCHAIN_VARIANT" == "cross-compile" ]]; then
+  export CROSS_COMPILE="$SDK/gnu/aarch64-zephyr-elf/bin/aarch64-zephyr-elf-"
+  [[ -x "${CROSS_COMPILE}gcc" ]] || { echo "aarch64 툴체인 없음: ${CROSS_COMPILE}gcc" >&2; exit 1; }
+else
+  export ZEPHYR_SDK_INSTALL_DIR="${ZEPHYR_SDK_INSTALL_DIR:-$SDK}"
+fi
+echo "툴체인: $ZEPHYR_TOOLCHAIN_VARIANT"
 # shellcheck disable=SC1091
 source "$VENV/bin/activate"
 

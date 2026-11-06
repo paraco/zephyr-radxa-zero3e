@@ -137,6 +137,60 @@ qemu-system-aarch64 -cpu cortex-a55 -machine virt,secure=on,gic-version=3 \
 
 **즉 QEMU 는 "정확성", 하드웨어는 "성능과 보드 고유 경로" 를 맡는다.**
 
+## ✅ L0 통과 — 2026-11-07, QEMU `-cpu cortex-a55`
+
+사다리 첫 칸을 **실제로 돌렸다.** 앱은 [`apps/llm_l0`](../apps/llm_l0/) 에 있다.
+
+```
+=== L0: C++17 런타임 관문 ===
+  [1] std::vector<float>(1024)  size=1024  ... OK
+  [2] throw/catch std::runtime_error ... OK
+  [3] pthread_create + join (ggml 이 쓰는 것) ... OK
+  [4] std::thread (참고) ... 쓸 수 없다 — libstdc++ 가 gthreads 없이 빌드됐다
+=== L0 PASS (실패 0) ===
+```
+
+실기용 빌드도 통과한다(144,528 B) — 단, 아래 ④의 툴체인 조건이 붙는다.
+**부팅은 아직 확인하지 않았다**(`apply try` 로 올려 확인한다).
+
+### 배운 것 넷 — 둘은 내 가정이 틀렸음을 보여 준다
+
+**① picolibc 로 된다. newlib 로 바꿀 필요가 없다.**
+계획에 "libc 를 newlib 로 바꿔야 할 가능성이 높다" 고 적었는데 **틀렸다.**
+`GLIBCXX_LIBCPP` 의 의존성이 `NEWLIB_LIBC || PICOLIBC`
+(`lib/cpp/Kconfig:119-125`)이고 picolibc 로 STL·예외·RTTI 가 모두 켜졌다.
+
+**② `std::thread` 는 쓸 수 없다 — 그러나 ggml 에는 필요 없다.**
+툴체인의 libstdc++ 가 gthreads 없이 빌드돼 생성자 템플릿이 막혀 있다.
+**ggml 은 pthread 를 쓴다.** 그래서 L0 의 ③을 `std::thread` 에서
+**`pthread_create`** 로 바꿨다 — 그것이 진짜 요구사항이다.
+⚠ **잔여 위험**: llama.cpp 의 C++ 부분이 `std::thread` 를 쓰는 곳이 있으면
+걸린다. 3단계에서 확인한다.
+
+**③ `CPP_EXCEPTIONS` 는 `MINIMAL_LIBCPP` 에서 열리지 않는다.**
+`lib/cpp/Kconfig` 가 `if !MINIMAL_LIBCPP` 로 감싸고 기본값이 `MINIMAL_LIBCPP`
+다. **`CONFIG_GLIBCXX_LIBCPP=y` 를 명시**해야 한다 — 안 하면 "y 를 줬는데 n 이
+됐다" 는 경고만 나오고 조용히 꺼진다.
+
+**④ ⚠ C++ 앱은 `cross-compile` 툴체인으로 빌드되지 않는다.**
+그 변종에서는 `TOOLCHAIN_HAS_GLIBCXX` 가 `n` 이 되어
+(`cmake/modules/kconfig.cmake:134`) `GLIBCXX_LIBCPP` 가 거부되고
+`MINIMAL_LIBCPP` 로 떨어져 **`<vector>` 조차 못 찾는다.**
+우리 `build.sh` 의 기본값이 `cross-compile` 이라 실제로 걸렸다.
+→ `build.sh` 가 호출자의 `ZEPHYR_TOOLCHAIN_VARIANT` 를 존중하게 고쳤다.
+기본값은 그대로 둔다(moru 가 그것으로 부팅하는 것이 확인돼 있다).
+
+```bash
+ZEPHYR_TOOLCHAIN_VARIANT=zephyr ./build.sh "$PWD/apps/llm_l0"
+```
+
+### 함정 하나 (실제로 걸렸다)
+
+`pthread_create(NULL attr)` 가 **EINVAL(22)** 로 실패했다. 스택을 받을 데가
+없어서다 — `CONFIG_DYNAMIC_THREAD` 이 필요하고 그것은
+**`CONFIG_THREAD_STACK_INFO` 에 의존**한다(`kernel/Kconfig:192-195`).
+**빌드는 통과하고 런타임에만 실패한다** — L0 이 있어야 잡히는 종류다.
+
 ## 테스트 사다리
 
 | # | 계층 | 무엇을 검증 | 골든 기준값 | 모델 필요? | QEMU? |
