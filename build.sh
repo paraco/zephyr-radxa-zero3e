@@ -54,6 +54,35 @@ west build -p always -b radxa_zero_3e/rk3568 -d "$BUILD_DIR" -s "$APP" \
 echo
 echo "산출물:"
 ls -la "$BUILD_DIR/zephyr/zephyr.bin" "$BUILD_DIR/zephyr/zephyr.elf" | awk '{printf "  %-50s %s bytes\n",$NF,$5}'
+
+# ── OTA 상한 여유 ──────────────────────────────────────────────────────
+#
+# ⚠ 왜 빌드 때 알려야 하나: sdcard/boot.cmd 의
+#   `fatwrite … zephyr.bin 0x40000` 이 **고정 크기**다. 그래서 OTA 로 올릴
+#   수 있는 이미지에 상한이 있다. 펌웨어의 `moru ota begin` 이 그 상한을
+#   넘는 크기를 거부하므로 조용히 잘리지는 않는다
+#   (apps/moru/src/moru_shell.c 의 MORU_OTA_MAX_SIZE).
+#
+#   문제는 **탈출구가 카드 작업**이라는 점이다. 상한을 올리려면 boot.cmd 를
+#   고쳐 boot.scr 을 다시 만들어 **카드에 직접** 써야 한다 — OTA 로 피하려던
+#   바로 그 일이다. 그러니 상한에 닿은 뒤에 알면 늦다. 여기서 미리 알린다.
+#
+#   U-Boot 가 크기를 DRAM 헤더에서 읽어 쓰면 상한이 필요 없지만, 이 U-Boot
+#   에는 `setexpr` 가 없어 헤더의 값을 변수로 만들 수 없다. 그래서 고정이다.
+OTA_CAP=$((256 * 1024))
+BIN_SIZE=$(wc -c < "$BUILD_DIR/zephyr/zephyr.bin" | tr -d ' ')
+PCT=$((BIN_SIZE * 100 / OTA_CAP))
+printf "OTA 상한: %d / %d bytes (%d%%)" "$BIN_SIZE" "$OTA_CAP" "$PCT"
+if [ "$BIN_SIZE" -gt "$OTA_CAP" ]; then
+	printf "  ❌ 넘었다 — OTA 로 올릴 수 없다\n"
+	echo "   boot.cmd 의 0x40000 을 키우고 boot.scr 을 다시 만들어 카드에 쓴다"
+	echo "   (moru_shell.c 의 MORU_OTA_MAX_SIZE 도 같이 맞춘다 — 두 값이 일치해야 한다)"
+elif [ "$PCT" -ge 90 ]; then
+	printf "  ⚠ 여유가 거의 없다\n"
+	echo "   상한을 올리려면 카드에 boot.scr 을 다시 써야 한다 — 미리 준비한다"
+else
+	printf "  여유 %d bytes\n" "$((OTA_CAP - BIN_SIZE))"
+fi
 echo "진입 주소:"
 "${CROSS_COMPILE}readelf" -h "$BUILD_DIR/zephyr/zephyr.elf" | awk '/Entry point/{print "  "$0}'
 echo

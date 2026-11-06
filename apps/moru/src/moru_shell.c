@@ -642,9 +642,29 @@ static int cmd_moru_ota_begin(const struct shell *sh, size_t argc, char **argv)
 	}
 
 	size = strtoul(argv[1], &end, 0);
-	if (*end != '\0' || size == 0UL || size > MORU_OTA_MAX_SIZE) {
-		shell_error(sh, "크기가 잘못됐다 (1 ~ %u)", MORU_OTA_MAX_SIZE);
+	if (*end != '\0' || size == 0UL) {
+		shell_error(sh, "크기를 10진수로 준다 (1 ~ %u)", MORU_OTA_MAX_SIZE);
 		return -EINVAL;
+	}
+	/*
+	 * ⚠ 상한에 걸렸을 때 **무엇을 해야 하는지** 알려 준다. 이 상한은
+	 *   sdcard/boot.cmd 의 `fatwrite … zephyr.bin 0x40000` 고정 크기에서
+	 *   오고, 올리려면 boot.scr 을 다시 만들어 **카드에 직접** 써야 한다 —
+	 *   OTA 로 피하려던 바로 그 작업이다. 그래서 여기서 끝내지 않고
+	 *   경로를 적어 준다. build.sh 도 빌드할 때마다 여유를 찍는다.
+	 */
+	if (size > MORU_OTA_MAX_SIZE) {
+		shell_error(sh, "이미지가 OTA 상한을 넘는다 — %lu > %u",
+			    size, MORU_OTA_MAX_SIZE);
+		shell_print(sh, "  이 상한은 boot.cmd 의 fatwrite 고정 크기(0x40000)다.");
+		shell_print(sh, "  올리려면 boot.cmd 를 고쳐 boot.scr 을 다시 만들고");
+		shell_print(sh, "  **카드에 직접** 써야 한다. MORU_OTA_MAX_SIZE 도 같이 맞춘다.");
+		return -EINVAL;
+	}
+	if (size > (MORU_OTA_MAX_SIZE / 10U) * 9U) {
+		shell_warn(sh, "상한의 %lu%% 다 — 여유 %lu B. 곧 카드 작업이 필요하다",
+			   (size * 100UL) / MORU_OTA_MAX_SIZE,
+			   (unsigned long)MORU_OTA_MAX_SIZE - size);
 	}
 
 	crc = strtoul(argv[2], &end, 16);
