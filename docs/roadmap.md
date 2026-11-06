@@ -170,6 +170,18 @@ PSCI 가 실패하면 대안은 CRU 글로벌 소프트 리셋이고, 그 레지
 **TRM Part1 CRU 장**에 있다 — [trm-grounding.md](trm-grounding.md) §5 의 1번
 항목. TRM 을 다시 받을 유일한 실제 사유다.
 
+## 펌웨어 갱신 경로 (2026-11-06 추가)
+
+카드를 빼는 왕복이 가장 비싸다. 조사와 설계는
+[ota-strategy.md](ota-strategy.md) 에 있다. 요점:
+
+- U-Boot `ums`·`fastboot`·`dfu` 가 **없고** `bootdelay=0` 이라 **1.5 Mbps
+  어댑터를 사도 해결되지 않는다** (실기 0회로 확인)
+- 그러나 `fatwrite`·`itest`·`crc32` 는 **있다** → "Zephyr 가 RAM 에 받고
+  U-Boot 가 SD 에 쓴다" 가 가능하다
+- **미지수 하나: 재부팅 뒤 DRAM 보존.** `moru ota mark` → `moru reboot`
+  → `moru ota check` 로 **실기 1회**에 가린다 (`moru reboot` 시험과 같은 왕복)
+
 ## 하지 않는 것
 
 - `apps/ledblink`·`usbled`·`usbuart` 는 건드리지 않는다 — 각자 특정 가설을
