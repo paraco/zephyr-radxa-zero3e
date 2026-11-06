@@ -47,7 +47,7 @@ struct udc_dwc3_stats {
 	uint32_t suspend;	/* U3/L2/L1 진입 (DWC3_DEVT_SUSPEND_ENTRY) */
 	uint32_t wakeup;	/* REMOTE_WAKEUP */
 	uint32_t link_state;	/* LINK_STATE_CHANGE — 빈번할 수 있어 로그 없음 */
-	uint8_t  last_linkst;	/* 마지막으로 본 DSTS.USBLNKST */
+	uint8_t  last_linkst;	/* 마지막 LINK_STATE_CHANGE 의 링크 상태 */
 };
 
 /** 한 번에 읽는 상태 묶음. */
@@ -78,6 +78,14 @@ struct udc_dwc3_diag {
 	uint16_t bulk_out1_mps;	/* 0x02 */
 	/* 카운터 */
 	struct udc_dwc3_stats stats;
+	/*
+	 * 전원 관리 상태 — 카운터가 아니라 '지금' 의 상태다. 그래서 stats
+	 * 가 아니라 여기에 둔다. 횟수만으로는 "suspend 뒤 깨어났다" 와
+	 * "suspend 에서 멈췄다" 를 구분할 수 없다.
+	 */
+	uint8_t  last_suspend_link; /* 마지막 SUSPEND_ENTRY 의 evtinfo 링크 상태 */
+	bool     pm_enabled;	/* UDC_EVT_SUSPEND/RESUME 을 스택에 올리는가 */
+	bool     suspended;	/* 지금 suspend 로 보고 있는가 */
 };
 
 /**
@@ -88,5 +96,15 @@ struct udc_dwc3_diag {
  * @retval -EINVAL out 이 NULL
  */
 int udc_dwc3_diag_get(const struct device *dev, struct udc_dwc3_diag *out);
+
+/**
+ * @brief suspend/resume 을 스택에 올릴지 바꾼다 (런타임 스위치).
+ *
+ * ⚠ **기본은 꺼짐이고 그것이 안전 장치다.** 켜면 CDC-ACM 이 suspend 중
+ *   TX·RX 를 둘 다 멈추므로, resume 이 어긋나면 셸과 OTA 가 함께 죽는다.
+ *   그 상태에서 전원을 다시 넣으면 꺼진 기본값으로 돌아와 셸이 산다 —
+ *   끄는 쪽을 기본으로 둔 이유다.
+ */
+int udc_dwc3_pm_set(const struct device *dev, bool enable);
 
 #endif /* MORU_UDC_DWC3_DIAG_H_ */

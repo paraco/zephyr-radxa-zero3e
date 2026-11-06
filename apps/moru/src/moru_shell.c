@@ -519,6 +519,24 @@ static const char *ep0_state_name(uint8_t st)
 	}
 }
 
+/*
+ * HS 의 링크 상태 이름. SS 의 U0/U1/U2/U3 와 값이 겹치지만 뜻이 다르다 —
+ * 숫자만 찍으면 오해한다. 출처: Linux enum dwc3_link_state.
+ */
+static const char *moru_linkst_name(uint8_t st)
+{
+	switch (st) {
+	case 0:  return "0 ON";
+	case 2:  return "2 SLEEP(L1)";
+	case 3:  return "3 SUSPEND(L2)";
+	case 4:  return "4 DISCONNECTED";
+	case 5:  return "5 EARLY_SUSPEND";
+	case 6:  return "6 RESET";
+	case 7:  return "7 RESUME";
+	default: return "기타";
+	}
+}
+
 static int cmd_moru_usb(const struct shell *sh, size_t argc, char **argv)
 {
 	const struct device *udc = DEVICE_DT_GET(DT_NODELABEL(zephyr_udc0));
@@ -572,11 +590,23 @@ static int cmd_moru_usb(const struct shell *sh, size_t argc, char **argv)
 	shell_print(sh, "  ⚠ cmd_timeout %u · trb_hw_owned %u · no_queued_buf %u",
 		    d.stats.cmd_timeout, d.stats.trb_hw_owned,
 		    d.stats.no_queued_buf);
-	shell_print(sh, "  전원: suspend %u · wakeup %u · linkstate %u (마지막 U%u)",
-		    d.stats.suspend, d.stats.wakeup, d.stats.link_state,
-		    (unsigned int)d.stats.last_linkst);
-	if (d.stats.suspend == 0U && d.stats.link_state == 0U) {
-		shell_print(sh, "     (호스트가 아직 suspend 를 보내지 않았다)");
+	shell_print(sh, "  전원: suspend %u · wakeup %u · linkstate %u",
+		    d.stats.suspend, d.stats.wakeup, d.stats.link_state);
+	/*
+	 * 횟수만으로는 "suspend 뒤 깨어났다" 와 "suspend 에서 멈췄다" 를
+	 * 구분할 수 없다. 지금 상태와 마지막 링크 값을 함께 찍는다.
+	 */
+	shell_print(sh, "     링크 %s · 지금 %s · pm %s",
+		    moru_linkst_name(d.stats.last_linkst),
+		    d.suspended ? "suspend 중" : "깨어 있음",
+		    d.pm_enabled ? "켬 (스택에 올린다)" : "끔 (계측만)");
+	if (d.stats.suspend != 0U) {
+		shell_print(sh, "     마지막 SUSPEND_ENTRY 의 링크 %s%s",
+			    moru_linkst_name(d.last_suspend_link),
+			    d.last_suspend_link == 3U ? " ← 진짜 L2"
+						      : " ← stray (무시됨)");
+	} else {
+		shell_print(sh, "     (아직 suspend 이벤트가 없다)");
 	}
 	if (d.stats.cmd_timeout || d.stats.trb_hw_owned ||
 	    d.stats.no_queued_buf) {
@@ -853,6 +883,53 @@ static int cmd_moru_ota_check(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+/*
+ * ⚠ suspend/resume 을 스택에 올리는 스위치. **기본은 꺼짐이다.**
+ *
+ *   켜면 CDC-ACM 이 suspend 중 CDC_ACM_CLASS_SUSPENDED 를 세우고,
+ *   그 플래그는 tx_fifo_handler 와 rx_fifo_handler 를 **둘 다** 조기
+ *   반환시킨다(usbd_cdc_acm.c:654, :705). resume 이 어긋나면 셸과 OTA 가
+ *   함께 죽는다 — 그때는 전원을 다시 넣으면 꺼진 기본값으로 돌아온다.
+ */
+static int cmd_moru_usb_pm(const struct shell *sh, size_t argc, char **argv)
+{
+	const struct device *udc = DEVICE_DT_GET(DT_NODELABEL(zephyr_udc0));
+	bool on;
+	int err;
+
+	if (strcmp(argv[1], "on") == 0) {
+		on = true;
+	} else if (strcmp(argv[1], "off") == 0) {
+		on = false;
+	} else {
+		shell_error(sh, "on 또는 off");
+		return -EINVAL;
+	}
+
+	err = udc_dwc3_pm_set(udc, on);
+	if (err != 0) {
+		shell_error(sh, "바꾸지 못했다 (%d)", err);
+		return err;
+	}
+
+	if (on) {
+		shell_print(sh, "pm 켬 — suspend/resume 을 스택에 올린다.");
+		shell_print(sh, "  ⚠ suspend 중에는 CDC 의 송·수신이 멈춘다. 그 창에 나온");
+		shell_print(sh, "    로그는 쌓이지 않고 버려진다(poll_out 이 버린다).");
+		shell_print(sh, "  셸이 죽으면 전원을 다시 넣는다 — 기본값이 꺼짐이라 살아난다.");
+	} else {
+		shell_print(sh, "pm 끔 — 계측만 한다. 서 있던 suspend 는 풀었다.");
+	}
+	return 0;
+}
+
+SHELL_STATIC_SUBCMD_SET_CREATE(moru_usb_subcmds,
+	SHELL_CMD_ARG(pm, NULL,
+		      "suspend/resume 을 스택에 올리기 on|off (기본 off)",
+		      cmd_moru_usb_pm, 2, 0),
+	SHELL_SUBCMD_SET_END
+);
+
 SHELL_STATIC_SUBCMD_SET_CREATE(moru_ota_subcmds,
 	SHELL_CMD_ARG(begin, NULL,
 		      "수신 시작: begin <크기> <crc32(16진수)> [poll]",
@@ -885,8 +962,9 @@ SHELL_STATIC_SUBCMD_SET_CREATE(moru_subcmds,
 		      cmd_moru_reboot, 1, 1),
 	SHELL_CMD(ota, &moru_ota_subcmds,
 		  "OTA — 수신·검증·DRAM 보존 확인", NULL),
-	SHELL_CMD_ARG(usb, NULL, "dwc3 레지스터 (DALEPENA 로 EP 설정 판정)",
-		      cmd_moru_usb, 1, 0),
+	SHELL_CMD_ARG(usb, &moru_usb_subcmds,
+		      "dwc3 레지스터 (DALEPENA 로 EP 설정 판정) · pm on|off",
+		      cmd_moru_usb, 1, 2),
 	SHELL_SUBCMD_SET_END
 );
 

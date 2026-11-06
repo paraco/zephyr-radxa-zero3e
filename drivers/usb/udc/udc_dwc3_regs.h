@@ -273,6 +273,18 @@ struct dwc3_trb {
 #define DWC3_DEVT_EVENT_BUF_OVERFLOW	11
 #define DWC3_DEVT_VENDOR_TEST_LMP	12
 #define DWC3_DEVT_STOPPED_DISCONNECT	13
+/*
+ * 이벤트 info(DEVT_INFO) 의 하위 4비트가 **목표 링크 상태**다.
+ * Linux dwc3_gadget_suspend_interrupt() 가 `evtinfo & DWC3_LINK_STATE_MASK`
+ * 로 꺼내 U3 일 때만 suspend 로 취급한다 — 그것이 stray suspend 필터다.
+ *
+ * HS 에서의 값: 0 ON(U0) · 2 SLEEP(L1) · 3 SUSPEND(L2) · 4 DISCONNECTED
+ *               5 EARLY_SUSPEND · 6 RESET · 7 RESUME
+ */
+#define DWC3_LINK_STATE_MASK		0x0fU
+#define DWC3_LINK_STATE_ON		0U	/* U0 — 깨어 있다 */
+#define DWC3_LINK_STATE_U3		3U	/* HS 에서는 L2 = 진짜 suspend */
+
 #define DWC3_DEVT_L1_RESUME_DETECT	14
 #define DWC3_DEVT_LDM_RESPONSE		15
 

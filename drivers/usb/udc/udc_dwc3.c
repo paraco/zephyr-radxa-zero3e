@@ -178,6 +178,23 @@ struct udc_dwc3_data {
 	bool started_cfg2;
 	/* 진단 카운터 — 동작에 영향이 없다. udc_dwc3_diag.h 참고 */
 	struct udc_dwc3_stats stats;
+	/*
+	 * ⚠ 전원 관리 — 2단계. **기본이 꺼짐이고, 그것이 안전 장치다.**
+	 *
+	 * UDC_EVT_SUSPEND 를 올리면 CDC-ACM 이 CDC_ACM_CLASS_SUSPENDED 를
+	 * 세우고, 그 플래그는 tx_fifo_handler 와 rx_fifo_handler 를 **둘 다**
+	 * 조기 반환시킨다(usbd_cdc_acm.c:654, :705). resume 이 오지 않으면
+	 * 셸과 OTA 가 함께 죽고, OTA 로 이미 SD 에 쓴 펌웨어가 다시 부팅되므로
+	 * **전원 재투입으로도 벗어나지 못한다 — 카드 교체뿐이다.**
+	 *
+	 * 그래서 부팅 기본값은 꺼짐이다. `moru usb pm on` 으로 켠다. USB 가
+	 * 죽어도 전원 재투입이면 꺼진 상태로 돌아와 셸이 산다.
+	 */
+	bool pm_enabled;
+	/* 우리가 본 suspend 상태. resume 을 중복 submit 하지 않게 한다. */
+	bool pm_suspended;
+	/* 마지막 SUSPEND_ENTRY 의 evtinfo 링크 상태 (stray 판별 근거) */
+	uint8_t pm_last_suspend_link;
 };
 
 static inline uint32_t dwc3_read32(const struct device *dev, uint32_t off)
@@ -761,6 +778,40 @@ static int udc_dwc3_disable(const struct device *dev)
 
 static uint32_t dwc3_evt_buf[DWC3_EVT_BUF_BYTES / sizeof(uint32_t)]
 	__aligned(64);
+
+/*
+ * suspend 에서 깨어난 것을 스택에 알린다.
+ *
+ * ⚠ **resume 경로가 하나뿐이면 안 된다.** CDC_ACM_CLASS_SUSPENDED 가
+ *   서 있으면 TX·RX 가 둘 다 멈추므로, resume 을 놓치면 셸과 OTA 가
+ *   함께 죽는다. 그래서 세 곳에서 모두 부른다:
+ *     LINK_STATE_CHANGE → ON(U0)   정상 경로. HS 에서 resume 은 별도
+ *                                  이벤트가 아니라 링크 복귀로 나타난다
+ *     USB_RESET                    suspend 중의 리셋도 깨어난 것이다
+ *     CONNECTION_DONE              열거를 다시 했으면 깨어 있다
+ *     REMOTE_WAKEUP                장치가 건 경우
+ *
+ * pm_suspended 로 막아 **중복 submit 을 하지 않는다** — 링크 상태 변화는
+ * 7 초에 4번 올 정도로 빈번하다(실측).
+ */
+static void dwc3_pm_resume(const struct device *dev)
+{
+	struct udc_dwc3_data *priv = udc_get_private(dev);
+
+	if (!priv->pm_suspended) {
+		return;
+	}
+
+	priv->pm_suspended = false;
+	priv->stats.wakeup++;
+
+	if (priv->pm_enabled) {
+		LOG_INF("resume — 스택에 알린다");
+		udc_submit_event(dev, UDC_EVT_RESUME, 0);
+	} else {
+		LOG_INF("resume (pm 꺼짐 — 스택에 올리지 않는다)");
+	}
+}
 
 static const char *dwc3_devt_name(uint32_t type)
 {
@@ -2190,6 +2241,8 @@ static void dwc3_handle_events(const struct device *dev)
 			switch (type) {
 			case DWC3_DEVT_USB_RESET:
 				priv->stats.reset++;
+				/* suspend 중의 리셋도 "깨어났다" 다 */
+				dwc3_pm_resume(dev);
 				/*
 				 * 리셋은 컨트롤러의 엔드포인트 상태를 날린다.
 				 * EP0 을 다시 설정하고 SETUP 을 재무장한다.
@@ -2327,6 +2380,8 @@ static void dwc3_handle_events(const struct device *dev)
 				uint32_t dsts = dwc3_read32(dev, DWC3_DSTS);
 
 				priv->stats.connect_done++;
+				/* 열거를 다시 했으면 깨어 있다 */
+				dwc3_pm_resume(dev);
 
 				LOG_INF("connected: CONNECTSPD=%u DSTS=0x%08x",
 					(unsigned int)FIELD_GET(
@@ -2350,35 +2405,65 @@ static void dwc3_handle_events(const struct device *dev)
 				udc_submit_event(dev, UDC_EVT_RESET, 0);
 				break;
 			}
-			case DWC3_DEVT_SUSPEND_ENTRY:
-				priv->stats.suspend++;
+			case DWC3_DEVT_SUSPEND_ENTRY: {
 				/*
-				 * 1단계: 세고 남긴다. 스택에 UDC_EVT_SUSPEND 를
-				 * 올리지 않는다 — 올리면 usbd 가 클래스에
-				 * 알리고 CDC 가 상태를 바꾼다. 호스트가 실제로
-				 * 보내는지 확인한 뒤에 한다.
+				 * ⚠ **이벤트 타입만 보면 안 된다.** evtinfo 의
+				 *   하위 4비트가 목표 링크 상태이고, U3(HS 의 L2)
+				 *   일 때만 진짜 suspend 다. Linux
+				 *   dwc3_gadget_suspend_interrupt() 와 같은 판정이며,
+				 *   Zephyr CDC 주석의
+				 *   "FIXME: filter stray suspended events earlier"
+				 *   가 요구하는 바로 그 필터다.
+				 *
+				 *   1단계 실측에서 **열거 중(0.42 초)에 suspend 가
+				 *   한 번 왔다.** 버스는 그 뒤로 멀쩡히 돌았다.
+				 *   필터 없이 submit 했다면 부팅 직후 콘솔이 죽는다.
 				 */
-				LOG_INF("suspend entry (%u번째) DSTS=0x%08x",
-					priv->stats.suspend,
-					dwc3_read32(dev, DWC3_DSTS));
+				uint8_t link = (uint8_t)(FIELD_GET(DWC3_DEVT_INFO, raw) &
+							 DWC3_LINK_STATE_MASK);
+
+				priv->stats.suspend++;
+				priv->pm_last_suspend_link = link;
+
+				if (link != DWC3_LINK_STATE_U3) {
+					LOG_INF("suspend entry 무시 — 링크 %u (U3 아님), %u번째",
+						link, priv->stats.suspend);
+					break;
+				}
+				if (priv->pm_suspended) {
+					break;
+				}
+
+				priv->pm_suspended = true;
+				if (priv->pm_enabled) {
+					LOG_INF("suspend (L2) — 스택에 알린다, %u번째",
+						priv->stats.suspend);
+					udc_submit_event(dev, UDC_EVT_SUSPEND, 0);
+				} else {
+					LOG_INF("suspend (L2) %u번째 — pm 꺼짐, 올리지 않는다",
+						priv->stats.suspend);
+				}
 				break;
+			}
 			case DWC3_DEVT_REMOTE_WAKEUP:
-				priv->stats.wakeup++;
-				LOG_INF("remote wakeup (%u번째)",
-					priv->stats.wakeup);
+				dwc3_pm_resume(dev);
 				break;
 			case DWC3_DEVT_LINK_STATE_CHANGE:
 				/*
-				 * ⚠ 로그를 찍지 않는다 — 빈번할 수 있고, 로그
-				 *   폭주가 수신을 멈추게 한 전례가 있다.
-				 *   마지막 링크 상태만 남겨 moru usb 가 보여 준다.
-				 *   HS 에서 resume 은 여기서 U0(0) 로 돌아오는
-				 *   것으로 나타난다.
+				 * ⚠ 로그를 찍지 않는다 — 빈번할 수 있고(7초에 4번),
+				 *   로그 폭주가 수신을 멈추게 한 전례가 있다.
+				 *
+				 * 링크 상태는 **DSTS 를 다시 읽지 않고 evtinfo 에서**
+				 * 꺼낸다 — 이벤트가 알리는 값이 그것이고, DSTS 는
+				 * 이미 다음 상태로 넘어가 있을 수 있다.
 				 */
 				priv->stats.link_state++;
-				priv->stats.last_linkst = (uint8_t)FIELD_GET(
-					DWC3_DSTS_USBLNKST,
-					dwc3_read32(dev, DWC3_DSTS));
+				priv->stats.last_linkst =
+					(uint8_t)(FIELD_GET(DWC3_DEVT_INFO, raw) &
+						  DWC3_LINK_STATE_MASK);
+				if (priv->stats.last_linkst == DWC3_LINK_STATE_ON) {
+					dwc3_pm_resume(dev);
+				}
 				break;
 			case DWC3_DEVT_DISCONNECT:
 				priv->stats.disconnect++;
@@ -2687,7 +2772,43 @@ int udc_dwc3_diag_get(const struct device *dev, struct udc_dwc3_diag *out)
 	}
 
 	out->stats        = priv->stats;
+	out->pm_enabled   = priv->pm_enabled;
+	out->suspended    = priv->pm_suspended;
+	out->last_suspend_link = priv->pm_last_suspend_link;
 
+	return 0;
+}
+
+int udc_dwc3_pm_set(const struct device *dev, bool enable)
+{
+	struct udc_dwc3_data *priv;
+
+	if (dev == NULL || !device_is_ready(dev)) {
+		return -ENODEV;
+	}
+
+	priv = udc_get_private(dev);
+	if (priv == NULL || priv->base == 0) {
+		return -ENODEV;
+	}
+
+	/*
+	 * ⚠ 끌 때는 **지금 서 있는 suspend 를 반드시 풀어 준다.**
+	 *   켠 상태에서 suspend 가 서 있고 CDC 가 멈춰 있는데 그냥 끄면,
+	 *   스택의 SUSPENDED 플래그가 그대로 남아 영원히 막힌다. 끄기가
+	 *   탈출구 구실을 하려면 resume 을 올리고 나서 꺼야 한다.
+	 */
+	if (!enable && priv->pm_suspended) {
+		priv->pm_suspended = false;
+		priv->stats.wakeup++;
+		if (priv->pm_enabled) {
+			LOG_INF("pm 끄기 — 서 있던 suspend 를 먼저 푼다");
+			udc_submit_event(dev, UDC_EVT_RESUME, 0);
+		}
+	}
+
+	priv->pm_enabled = enable;
+	LOG_INF("pm %s", enable ? "켬 (suspend/resume 을 스택에 올린다)" : "끔");
 	return 0;
 }
 
