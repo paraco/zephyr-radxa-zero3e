@@ -2400,3 +2400,92 @@ OTA 1단계에서 수신이 0 바이트일 때 이 경고를 보고 **"두 CDC �
 수정은 단위를 맞추고 방향을 구분한다 — DT 물리 > HW 면 `LOG_ERR`(없는 EP
 를 쓰려 한다), < 면 `LOG_INF`(여유), 같으면 `LOG_INF`(일치). IN 전용 수도
 함께 찍는다(IN 한계가 따로 있다). diff 는 조건식과 로그 문구뿐이다.
+
+## USB suspend/resume — 2026-11-06
+
+### 호스트는 suspend 를 보낸다 (실측)
+
+`moru usb` 의 `전원:` 줄로 확인했다. 부팅 직후(가동 7 초)에
+`suspend 1 · wakeup 1 · linkstate 4`, 그리고
+`마지막 SUSPEND_ENTRY 의 링크 3 SUSPEND(L2)`.
+
+**발견의 핵심은 지금까지 이 이벤트가 애초에 오지 않았다는 것이다.** DEVTEN 에
+`USBRSTEVTEN | CONNECTDONEEVTEN | DISSCONNEVTEN` 만 켜 두어서, "호스트가 안
+보낸다" 와 "드라이버가 안 받는다" 를 구분할 수가 없었다. `U3L2L1SUSPEN`(BIT 6) ·
+`WKUPEVTEN`(BIT 4) · `ULSTCNGEN`(BIT 3) 을 켜고서야 보였다.
+
+HS 에서 **resume 은 별도 이벤트가 아니다.** 링크가 ON(0)으로 돌아오는
+`LINK_STATE_CHANGE` 로만 나타난다 — `REMOTE_WAKEUP` 은 장치가 거는 쪽이고 실제로
+0 회였다. 그래서 `ULSTCNGEN` 이 resume 을 아는 유일한 경로다.
+
+### stray suspend 는 아직 본 적이 없다
+
+Zephyr `usbd_cdc_acm.c:398` 의 `FIXME: filter stray suspended events earlier` 를
+근거로 "부팅 중의 suspend 가 stray 다" 라고 적었는데 **틀렸다.** evtinfo 하위
+4비트를 읽어 보니 링크 3(= HS 의 L2)으로 **진짜 suspend** 였고, 뒤이어 resume 이
+와서 `지금 깨어 있음` 이 됐다.
+
+필터(링크 == U3 일 때만 suspend 로 취급) 자체는 Linux
+`dwc3_gadget_suspend_interrupt()` 와 같은 판정이라 남길 값이 있다. 다만 근거는
+"stray 를 봤다" 가 아니라 **"stray 를 아직 본 적이 없다"** 다.
+
+### 위험의 크기 — 왜 런타임 스위치로 만들었나
+
+`UDC_EVT_SUSPEND` 를 올리면 CDC-ACM 이 `CDC_ACM_CLASS_SUSPENDED` 를 세우고, 그
+플래그는 `tx_fifo_handler`(`:654`)와 `rx_fifo_handler`(`:705`)를 **둘 다** 조기
+반환시킨다. resume 이 어긋나면 셸과 OTA 가 함께 죽는다. 그 상태에서는 OTA 로
+이미 SD 에 쓴 펌웨어가 다시 부팅되므로 **전원 재투입으로도 벗어나지 못한다 —
+카드 교체뿐이다.**
+
+그래서 `moru usb pm on|off` 를 두고 **기본을 꺼짐으로 했다. 꺼짐이 안전 장치다** —
+USB 가 죽어도 전원 재투입이면 꺼진 기본값으로 돌아와 셸이 산다. 끌 때 서 있던
+suspend 를 먼저 풀어 주지 않으면 스택 플래그가 남아 영원히 막히므로, 끄기 경로가
+탈출구 구실을 하도록 `udc_dwc3_pm_set()` 이 resume 을 먼저 올린다.
+
+### ⚠ 이 보드는 측정 자체가 전원과 얽혀 있다
+
+`pm on` 뒤 포트를 닫고 90 초 유휴로 두었더니 **보드가 재부팅했다**(가동 82 초,
+`pm` 이 꺼짐 기본값으로 복귀, 포트 번호 `usbmodem213101` → `usbmodem2101`).
+
+인과는 **확정하지 않았다.** 가린 것과 남은 것:
+
+| 가설 | 등급 | 근거 |
+|---|---|---|
+| Zephyr fatal error 로 재부팅 | **무죄 입증** | `RESET_ON_FATAL_ERROR` Kconfig 가 Zephyr 4.4.99 에 없다. 기본 fatal 처리는 `k_fatal_halt` — 멈추고 서지 재부팅하지 않는다 |
+| 호스트 포트 전원 관리 | **유력** | 보드는 **같은 USB-C OTG 포트에서 PD 로 급전된다**(VCC 미연결, README:172). 호스트가 유휴 포트의 전원을 내리면 그대로 보드 전원이 끊긴다 — `pm on` 과 무관하다 |
+| `pm on` 이 올린 suspend 가 원인 | 미확정 | 상관만 있다(`pm on` 후 약 45 초). 포트를 닫은 것·유휴·전원 관리가 함께 변했다 |
+
+### 변수를 하나 분리했다 — `pm_enabled` 자체는 무죄
+
+같은 조건에서 **포트만 열어 둔 채** 같은 시간을 기다렸다(`pm on`, 120 초, 10 초
+간격으로 `moru usb`·`kernel uptime`):
+
+- 가동시간 153 초 → 316 초 **단조 증가**, 재부팅 없음
+- 셸 응답 정상, `지금 깨어 있음 · pm 켬` 유지
+- `⚠ cmd_timeout 0 · trb_hw_owned 0 · no_queued_buf 0`
+
+그러므로 **`pm on` 자체가 재부팅을 일으키지는 않는다.**
+
+**다만 이 왕복은 정작 시험하려던 것을 시험하지 못했다.** 포트가 열려 있어
+suspend 가 한 번도 오지 않았고(`suspend 1` 고정), 그래서 `udc_submit_event
+(UDC_EVT_SUSPEND)` 경로는 한 번도 돌지 않았다. 가린 범위는
+**"pm_enabled 가 서 있는 것만으로는 아무 일도 없다"** 까지다. "suspend 를
+스택에 올렸을 때 멀쩡한가" 는 **여전히 미확인**이다.
+
+덤으로 얻은 것: 가동 316 초 > 179 초이므로 `CONFIG_LOG_TIMESTAMP_64BIT` 의
+랩어라운드 수정이 실측으로 확인됐다.
+
+`hwinfo reset_cause` 는 값을 내지 않는다 — 이 보드에 구현이 없다. 재부팅의
+출처를 묻는 데 쓸 수 없다.
+
+**이 급전 방식이 측정을 오염시킨다.** 진짜 suspend 를 받으려면 포트를 유휴로 둬야
+하는데, 포트를 유휴로 두면 보드 전원이 위험해진다. 다음에 할 일은 이 둘을
+분리하는 것이다. 둘 중 하나가 **먼저 있어야 더 나아갈 수 없다**:
+
+1. **마커 UART(uart2)를 꽂는다.** USB 와 무관한 관측 경로가 생긴다 — suspend
+   submit·resume·재부팅을 USB 가 죽어도 읽는다. 지금은 어댑터가 꽂혀 있지
+   않다(`/dev/cu.usbserial*` 없음).
+2. **외부 급전(별도 5 V)으로 바꾼다.** 포트를 유휴로 둬도 보드 전원이 흔들리지
+   않으므로 진짜 suspend 를 안전하게 받을 수 있다.
+
+둘 다 사람이 선을 꽂아야 하는 일이다. 그때까지 `pm` 은 꺼짐으로 둔다.
