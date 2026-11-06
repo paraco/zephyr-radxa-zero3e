@@ -2609,6 +2609,60 @@ EL1 로 들어가므로 그 경로가 아예 돌지 않는다. 즉 QEMU 에서 �
 | `THREAD_RUNTIME_STATS` 가 arm64 에서 부팅을 막는다 | **같은 보고를 찾지 못했다** (못 찾은 것이 없다는 증명은 아니다) |
 | `SCHED_THREAD_USAGE_AUTO_ENABLE=n` 의 빌드 깨짐 | **같은 보고를 찾지 못했다** — 두 번째 상류 보고감 |
 
+### ✅ fault 가 아니다 — 멈춤이다 (2026-11-06 저녁, 계기 검증 후)
+
+`moru_fatal.c` 가 `k_sys_fatal_error_handler` 를 재정의해 uart2 에 **동기로**
+ESR·FAR·ELR 을 찍는다. 그 계기를 먼저 **양성 대조**로 검증했다 —
+`moru_fault` 로 일부러 데이터 어보트를 내니:
+
+```
+ESR_EL1 0x96000005 · EC 0x25(같은 EL 데이터 어보트)
+FAR_EL1 0x10        ← 일부러 역참조한 그 주소와 일치
+ELR_EL1 0x40003cc8  → addr2line: moru_fatal.c:150 (그 줄)
+CurrentEL 4 (EL1)
+```
+
+그 상태에서 `THREAD_RUNTIME_STATS=y` 를 올렸더니 **`MORU FATAL` 이 한 글자도
+나오지 않았다** (3회 재현). 즉 예외가 아니라 **멈춤**(락·무한대기)이거나
+예외 벡터가 서기 전이다. 지금까지 둘을 구분할 수단이 아예 없었다.
+
+### 사각지대를 둘로 갈랐다 — POST_KERNEL 앞이다
+
+`[P0]` 마커를 POST_KERNEL **우선순위 0** 에 넣었다. `[2]` 는 나오고
+**`[P0]` 는 나오지 않는다.** 따라서 멈추는 구간은
+
+```
+PRE_KERNEL_2 끝(= [2] 뒤) → z_sched_init · 스레드 생성 ·
+  switch_to_main_thread · 커널의 첫 스레드 전환 → [P0] (도달 못 함)
+```
+
+POST_KERNEL 장치 초기화는 **한 건도 돌지 않는다.** 남은 용의자 둘:
+
+| 후보 | 어디 |
+|---|---|
+| 전환 경로의 계측 | `kernel/include/kswap.h:134` 의 `z_sched_usage_switch` |
+| ISR 진입 경로의 계측 | `arch/arm64/core/isr_wrapper.S:53` 의 `bl z_sched_usage_stop` |
+
+둘을 가르려면 **Zephyr 트리에 마커를 넣어야 한다** — Kconfig 로는 둘이
+같은 심볼(`CONFIG_SCHED_THREAD_USAGE`)에 묶여 있어 분리되지 않는다.
+
+### 추가로 배제된 것
+
+- **assert 실패**: `CONFIG_ASSERT` 가 꺼져 있다 → `__ASSERT` 가 컴파일되지
+  않으므로 `SPIN_VALIDATE` 의 재귀 락 검사도 없다.
+- **단일 CPU 스핀락 교착**: `SMP=n` 에서 `k_spin_lock` 은 `arch_irq_lock` 이고
+  실제로 도는(spin) 코드가 없다.
+- **`cpu->current` NULL 역참조**: `z_sched_usage_stop` 의 그 접근은
+  `if (u0 != 0)` 안이고 `usage0` 는 초기에 0(bss)이라 첫 호출에 닿지 않는다.
+
+### 왕복 비용을 없앴다 — 한 번만 시도하는 슬롯
+
+`moru ota apply try` → 매직 `MOTR` → `boot.scr` 이 `zephyr.bin.try` 에 쓰고,
+부팅 때 **`fatrm` 으로 지운 뒤** 뛴다. 멈춰도 다음 전원 투입에는 파일이 없어
+평소 `zephyr.bin` 으로 돌아온다. **실측으로 자기복구를 확인했다** — 멈춘 뒤
+전원만 다시 주니 정상 열거됐다. 이전에는 같은 실험 하나에 카드 롤백 한 번
+(사람 손)이 들었고 하루에 네 번 했다.
+
 ### 다음 왕복 — 변수 하나
 
 `THREAD_RUNTIME_STATS=y` + **`INIT_STACKS=n`**. 이유: `INIT_STACKS` 는 이
