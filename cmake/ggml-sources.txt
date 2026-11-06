@@ -1,0 +1,39 @@
+# ggml 소스 목록 — **단일 출처**.
+#
+# CMakeLists(Zephyr) 와 tools/l4_golden.sh(호스트)가 **이 파일 하나**를 읽는다.
+# 목록을 두 군데 두었다가 tiled/·amx/ 를 한쪽에만 넣어 링크가 깨진 적이 있다.
+# 한쪽만 바뀌면 호스트 골든값과 Zephyr 결과가 다른 코드에서 나온다.
+#
+# 경로는 llama.cpp/ggml/ 기준. 상류 ggml/src/CMakeLists.txt 와
+# ggml-cpu/CMakeLists.txt 의 목록을 따른다. arm 전용만 고른다.
+#
+# ⚠ ggml-threading.cpp 는 **없다** — 전부 std::mutex 이고 이 툴체인의
+#   libstdc++ 는 gthreads 없이 빌드됐다. Zephyr 쪽은 ggml_port.c 가 k_mutex 로
+#   같은 두 함수를 제공하고, 호스트 쪽은 아래 HOST_ONLY 로 더한다.
+
+src/ggml.c
+src/ggml.cpp
+src/ggml-alloc.c
+src/ggml-backend.cpp
+src/ggml-backend-meta.cpp
+src/ggml-opt.cpp
+src/ggml-quants.c
+src/gguf.cpp
+src/ggml-cpu/ggml-cpu.c
+src/ggml-cpu/ggml-cpu.cpp
+src/ggml-cpu/repack.cpp
+src/ggml-cpu/quants.c
+src/ggml-cpu/traits.cpp
+src/ggml-cpu/amx/amx.cpp
+src/ggml-cpu/amx/mmq.cpp
+src/ggml-cpu/tiled/tiled.cpp
+src/ggml-cpu/tiled/tiled-kernel.cpp
+src/ggml-cpu/binary-ops.cpp
+src/ggml-cpu/unary-ops.cpp
+src/ggml-cpu/vec.cpp
+src/ggml-cpu/ops.cpp
+src/ggml-cpu/arch/arm/quants.c
+src/ggml-cpu/arch/arm/repack.cpp
+
+# 호스트에서만 — std::mutex 가 있다
+HOST_ONLY src/ggml-threading.cpp
