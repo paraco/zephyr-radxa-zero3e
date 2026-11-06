@@ -346,15 +346,17 @@ python3 tools/ota_test.py /tmp/claude-501/rz3e-build/zephyr/zephyr.bin --chunk 4
 ⚠ 카드를 빼야 하는 경우는 셋뿐이다 — `boot.cmd`/`boot.scr` 을 바꿀 때,
 롤백할 때(`.old` → `zephyr.bin`), 그리고 부팅이 완전히 깨졌을 때.
 
-### ⚠ 켜면 부팅하지 않는 설정
+### ⚠ 과거에 부팅을 막았던 설정 — 둘 다 해결됐다
 
-| 설정 | 확인 |
+| 설정 | 어떻게 풀렸나 |
 |---|---|
-| `CONFIG_FRAME_POINTER` 단독 | (과거) — 지금은 `ARM64_BOOT_DISABLE_DCACHE` 로 해결돼 켜져 있다 |
-| **`CONFIG_THREAD_RUNTIME_STATS`** | **2026-11-06 실측.** 켜면 LED·USB·콘솔 전부 무음. 끄면 정상. 기전은 미설명 — [docs/hardware-verified.md](docs/hardware-verified.md) 참고 |
+| `CONFIG_FRAME_POINTER` | `ARM64_BOOT_DISABLE_DCACHE=y` (EL2 데이터 캐시). 지금 켜져 있다 |
+| `CONFIG_THREAD_RUNTIME_STATS` | **`CONFIG_UART_NS16550_DW8250_DW_APB=y`** 로 해결(2026-11-06 밤). 지금 켜져 있고 `moru htop` 의 CPU% 가 동작한다 |
 
-그래서 `moru htop` 의 CPU% 는 쓸 수 없다(0.0 으로 나오고 머리줄에 표시된다).
-스택 사용량·우선순위·상태·힙은 모두 동작한다.
+두 번째는 **uart2 의 DesignWare busy-detect 인터럽트가 지워지지 않는 것**이
+원인이었다. RK3566 의 UART 는 Synopsys DW_apb_uart 인데 그 변종 설정이 꺼져
+있어서 ns16550 의 ISR 이 콜백 없는 포트에서 아무것도 하지 않았다. 추적
+전문은 [docs/hardware-verified.md](docs/hardware-verified.md) 에 있다.
 
 ### 이 보드의 필수 설정 (지우면 부팅하지 않는다)
 

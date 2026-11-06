@@ -2663,6 +2663,51 @@ POST_KERNEL 장치 초기화는 **한 건도 돌지 않는다.** 남은 용의�
 전원만 다시 주니 정상 열거됐다. 이전에는 같은 실험 하나에 카드 롤백 한 번
 (사람 손)이 들었고 하루에 네 번 했다.
 
+### ✅✅ 해결 — `CONFIG_UART_NS16550_DW8250_DW_APB=y` (2026-11-06 밤)
+
+**한 줄이다.** RK3566 의 UART 는 Synopsys DW_apb_uart 이고, 그 변종 설정을
+켜면 `uart_ns16550.c:1405-1416` 의 ISR 이 **콜백이 없는 포트에서** IIR 을
+읽고 `IID == 0x7`(DesignWare busy detect)이면 **USR 을 읽어 그 인터럽트를
+지운다.** 꺼져 있으면 그 ISR 은 아무것도 하지 않는다 — IIR 조차 읽지 않는다.
+
+```
+THREAD_RUNTIME_STATS=y + UART_NS16550_DW8250_DW_APB=y
+  → ✅ 정상 부팅, 가동 4.3초
+  → moru uart2: IER 0x00 · IIR 0xc1 (첫 읽기부터 '걸린 것 없음')
+  → moru htop: idle 98.7% · usb@fcc00000 0.7% · sysworkq 0.2% · shell_uart 0.1%
+```
+
+**결정적 측정이 이것이었다.** `moru uart2` 가
+
+```
+1회:  IER 0x00  (켜진 원인 없음)   IIR 0xc7 → IID 0x7 = DW busy detect
+2회:  IER 0x00                    IIR 0xc1 → 걸린 것 없음
+```
+
+를 보여 줬다. **IER 이 0 인데 인터럽트가 걸려 있다** — 즉 IER 로 막을 수
+없는 원인이고, 한 번 읽으니 사라졌으므로 래치였다. DW 의 busy detect 는
+LCR 을 BUSY 중에 쓰면 올라오고 USR(또는 IIR) 읽기로만 지워진다.
+
+**왜 이 보드에서만, 그리고 왜 RTS 와 함께일 때만 치명적이었나**
+
+| 조각 | 출처 |
+|---|---|
+| uart2 의 GIC 라인을 init 에서 무조건 켠다 | `uart_ns16550.c:1947` |
+| uart2 를 인터럽트 모드로 쓰는 것이 없다 → 콜백 없음 | 셸은 CDC, 로그는 `uart_poll_out` |
+| DW busy detect 를 지우는 코드가 컴파일되지 않았다 | `UART_NS16550_VARIANT_NS16550` (DW8250 꺼짐) |
+| 트리거가 LEVEL 이다 | `app.overlay:42` — 하드웨어 기준으로 맞다(Linux `rk356x-base.dtsi`) |
+
+→ 조건이 영구히 서 있고 레벨 트리거라 IRQ 150 이 반복 발화한다. 정상
+빌드는 그래도 진행하지만, `THREAD_RUNTIME_STATS` 를 켜면 ISR 진입이
+`z_sched_usage_stop` 을 부르면서(`isr_wrapper.S:53`) **전환↔ISR 무한 루프**가
+되어 POST_KERNEL 에 도달하지 못한다.
+
+**교훈.** 내가 EDGE→LEVEL 로 고친 것은 하드웨어 기준으로 옳았고, 그 수정이
+없었다면 이 결함은 계속 숨어 있었을 것이다. 옳은 수정이 잠복 결함을
+드러냈을 뿐이다 — 되돌리는 것이 아니라 **빠진 변종 설정을 켜는 것**이 답이다.
+
+### 추적 경로 (위 결론에 이르는 중간 단계들)
+
 ### ✅ 범인은 무한 루프였고, 그 인터럽트는 uart2 다 (2026-11-06 밤)
 
 **① 멈춤이 아니라 무한 루프다.** Zephyr 트리의 `usage.c`·`usage.h` 에 임시
