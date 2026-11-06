@@ -380,8 +380,14 @@ static struct {
 
 static void moru_ota_rx_cb(const struct device *dev, void *user_data)
 {
-	uint8_t buf[64];
-	int n, i;
+	/*
+	 * 버퍼를 512(= HS 벌크 mps)로 둔다. 64 였을 때는 fifo_read 호출이
+	 * 바이트당 많아졌다. mps 를 512 로 고친 뒤(udc_dwc3.c 의 속도 확정
+	 * 시점 수정) 한 번에 더 많이 읽을 수 있다.
+	 */
+	uint8_t buf[512];
+	uint32_t take;
+	int n;
 
 	ARG_UNUSED(user_data);
 
@@ -406,15 +412,23 @@ static void moru_ota_rx_cb(const struct device *dev, void *user_data)
 			continue;	/* 수신 중이 아니면 버린다 */
 		}
 
-		for (i = 0; i < n; i++) {
-			if (moru_ota.got < moru_ota.expect) {
-				sys_write8(buf[i], moru_ota.base +
-						   MORU_OTA_HDR_SIZE +
-						   moru_ota.got);
-				moru_ota.got++;
-			} else {
-				moru_ota.overrun++;
-			}
+		/*
+		 * ⚠ 바이트 루프(sys_write8)에서 memcpy 로 바꿨다 (2026-11-06).
+		 *   측정: 청크 크기를 64~16384 로 바꿔도 전송이 ~420 KB/s 에
+		 *   수렴했다 — 병목이 호스트가 아니라 **여기** 였다.
+		 *   매핑이 K_MEM_CACHE_WB 이므로 블록 복사가 안전하다
+		 *   (Device 매핑이면 정렬·크기 제약이 있어 못 한다).
+		 */
+		take = MIN((uint32_t)n, moru_ota.expect - moru_ota.got);
+		if (take != 0U) {
+			(void)memcpy((void *)(moru_ota.base +
+					      MORU_OTA_HDR_SIZE +
+					      moru_ota.got),
+				     buf, take);
+			moru_ota.got += take;
+		}
+		if ((uint32_t)n > take) {
+			moru_ota.overrun += (uint32_t)n - take;
 		}
 
 		if (moru_ota.got >= moru_ota.expect) {
