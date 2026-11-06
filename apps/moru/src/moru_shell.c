@@ -22,8 +22,11 @@
 #include <zephyr/drivers/pm_cpu_ops/psci.h>
 #include <zephyr/logging/log_ctrl.h>
 #include <zephyr/sys/util.h>
+#include <stdlib.h>
 #include <zephyr/sys/device_mmio.h>
 #include <zephyr/sys/sys_io.h>
+#include <zephyr/sys/crc.h>
+#include <zephyr/drivers/uart.h>
 
 #include "moru.h"
 #include "hwinfo_rk3566.h"
@@ -110,7 +113,7 @@ static int cmd_moru_info(const struct shell *sh, size_t argc, char **argv)
 	shell_print(sh, "kernel heap|uptime|cycles, device list, hwinfo devid,");
 	shell_print(sh, "log status, app version");
 	shell_print(sh, "재부팅은 moru reboot (먼저 moru reboot probe)");
-	shell_print(sh, "OTA 실험은 moru ota mark → moru reboot → moru ota check");
+	shell_print(sh, "OTA 는 moru ota begin|status|verify|abort (+ mark|check)");
 
 	return 0;
 }
@@ -222,14 +225,35 @@ static int cmd_moru_reboot(const struct shell *sh, size_t argc, char **argv)
  *   문맥이므로 적법하다 — moru_stage.c 가 바로 그것을 어겨 삭제됐다.
  */
 #define MORU_OTA_PHYS		0x50000000UL
-#define MORU_OTA_MAP_SIZE	0x1000U		/* 한 페이지면 충분하다 */
-#define MORU_OTA_MAGIC		0x4d4f5255UL	/* "MORU" (LE 로 'U''R''O''M') */
+#define MORU_OTA_MAX_SIZE	(256U * 1024U)	/* boot.scr 이 쓰는 고정 크기 */
+#define MORU_OTA_MAP_SIZE	(MORU_OTA_HDR_SIZE + MORU_OTA_MAX_SIZE)
+
+/*
+ * ⚠ 매직을 두 개로 나눈다.
+ *   "MORU" = 적용할 실제 OTA 이미지. boot.scr 이 이것을 보면 fatwrite 로
+ *            SD 의 zephyr.bin 을 덮는다
+ *   "MRK0" = DRAM 보존 확인용 표시(moru ota mark). boot.scr 이 무시한다
+ * 하나로 쓰면 mark 한 뒤 재부팅할 때 boot.scr 이 쓰레기를 zephyr.bin 으로
+ * 써 버린다 — setexpr 가 없어 크기를 변수로 읽을 수 없고 고정 256 KiB 를
+ * 쓰기 때문이다.
+ */
+#define MORU_OTA_MAGIC		0x4d4f5255UL	/* "MORU" */
+#define MORU_MARK_MAGIC		0x4d524b30UL	/* "MRK0" */
 #define MORU_OTA_PATTERN	0xa5c3f00dUL
 
-/* 오프셋: [0]=매직 [4]=패턴 [8]=단조 카운터 */
+/*
+ * 헤더 (boot.scr 이 itest.l 로 읽는다)
+ *   [0]  매직
+ *   [4]  페이로드 크기 (바이트)
+ *   [8]  페이로드 CRC32 (crc32_ieee)
+ *   [12] 패턴 — mark 용, OTA 에서는 0
+ *   [16] 페이로드 시작
+ */
 #define MORU_OTA_OFF_MAGIC	0x00
-#define MORU_OTA_OFF_PATTERN	0x04
-#define MORU_OTA_OFF_COUNT	0x08
+#define MORU_OTA_OFF_SIZE	0x04
+#define MORU_OTA_OFF_CRC	0x08
+#define MORU_OTA_OFF_PATTERN	0x0c
+#define MORU_OTA_HDR_SIZE	0x10U
 
 static mm_reg_t moru_ota_map(const struct shell *sh)
 {
@@ -260,19 +284,188 @@ static int cmd_moru_ota_mark(const struct shell *sh, size_t argc, char **argv)
 	}
 
 	/* 이전에 표시한 적이 있으면 카운터를 늘린다 (몇 번째 재부팅인지) */
-	count = (sys_read32(base + MORU_OTA_OFF_MAGIC) == MORU_OTA_MAGIC)
-			? sys_read32(base + MORU_OTA_OFF_COUNT) + 1U
+	count = (sys_read32(base + MORU_OTA_OFF_MAGIC) == MORU_MARK_MAGIC)
+			? sys_read32(base + MORU_OTA_OFF_SIZE) + 1U
 			: 1U;
 
-	sys_write32(MORU_OTA_MAGIC, base + MORU_OTA_OFF_MAGIC);
+	sys_write32(MORU_MARK_MAGIC, base + MORU_OTA_OFF_MAGIC);
+	sys_write32(count, base + MORU_OTA_OFF_SIZE);
+	sys_write32(0U, base + MORU_OTA_OFF_CRC);
 	sys_write32(MORU_OTA_PATTERN, base + MORU_OTA_OFF_PATTERN);
-	sys_write32(count, base + MORU_OTA_OFF_COUNT);
 
-	shell_print(sh, "0x%08lx 에 표시했다 — magic 0x%08lx pattern 0x%08lx count %u",
-		    MORU_OTA_PHYS, MORU_OTA_MAGIC, MORU_OTA_PATTERN, count);
+	shell_print(sh, "0x%08lx 에 표시했다 — magic MRK0 pattern 0x%08lx count %u",
+		    MORU_OTA_PHYS, MORU_OTA_PATTERN, count);
 	shell_print(sh, "이제 'moru reboot' 한 뒤 'moru ota check' 를 친다.");
 	shell_print(sh, "⚠ 캐시를 끈 매핑(K_MEM_CACHE_NONE)이라 쓰기가 바로 DRAM 에");
 	shell_print(sh, "  들어간다 — 재부팅 전 flush 를 기다릴 필요가 없다.");
+	shell_print(sh, "⚠ MRK0 은 boot.scr 이 무시한다. 실제 OTA 는 MORU 매직이다.");
+	return 0;
+}
+
+/*
+ * ── OTA 2단계: 수신 ──────────────────────────────────────────────────
+ *
+ * 데이터는 두 번째 CDC-ACM(cdc_acm_uart1, 호스트의 두 번째 포트)으로 온다.
+ * 셸은 첫 번째 포트에 있으므로 전송 중에도 상태를 물어볼 수 있다.
+ *
+ * 왜 poll_in 폴링인가: usbd_cdc_acm.c:980-994 의 poll_in 은 링버퍼에서
+ * 읽고 **읽은 만큼만** USB OUT 전송을 다시 큐에 넣는다(rx_fifo_work 재제출).
+ * 즉 링버퍼가 차면 호스트가 NAK 를 받아 기다리므로 **흐름 제어가 있고
+ * 데이터 손실이 없다.** 1바이트씩이라 느리지만 카드 교체 왕복에 비하면
+ * 공짜다. 인터럽트 API 를 쓰면 빠르지만 콜백·링버퍼를 직접 다뤄야 하고,
+ * 지금은 단순함이 더 값지다.
+ */
+static struct {
+	bool		active;
+	uint32_t	expect;
+	uint32_t	got;
+	uint32_t	crc;		/* 호스트가 알려준 기대 CRC32 */
+	mm_reg_t	base;
+} moru_ota;
+
+static void moru_ota_thread(void *a, void *b, void *c)
+{
+	const struct device *dev = DEVICE_DT_GET(DT_NODELABEL(cdc_acm_uart1));
+	unsigned char ch;
+
+	ARG_UNUSED(a);
+	ARG_UNUSED(b);
+	ARG_UNUSED(c);
+
+	for (;;) {
+		if (!moru_ota.active) {
+			k_msleep(100);
+			continue;
+		}
+
+		if (uart_poll_in(dev, &ch) == 0) {
+			if (moru_ota.got < moru_ota.expect) {
+				sys_write8(ch, moru_ota.base + MORU_OTA_HDR_SIZE +
+						       moru_ota.got);
+				moru_ota.got++;
+			}
+			if (moru_ota.got >= moru_ota.expect) {
+				moru_ota.active = false;
+			}
+		} else {
+			k_yield();
+		}
+	}
+}
+
+/*
+ * 스택 4096 — arm64 에서 1024 로 두 번 넘쳤다 (docs/bringup-rules.md 함정 ②).
+ * 이 스레드가 하는 일은 얕지만(poll_in + sys_write8) 2048 로 아껴 봐야
+ * 2 KiB 이고, 넘치면 "열거는 되는데 데이터가 안 온다" 같은 모호한 증상이
+ * 된다. 실측은 `kernel thread stacks` 로 할 수 있다.
+ *
+ * 우선순위 12 — 셸(14)보다 높고 USB(-8)·로그(14)를 방해하지 않는 자리.
+ * 데이터가 없으면 k_yield() 하므로 바쁜 대기가 길게 이어지지 않는다.
+ */
+K_THREAD_DEFINE(moru_ota_tid, 4096, moru_ota_thread, NULL, NULL, NULL,
+		K_PRIO_PREEMPT(12), 0, 0);
+
+static int cmd_moru_ota_begin(const struct shell *sh, size_t argc, char **argv)
+{
+	mm_reg_t base = moru_ota_map(sh);
+	unsigned long size, crc;
+	char *end;
+
+	if (base == 0) {
+		return -ENOMEM;
+	}
+
+	size = strtoul(argv[1], &end, 0);
+	if (*end != '\0' || size == 0UL || size > MORU_OTA_MAX_SIZE) {
+		shell_error(sh, "크기가 잘못됐다 (1 ~ %u)", MORU_OTA_MAX_SIZE);
+		return -EINVAL;
+	}
+
+	crc = strtoul(argv[2], &end, 16);
+	if (*end != '\0') {
+		shell_error(sh, "CRC32 는 16진수로 준다 (예: 1a2b3c4d)");
+		return -EINVAL;
+	}
+
+	ARG_UNUSED(argc);
+
+	moru_ota.base = base;
+	moru_ota.expect = (uint32_t)size;
+	moru_ota.crc = (uint32_t)crc;
+	moru_ota.got = 0;
+
+	/* 받는 중에 재부팅되어도 적용되지 않게 매직을 먼저 지운다 */
+	sys_write32(0U, base + MORU_OTA_OFF_MAGIC);
+
+	moru_ota.active = true;
+
+	shell_print(sh, "수신 시작 — %lu 바이트, 기대 CRC32 0x%08lx", size, crc);
+	shell_print(sh, "호스트에서 두 번째 CDC 포트로 부어 넣는다:");
+	shell_print(sh, "  cat zephyr.bin > /dev/cu.usbmodemXXXXXX3");
+	shell_print(sh, "진행은 'moru ota status', 끝나면 'moru ota verify'.");
+	return 0;
+}
+
+static int cmd_moru_ota_status(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+
+	if (moru_ota.expect == 0U) {
+		shell_print(sh, "수신한 적이 없다. 'moru ota begin <크기> <crc32>'.");
+		return 0;
+	}
+
+	shell_print(sh, "%s — %u / %u 바이트 (%u %%)",
+		    moru_ota.active ? "받는 중" : "멈춤/완료",
+		    moru_ota.got, moru_ota.expect,
+		    (unsigned int)((uint64_t)moru_ota.got * 100U / moru_ota.expect));
+	return 0;
+}
+
+static int cmd_moru_ota_verify(const struct shell *sh, size_t argc, char **argv)
+{
+	uint32_t calc;
+
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+
+	if (moru_ota.base == 0 || moru_ota.expect == 0U) {
+		shell_error(sh, "받은 것이 없다.");
+		return -EINVAL;
+	}
+
+	if (moru_ota.got != moru_ota.expect) {
+		shell_error(sh, "덜 받았다 — %u / %u", moru_ota.got, moru_ota.expect);
+		return -EAGAIN;
+	}
+
+	calc = crc32_ieee((const uint8_t *)(moru_ota.base + MORU_OTA_HDR_SIZE),
+			  moru_ota.expect);
+
+	shell_print(sh, "CRC32 계산 0x%08x / 기대 0x%08x", calc, moru_ota.crc);
+	if (calc != moru_ota.crc) {
+		shell_error(sh, "❌ 어긋난다 — 다시 받는다 (begin).");
+		return -EIO;
+	}
+
+	shell_print(sh, "✅ 일치한다. 3단계(boot.cmd)가 들어가면 'moru ota apply'");
+	shell_print(sh, "   로 적용할 수 있다. 지금은 적용 경로가 아직 없다.");
+	return 0;
+}
+
+static int cmd_moru_ota_abort(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+
+	moru_ota.active = false;
+	moru_ota.got = 0;
+	moru_ota.expect = 0;
+	if (moru_ota.base != 0) {
+		sys_write32(0U, moru_ota.base + MORU_OTA_OFF_MAGIC);
+	}
+	shell_print(sh, "취소했다. 매직도 지웠다.");
 	return 0;
 }
 
@@ -290,12 +483,12 @@ static int cmd_moru_ota_check(const struct shell *sh, size_t argc, char **argv)
 
 	magic = sys_read32(base + MORU_OTA_OFF_MAGIC);
 	pattern = sys_read32(base + MORU_OTA_OFF_PATTERN);
-	count = sys_read32(base + MORU_OTA_OFF_COUNT);
+	count = sys_read32(base + MORU_OTA_OFF_SIZE);
 
 	shell_print(sh, "0x%08lx: magic 0x%08x pattern 0x%08x count %u",
 		    MORU_OTA_PHYS, magic, pattern, count);
 
-	if (magic == MORU_OTA_MAGIC && pattern == MORU_OTA_PATTERN) {
+	if (magic == MORU_MARK_MAGIC && pattern == MORU_OTA_PATTERN) {
 		shell_print(sh, "✅ 보존됐다 — 재부팅을 넘어 DRAM 이 남는다.");
 		shell_print(sh, "   RAM→SD OTA 경로가 열린다 (docs/ota-strategy.md §2).");
 		return 0;
@@ -312,9 +505,16 @@ static int cmd_moru_ota_check(const struct shell *sh, size_t argc, char **argv)
 }
 
 SHELL_STATIC_SUBCMD_SET_CREATE(moru_ota_subcmds,
-	SHELL_CMD_ARG(mark, NULL, "0x50000000 에 매직을 써 둔다 (재부팅 전)",
+	SHELL_CMD_ARG(begin, NULL, "수신 시작: begin <크기> <crc32(16진수)>",
+		      cmd_moru_ota_begin, 3, 0),
+	SHELL_CMD_ARG(status, NULL, "수신 진행 상황", cmd_moru_ota_status, 1, 0),
+	SHELL_CMD_ARG(verify, NULL, "받은 것의 CRC32 를 검사한다",
+		      cmd_moru_ota_verify, 1, 0),
+	SHELL_CMD_ARG(abort, NULL, "수신 취소 + 매직 지우기",
+		      cmd_moru_ota_abort, 1, 0),
+	SHELL_CMD_ARG(mark, NULL, "DRAM 보존 확인 표시 (MRK0, 재부팅 전)",
 		      cmd_moru_ota_mark, 1, 0),
-	SHELL_CMD_ARG(check, NULL, "그 매직이 재부팅을 넘어 남았는지 본다",
+	SHELL_CMD_ARG(check, NULL, "그 표시가 재부팅을 넘어 남았는지 본다",
 		      cmd_moru_ota_check, 1, 0),
 	SHELL_SUBCMD_SET_END
 );
