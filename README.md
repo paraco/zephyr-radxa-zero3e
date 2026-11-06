@@ -391,6 +391,13 @@ AI 함대.** Edge 는 MMU 없는 MCU 에서 100 ms 실시간 인터록을, Hub �
 
 전략: [docs/ai-on-rtos-strategy.md](docs/ai-on-rtos-strategy.md)
 Hub LLM 실행 계획: [docs/ondevice-llm-plan.md](docs/ondevice-llm-plan.md)
+**계층별 CLI 단위테스트**: [docs/llm-hub-test-plan.md](docs/llm-hub-test-plan.md)
+
+Hub LLM 은 **테스트 사다리(L0~L8)로 쪼개서** 만든다. 전례 없는 포팅을 끝에서
+한 번에 검증할 수 없기 때문이다. `moru llm test L3` 처럼 **계층마다 CLI 로
+독립 실행**되고, 기준값은 Edge 의 골든 파리티 규율을 그대로 가져온다 —
+역양자화는 **비트 일치**를 요구한다. **L0~L4 는 모델 없이 돌아서** 모델 적재
+경로와 **병렬로** 진행할 수 있다.
 
 **⚠ Hub 의 LLM 은 tinyML 이 아니다.** Edge 모델은 `.xmb` 로 15~84 KB 이고
 LFM2.5-350M 은 Q4 로 0.25 GB — 약 3,000배 차이다. 그 단어는 Edge 에만 쓴다.
