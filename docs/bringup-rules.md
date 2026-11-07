@@ -297,3 +297,47 @@ diff <(grep -E '^CONFIG_(LOG|CONSOLE|PRINTK|SERIAL|UART)' A/zephyr/.config | sor
 채널은 **네 겹**이다 — 보드 UART 핀 → 젬퍼 → CP2102 → USB → tty → tio →
 로그 파일. 어느 겹이 끊겨도 증상은 똑같이 "조용하다" 다. 그리고 **피검체의
 고장도 똑같이 조용하다.** 그래서 겹마다 따로 확인하는 것 말고는 방법이 없다.
+
+---
+
+## 규칙 7 — **출력을 못 읽는 곳에는 입증된 문법만 쓴다** (2026-11-07)
+
+이 보드의 U-Boot 는 **1.5 Mbps** 로 말하고 손에 있는 CP2102 는 그 속도를 못
+낸다(`docs/hardware-verified.md:9,124,1434`). 즉 **U-Boot 출력을 한 줄도
+읽을 수 없다.** `boot.cmd` 에 문법 오류가 나도 보이는 증상은 "Zephyr 가
+안 올라온다" 하나뿐이고, 그것은 전원·카드·이미지·점퍼 문제와 **구분되지
+않는다.**
+
+### 겪은 일
+
+`blob.bin` 을 파티션 3 에서 먼저 찾게 고치면서 `elif` 를 썼다. U-Boot 의
+hush 셸이 `elif` 를 받는지 확인하지 않았다 — 확인할 수단이 없는데 쓴 것이다.
+
+| 시각 | 카드의 `boot.scr` | 결과 |
+|---|---|---|
+| ~13:16 | 9,496 B (`elif` 없음) | **L3 실기 통과** |
+| 13:54 | 11,419 B (`elif` 포함) | 14:04 전원 → **Zephyr 출력 없음** |
+
+어댑터가 1.5~3분마다 USB 에서 떨어지는 문제까지 겹쳐 원인을 가리는 데
+30분을 썼다.
+
+### 규칙
+
+**관측할 수 없는 실행 환경(U-Boot · 부트로더 스크립트 · 초기 init)을 고칠
+때는, 그 파일 안에서 이미 동작이 입증된 문법만 쓴다.** 새 문법·새 명령이
+필요하면 먼저 그것 하나만 바꾼 판으로 왕복을 한 번 쓴다 — 다른 변경과
+섞지 않는다(규칙 "한 왕복에 변수 하나"의 특수한 경우다).
+
+`boot.cmd` 의 경우: `if … then … else … fi` 중첩만 쓴다. OTA 블록이 그 꼴로
+동작하는 것이 입증돼 있다.
+
+### 되돌리는 법
+
+`boot.cmd` 는 git 에 있다. 의심되면 **직전 동작한 판으로 돌린다**:
+
+```
+git show HEAD~N:sdcard/boot.cmd > /tmp/boot.cmd
+mkimage -A arm64 -O linux -T script -C none -n "PiZZa Zephyr loader" \
+        -d /tmp/boot.cmd /tmp/boot.scr
+sudo mcopy -i /dev/rdisk4s2 -o /tmp/boot.scr ::/
+```

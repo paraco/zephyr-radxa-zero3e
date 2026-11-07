@@ -179,13 +179,21 @@ fi
 #
 # fatload 는 크기 인자를 안 주면 **파일 전체**를 읽는다 — fatwrite 와 달리
 # 고정 크기가 필요 없다(헤더에서 크기를 읽을 필요도 없다).
+# ⚠ **`elif` 를 쓰지 않는다.** U-Boot hush 가 `elif` 를 받는지 확인할 방법이
+#   없다 — 이 보드의 U-Boot 는 **1.5 Mbps** 로 말하고 손에 있는 CP2102 는 그
+#   속도를 못 낸다(docs/hardware-verified.md:9,124,1434). 즉 U-Boot 출력을
+#   **한 줄도 읽을 수 없다.** 문법 오류가 나도 증상은 "조용히 안 된다" 뿐이고
+#   원인을 가릴 수단이 없다. 그래서 가장 보수적인 꼴로만 쓴다 —
+#   `if … then … else … fi` 중첩이다.
 echo "=== blob.bin 찾는다 (큰 파티션 3 -> boot 파티션) — 큰 파일은 30~50s ==="
 if fatload ${devtype} ${devnum}:3 0x58000000 blob.bin; then
 	echo "=== blob.bin -> 0x58000000 (${filesize} bytes, 파티션 3) ==="
-elif fatload ${devtype} ${devnum}:${distro_bootpart} 0x58000000 blob.bin; then
-	echo "=== blob.bin -> 0x58000000 (${filesize} bytes, boot 파티션) ==="
 else
-	echo "=== blob.bin 없음 — 블롭 없이 계속한다 ==="
+	if fatload ${devtype} ${devnum}:${distro_bootpart} 0x58000000 blob.bin; then
+		echo "=== blob.bin -> 0x58000000 (${filesize} bytes, boot 파티션) ==="
+	else
+		echo "=== blob.bin 없음 — 블롭 없이 계속한다 ==="
+	fi
 fi
 
 if fatload ${devtype} ${devnum}:${distro_bootpart} ${zaddr} zephyr.bin.try; then
