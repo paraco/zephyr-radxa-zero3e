@@ -80,3 +80,34 @@ sudo mdel -i /dev/rdiskNs2 ::/boot.scr
 
 Zephyr 콘솔은 **115200** 이므로 (DTS 에서 바꿔 뒀다) 올라가면 지금 CP2102 로 로그를
 읽을 수 있다.
+
+## boot.scr 복구 — 되돌리는 법
+
+`boot.scr` 은 **OTA 로 바꿀 수 없다**(OTA 는 `zephyr.bin` 만 쓴다). 그래서
+`boot.scr` 이 잘못되면 **카드 리더가 유일한 복구 수단**이다. 바꾸기 전에
+무엇이 되돌릴 대상인지 분명히 해 둔다.
+
+| 파일 | 뜻 |
+|---|---|
+| `boot.scr` | 지금 쓰려는 판 |
+| `boot.scr.known-good` | **직전에 실기에서 부팅이 확인된 판.** 새 것이 안 뜨면 이것을 카드에 쓴다 |
+
+```bash
+# 되돌리기
+cd ~/Projects/PiZZa/rk3566/sdcard && \
+  sudo mcopy -i /dev/rdisk4s2 -o boot.scr.known-good ::/boot.scr && \
+  diskutil eject /dev/disk4
+```
+
+**어떤 과거 판이든 다시 만들 수 있다** — `boot.cmd` 가 git 에 있다:
+
+```bash
+git log --oneline -- sdcard/boot.cmd
+git show <커밋>:sdcard/boot.cmd > /tmp/boot.cmd
+mkimage -A arm64 -O linux -T script -C none -n "PiZZa Zephyr loader" \
+  -d /tmp/boot.cmd /tmp/boot.scr
+```
+
+⚠ `boot.scr.known-good` 은 `.gitignore` 에 있어 **git 이 지켜 주지 않는다.**
+덮기 전에 무엇인지 확인한다 (2026-11-07 에 확인 없이 덮은 적이 있다 —
+`boot.cmd` 가 버전 관리되어 손실은 없었지만 규율로 적어 둔다).

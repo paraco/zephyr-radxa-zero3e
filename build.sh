@@ -117,8 +117,18 @@ elif [ "$PCT" -ge 90 ]; then
 else
 	printf "  여유 %d bytes\n" "$((OTA_CAP - BIN_SIZE))"
 fi
+#
+# ⚠ readelf 경로는 **툴체인 변종에 따라 다르다.** cross-compile 일 때만
+#   CROSS_COMPILE 이 설정되므로, zephyr(SDK) 변종에서 그것을 참조하면
+#   `set -u` 아래에서 "unbound variable" 로 죽는다 — 실제로 겪었다
+#   (빌드는 끝난 뒤였지만 스크립트가 비정상 종료했다).
 echo "진입 주소:"
-"${CROSS_COMPILE}readelf" -h "$BUILD_DIR/zephyr/zephyr.elf" | awk '/Entry point/{print "  "$0}'
+READELF="${CROSS_COMPILE:-$SDK/gnu/aarch64-zephyr-elf/bin/aarch64-zephyr-elf-}readelf"
+if [ -x "$READELF" ]; then
+	"$READELF" -h "$BUILD_DIR/zephyr/zephyr.elf" | awk '/Entry point/{print "  "$0}'
+else
+	echo "  (readelf 를 못 찾았다: $READELF)"
+fi
 echo
 echo "⚠ 실기 적재는 아직 미확정입니다 — U-Boot 가 go 할 주소와 sram0 가 맞아야 합니다."
 echo "  보드에 올리는 작업은 사람이 합니다."
