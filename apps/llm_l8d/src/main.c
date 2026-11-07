@@ -133,6 +133,33 @@ int main(void)
 	const uint64_t frq = SYSREG_R("cntfrq_el0");
 	printk("=== L8d: SMPEN 을 읽고, 0 이면 켜서 전후를 잰다 ===\n");
 
+	/*
+	 * [0] **부팅 훅의 흔적** — 어느 EL 로 들어왔고, 그 EL 에서
+	 *     CPUECTLR 을 읽을 수 있었나. soc_init/smpen.S 가 남긴다.
+	 *
+	 * ⚠ 이것이 먼저다. 지난 판에서 세 훅에 **쓰기**를 넣었더니 보드가
+	 *   한 글자도 못 찍고 죽었다 — 훅은 콘솔 초기화 전이다. 그래서
+	 *   이번 판은 쓰지 않고 흔적만 남긴다.
+	 */
+	extern uint64_t rk3566_boot_trace[4];
+	printk("  [0] 부팅 훅 흔적\n");
+	{
+		const uint64_t m = rk3566_boot_trace[0];
+		printk("      실행된 훅: %s%s%s%s\n",
+		       (m & 1) ? "EL3 " : "", (m & 2) ? "EL2 " : "",
+		       (m & 4) ? "EL1 " : "", m ? "" : "(없다 — 훅이 안 불렸다)");
+		for (int i = 0; i < 3; i++) {
+			static const char *n[] = { "EL3", "EL2", "EL1" };
+			if (m & (1u << i)) {
+				printk("        %s 에서 본 CPUECTLR = 0x%016" PRIx64
+				       "  SMPEN=%u\n", n[i], rk3566_boot_trace[i + 1],
+				       (unsigned)((rk3566_boot_trace[i + 1] >> 6) & 1));
+			}
+		}
+		printk("      → 읽기가 됐다면 그 EL 에서 **쓰기도 시도할 수 있다**.\n");
+		printk("        흔적이 비어 있으면 훅 자체가 안 불린 것이다.\n");
+	}
+
 	printk("  [1] 캐시 계층 (하드웨어에 묻는다)\n");
 	dump_caches();
 
@@ -152,7 +179,14 @@ int main(void)
 		printk("        (8바이트 × 8 = 64 B 는 줄 하나다. 줄마다 1회 적재면\n");
 		printk("         줄 지연이 그대로 보인다 — 선행적재가 필요하다)\n");
 	} else {
-		printk("  [4] SMPEN 이 0 이다 — **켜고 다시 잰다**\n");
+		printk("  [4] SMPEN 이 0 이다 — 런타임 쓰기는 **하지 않는다**\n");
+		printk("      지난 판에서 해 봤고 예외가 났다:\n");
+		printk("        \"Synchronous Abort\" esr 0x8a000000 → EC 0x22\n");
+		printk("      ARM: 캐시·MMU 를 켠 뒤의 SMPEN 변경은 미정의다.\n");
+		printk("      부팅 초기에 넣어야 하고, 어느 훅인지는 [0]이 알려 준다.\n");
+	}
+	if (0) {
+		printk("  [4] (쓰지 않는 경로)\n");
 		printk("      ⚠ 쓰기가 EL3 에서 막히면 예외가 난다. 그러면 전원\n");
 		printk("        재투입으로 복구된다 (apply try 슬롯).\n");
 		wr_cpuectlr(before | (1ULL << 6));
