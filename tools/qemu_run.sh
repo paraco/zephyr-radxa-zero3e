@@ -39,8 +39,33 @@ west build -p always -b qemu_cortex_a53 -d "$OUT" "$APP" >"$OUT.build.log" 2>&1 
 	echo "빌드 실패 — 마지막 30줄:" >&2; tail -30 "$OUT.build.log" >&2; exit 3; }
 echo "   ok  ($(grep -c . "$OUT.build.log") 줄 로그)"
 
-QEMU_ARGS=(-cpu cortex-a55 -machine virt,secure=on,gic-version=3
+# ⚠ secure 를 **CONFIG_ARMV8_A_NS 에 따라** 고른다. Zephyr 의 런너와 같은 규칙이다
+# (boards/qemu/cortex_a53/board.cmake:9-13):
+#     ARMV8_A_NS=y  -> virt,gic-version=3            (secure 꺼짐)
+#     ARMV8_A_NS=n  -> virt,secure=on,gic-version=3
+#
+# 전에는 secure=on 을 **늘** 박아 두었다. 그 조합에서 NS EL1 의 SMC 는 EL3 로
+# 트랩되는데 QEMU 에 EL3 펌웨어가 없어 **조용히 죽는다.** 그래서 PSCI 를 켠
+# 이미지가 전부 무음이었고, 그것을 "보드에서 PSCI 가 안 된다" 로 오진했다
+# (2026-11-07). 실기 보드는 ARMV8_A_NS=y 이므로 secure 를 꺼야 같은 조건이다.
+if grep -q '^CONFIG_ARMV8_A_NS=y' "$OUT/zephyr/.config"; then
+	QEMU_MACH=virt,gic-version=3
+	echo "── ARMV8_A_NS=y → secure 꺼짐 (실기와 같은 보안 상태)"
+else
+	QEMU_MACH=virt,secure=on,gic-version=3
+	echo "── ARMV8_A_NS=n → secure=on"
+fi
+QEMU_ARGS=(-cpu cortex-a55 -machine "$QEMU_MACH"
 	-m 2G -nographic -no-reboot -kernel "$OUT/zephyr/zephyr.elf")
+
+# ⚠ -smp 를 **CONFIG_MP_MAX_NUM_CPUS 에서 가져온다.** 전에는 없었다 — QEMU 는
+# 기본 1코어라 SMP 이미지를 올려도 보조 코어가 **존재하지 않았고**, 그 상태의
+# 결과를 멀티코어 판정에 쓸 수 없다.
+QEMU_NCPU=$(sed -n 's/^CONFIG_MP_MAX_NUM_CPUS=\([0-9]*\)$/\1/p' "$OUT/zephyr/.config")
+if [[ -n "$QEMU_NCPU" && "$QEMU_NCPU" -gt 1 ]]; then
+	QEMU_ARGS+=(-smp "$QEMU_NCPU")
+	echo "── MP_MAX_NUM_CPUS=$QEMU_NCPU → -smp $QEMU_NCPU"
+fi
 # 적재 주소는 **공용 overlay 에서 읽는다** — 하드코딩해 두었다가 창을 옮겼을 때
 # 조용히 엇갈렸다(QEMU 는 엉뚱한 주소에 넣고 앱은 창을 읽어 전부 0 이 된다).
 BLOB_ADDR=$(grep -oE 'reg = <0x0 0x[0-9a-f]+' "$REPO/apps/llm_common/model_blob.overlay" \
