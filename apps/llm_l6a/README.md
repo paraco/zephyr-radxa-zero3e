@@ -78,3 +78,46 @@ L_BLOB=$HOME/Projects/PiZZa/models/Qwen3.5-0.8B-Q4_K_M.gguf ./tools/qemu_run.sh 
 `target_compile_options` 가 같은 플래그를 중복 제거해
 `-include a.h b.h` 가 되고 gcc 가 `b.h` 를 **입력 파일**로 읽는다
 (`cannot specify '-o' with '-c' … with multiple files`). 실제로 겪었다.
+
+## ✅ 실기 통과 — 2026-11-07, Radxa ZERO 3E (RK3566)
+
+```
+=== L6a: 모델 적재 관문 (메타데이터 + 어휘) ===
+  창: 0x58000000 + 512 MiB
+  [0] std::future 대체판 ... OK — 값 · 예외 재던지기 · deferred · 인자 전달
+  [1] 블롭 점검 ... OK — 매직 'GGUF' v3, 텐서 320개, KV 46개
+  [2] 메타데이터 ... OK (21250 ms)
+      arch qwen35 · weights_map 320 · 데이터 시작 0xa74400
+  [3] 제자리 적재 ... OK — SUPPORTED=true · use_mmap=true — 복사 없음
+  [4] 텐서 위치 ... OK — 320개 전부 안쪽, 끝 0x1fbd9100 (507 MiB)
+  [5] 어휘 적재 ... OK (28918 ms)
+      토큰 248320개 · BOS 11 · EOS 248046
+=== L6a PASS (실패 0) ===
+```
+
+**QEMU 와 모든 값이 같다** — 텐서 320 · KV 46 · 데이터 시작 `0xa74400` ·
+텐서 끝 `0x1fbd9100` · 토큰 248,320 · BOS 11 · EOS 248046. 다른 것은
+시간뿐이다.
+
+### 성능 — 실기 대 QEMU
+
+| 항목 | QEMU | 실기 (A55 r2p0) | 배수 |
+|---|---|---|---|
+| 메타데이터 적재 | 800 ms | **21,250 ms** | 26.6× |
+| 어휘 적재 | 1,540 ms | **28,918 ms** | 18.8× |
+| 부트로더 (SD 에서 508 MiB) | — | **50,880 ms** | — |
+
+QEMU 는 M 계열 호스트에서 돌아 빠르다. 비교의 뜻은 "실기가 이만큼 느리다" 가
+아니라 **"QEMU 시간으로 실기를 예측할 수 없다"** 는 것이다.
+
+⚠ **부트로더 50.88 s 가 실제 모델 적재의 증거다.** moru 가 `moru info` 에
+찍는다. 모델 없이 부팅할 때보다 훨씬 길다 — U-Boot 가 파티션 3 에서
+508 MiB 를 읽은 것이다(U-Boot 는 1.5 Mbps 로 말해 그 echo 는 읽을 수 없다,
+`docs/bringup-rules.md` 규칙 7).
+
+### 아직 안 잰 것
+
+**실제 힙 사용량.** 정적 RAM 79.48% 는 아레나(96 MiB)를 전부 세어서다.
+어휘가 그 중 얼마를 쓰는지 모른다. L6b 는 ggml 문맥과 그래프가 더 필요하므로
+**L6b 의 첫 일은 이것을 재는 것**이다 — `kernel heap` 또는 앱 안에서
+`sys_heap` 통계를 찍는다.
