@@ -204,3 +204,43 @@ grep -n "증상 단어" docs/hardware-verified.md docs/bringup-rules.md README.m
 
 - [trm-grounding.md](trm-grounding.md) — 하드웨어 사실의 출처 등급과 TRM 사정권
 - [hardware-verified.md](hardware-verified.md) — 실기 기록 (시간순, 검색해서 쓴다)
+
+## 사례 — **관측 경로가 QEMU 와 실기에서 달랐다** (2026-11-07)
+
+사다리 L5b 를 실기에 처음 올렸는데 **완전히 조용했다.** UART2 에 한 글자도
+나오지 않았다. 같은 코드가 QEMU 에서는 35줄을 찍는다.
+
+규칙 6("관측 채널이 조용하다 → 피검체가 조용하다")을 적용해 채널을 먼저
+의심했고, **같은 tio 세션으로 moru 출력이 보였으므로 채널은 정상**이었다.
+그러면 피검체가 조용한 것인데, 원인은 피검체의 고장이 아니라 **관측 경로의
+차이**였다:
+
+```
+보드 defconfig:  CONFIG_LOG=y                 (dwc3 드라이버 로깅용)
+  → 따라오는 기본값:  CONFIG_LOG_PRINTK=y     printk 를 로그 시스템으로 우회
+                      CONFIG_LOG_MODE_DEFERRED=y
+                      CONFIG_LOG_BUFFER_SIZE=1024              1 KB
+                      CONFIG_LOG_PROCESS_THREAD_SLEEP_MS=1000  1초씩 잠
+                      CONFIG_MAIN_THREAD_PRIORITY=0            main 이 선점
+QEMU 보드:       CONFIG_LOG 이 **꺼져 있다** → printk 가 직접 나간다
+```
+
+사다리 앱은 80자 수십 줄을 `main` 에서 쏟는다. 로그 스레드는 우선순위가
+낮아 `main` 이 도는 동안 돌지 못하고, 1 KB 버퍼는 `LOG_MODE_OVERFLOW` 로
+**오래된 것부터 버려진다.**
+
+**고친 방법:** 사다리 앱 전부에 `CONFIG_LOG_PRINTK=n` 을 넣었다. `CONFIG_LOG`
+자체를 끄지 않는다 — 드라이버 로깅은 그대로 두고 `printk` 만 콘솔로 직접
+(동기) 보낸다.
+
+### 규칙으로 남길 것
+
+**"QEMU 에서 통과했다" 는 관측 경로까지 같다는 뜻이 아니다.**
+보드 `defconfig` 가 앱에 Kconfig 를 주입하므로, 같은 앱이 두 보드에서
+**다른 출력 경로**를 갖는다. 실기 첫 투입 전에 두 빌드의
+`.config` 를 적어도 콘솔·로그 항목만큼은 비교한다:
+
+```bash
+diff <(grep -E '^CONFIG_(LOG|CONSOLE|PRINTK|SERIAL|UART)' A/zephyr/.config | sort) \
+     <(grep -E '^CONFIG_(LOG|CONSOLE|PRINTK|SERIAL|UART)' B/zephyr/.config | sort)
+```
