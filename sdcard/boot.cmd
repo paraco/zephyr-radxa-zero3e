@@ -151,12 +151,29 @@ fi
 # fatload 는 크기 인자를 안 주면 **파일 전체**를 읽는다 — fatwrite 와 달리
 # 고정 크기가 필요 없다(헤더에서 크기를 읽을 필요도 없다).
 #
-# ⚠ **실제 모델(507.85 MiB)은 이 파티션에 안 들어간다.** boot 파티션이
-#   314.6 MB 다. L6·L7 에서는 더 큰 파티션(카드의 15.6 GB 쪽)에서 읽도록
-#   `fatload mmc 1:3 …` 를 쓰거나 다른 수단을 정해야 한다. 지금 시험
-#   GGUF(3,872 B)는 문제없다.
-if fatload ${devtype} ${devnum}:${distro_bootpart} 0x58000000 blob.bin; then
-	echo "=== blob.bin -> 0x58000000 (${filesize} bytes) ==="
+# ⚠ **파티션을 두 군데 본다.** boot 파티션(314.6 MB)에는 실제 모델
+#   507.85 MiB 가 안 들어간다. 그래서 큰 쪽(파티션 3, 15.6 GB)을 **먼저**
+#   보고, 없으면 boot 파티션의 작은 시험 GGUF 로 떨어진다.
+#
+#   파티션 3 은 2026-11-07 에 Radxa 의 ext4 루트를 지우고 FAT32("BLOB")로
+#   다시 만든 것이다(사용자 결정). U-Boot 에 `ext4load` 가 있는지 확인할
+#   필요도, macOS 에서 ext4 에 쓸 방법을 찾을 필요도 없어진다 — 지금 쓰는
+#   `fatload` 그대로다.
+#
+#   ⚠ 큰 쪽을 먼저 보는 순서가 중요하다. 작은 시험 GGUF 가 boot 파티션에
+#     남아 있으면, 순서가 반대면 **그것이 실제 모델을 가린다** — L2 가
+#     통과하는데 L6 은 "모델이 아니다" 로 죽고 원인이 안 보인다.
+#
+#   ⚠ 508 MiB 를 SD 에서 읽으므로 **부팅이 30~50초 늦어진다.** 아래 echo 가
+#     먼저 나가니 멈춘 것으로 보이지 않는다.
+#
+# fatload 는 크기 인자를 안 주면 **파일 전체**를 읽는다 — fatwrite 와 달리
+# 고정 크기가 필요 없다(헤더에서 크기를 읽을 필요도 없다).
+echo "=== blob.bin 찾는다 (큰 파티션 3 -> boot 파티션) — 큰 파일은 30~50s ==="
+if fatload ${devtype} ${devnum}:3 0x58000000 blob.bin; then
+	echo "=== blob.bin -> 0x58000000 (${filesize} bytes, 파티션 3) ==="
+elif fatload ${devtype} ${devnum}:${distro_bootpart} 0x58000000 blob.bin; then
+	echo "=== blob.bin -> 0x58000000 (${filesize} bytes, boot 파티션) ==="
 else
 	echo "=== blob.bin 없음 — 블롭 없이 계속한다 ==="
 fi
