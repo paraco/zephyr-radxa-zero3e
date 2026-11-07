@@ -210,6 +210,56 @@ if i2c dev 0; then
 	i2c read 0x40 0 3 0x51000008
 fi
 
+# ── CPU 816 -> 1104 MHz (2026-11-08) ────────────────────────────────────
+#
+# **전압을 건드리지 않는다.** L9a 실측으로 지금 vdd_cpu 가
+#   VSEL0 = 0x8f (EN=1, sel 15) -> 900000 uV
+#   VSEL1 = 0x97 (EN=1, sel 23) -> 1000000 uV
+# 임이 확인됐다. 1104 MHz 의 OPP 전압은 **900000 uV** 다
+# (linux rk3566.dtsi 의 opp-table, 1104 MHz 항목). 어느 VSEL 이 활성이든
+# 900 mV 이상이므로 **전압이 이미 충분하다.** I2C 쓰기가 없으니 과전압도,
+# BUCK_EN 을 잘못 지워 보드를 죽일 위험도 없다.
+#
+# **분주도 건드리지 않는다.** 표 원문:
+#   RK3568_CPUCLK_RATE( 816000000, 1, 3)
+#   RK3568_CPUCLK_RATE(1104000000, 1, 3)   <- 같다
+# L9a 가 읽은 clksel_con[3]=0x0303 · [5] aclk 1 이 816 항목과 일치했으므로
+# 그대로 두면 1104 에서도 맞다.
+#
+# 그래서 바뀌는 것은 **APLL 의 fbdiv 하나(68 -> 92)** 다. 표 원문:
+#   RK3036_PLL_RATE( 816000000, 1, 68, 2, 1, 1, 0)   <- L9a 실측과 일치
+#   RK3036_PLL_RATE(1104000000, 1, 92, 2, 1, 1, 0)
+#   (인자 순서: _mhz, _refdiv, _fbdiv, _postdiv1, _postdiv2, _dsmpd, _frac)
+#   VCO = 24 x 92 / 1 = 2208 MHz, postdiv1 2 -> 1104 MHz
+#
+# 순서는 rk3036_pll_set_rate 원문을 따른다:
+#   slow 모드 -> power down -> con 쓰기 -> power up -> lock 대기 -> NORMAL
+#
+# 상위 16비트가 write-enable 이다 (hardware.h 의 rk_clrsetreg). 아래 모든
+# mw.l 이 (마스크<<16)|값 꼴이라 **마스크 밖 비트는 건드려지지 않는다.**
+#
+# 되돌리기: sdcard/boot.cmd.readonly 로 boot.scr 을 다시 만들어 카드에 쓴다.
+
+# 1. APLL 을 slow 모드로 (MODE_CON bits[1:0] = 0 -> 24 MHz OSC 를 낸다)
+mw.l 0xfdd200c0 0x00030000 1
+# 2. power down (con1 bit13 = 1)
+mw.l 0xfdd20004 0x20002000 1
+# 3. con0: fbdiv 92 (0x5c) · postdiv1 2 → (2<<12)|92 = 0x205c, 마스크 0x7fff
+mw.l 0xfdd20000 0x7fff205c 1
+# 4. con1: refdiv 1 · postdiv2 1 · dsmpd 1 → 1|(1<<6)|(1<<12) = 0x1041
+#    마스크 0x11ff 는 bit13(PWRDOWN)을 포함하지 않으므로 power down 이 유지된다
+mw.l 0xfdd20004 0x11ff1041 1
+# 5. power up (con1 bit13 = 0)
+mw.l 0xfdd20004 0x20000000 1
+# 6. lock 을 기다린다.
+#    U-Boot 에 폴링 루프를 쓸 수 없고 `sleep` 이 이 빌드에 있는지 모른다.
+#    crc32 는 **있는 것이 확인돼 있다**(boot.cmd 의 OTA 절 주석 참조) —
+#    1 MiB 체크섬이 수십 ms 를 쓰므로 그것을 지연으로 쓴다.
+crc32 0x51000000 0x100000
+sleep 1
+# 7. NORMAL 모드로 (MODE_CON bits[1:0] = 1)
+mw.l 0xfdd200c0 0x00030001 1
+
 echo "=== blob.bin 찾는다 (큰 파티션 3 -> boot 파티션) — 큰 파일은 30~50s ==="
 if fatload ${devtype} ${devnum}:3 0x58000000 blob.bin; then
 	echo "=== blob.bin -> 0x58000000 (${filesize} bytes, 파티션 3) ==="
