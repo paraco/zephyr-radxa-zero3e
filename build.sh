@@ -53,6 +53,7 @@ source "$VENV/bin/activate"
 
 cd "$ZEPHYR_WS"
 EXTRA_ARGS=()
+
 if [[ -n "$EXTRA_OVERLAY" ]]; then
   [[ -f "$EXTRA_OVERLAY" ]] || { echo "오버레이 파일 없음: $EXTRA_OVERLAY" >&2; exit 1; }
   EXTRA_ARGS+=("-DEXTRA_DTC_OVERLAY_FILE=$EXTRA_OVERLAY")

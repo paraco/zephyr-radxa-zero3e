@@ -81,8 +81,13 @@ static int cmd_moru_info(const struct shell *sh, size_t argc, char **argv)
 	ARG_UNUSED(argv);
 
 	shell_print(sh, "MoruLab Zephyr RTOS");
-	shell_print(sh, "  버전      %s (build %s)", APP_VERSION_STRING,
-		    STRINGIFY(APP_BUILD_VERSION));
+	/*
+	 * MORU_GIT_DIRTY 는 커밋 전 변경이 있으면 "-dirty" 다 (CMakeLists 주입).
+	 * APP_BUILD_VERSION 의 git describe 에는 --dirty 가 없어, 이것이 없으면
+	 * **커밋 전 트리로 빌드한 이미지가 HEAD 해시로 찍힌다.**
+	 */
+	shell_print(sh, "  버전      %s (build %s%s)", APP_VERSION_STRING,
+		    STRINGIFY(APP_BUILD_VERSION), MORU_GIT_DIRTY);
 	shell_print(sh, "  빌드      %s", MORU_BUILD_TIME);
 	/*
 	 * ⚠ 버전 문자열만으로는 재현이 안 된다. 4.4.99 는 릴리스가 아니라

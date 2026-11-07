@@ -113,8 +113,10 @@ static int moru_boot_banner(void)
 	uint32_t impl = (midr >> 24) & 0xff;
 
 	LOG_INF(SEP);
-	LOG_INF("MoruLab Zephyr RTOS %s (build %s)", APP_VERSION_STRING,
-		STRINGIFY(APP_BUILD_VERSION));
+	/* MORU_GIT_DIRTY: 커밋 전 변경이 있으면 "-dirty" (CMakeLists 주입).
+	 * APP_BUILD_VERSION 의 git describe 에 --dirty 가 없어 꼭 필요하다. */
+	LOG_INF("MoruLab Zephyr RTOS %s (build %s%s)", APP_VERSION_STRING,
+		STRINGIFY(APP_BUILD_VERSION), MORU_GIT_DIRTY);
 	/*
 	 * 커밋 해시를 함께 찍는다 — 4.4.99 는 릴리스가 아니라 main 개발
 	 * 표시이고 같은 문자열이 수천 커밋을 가리킨다. 부팅 로그는 그대로

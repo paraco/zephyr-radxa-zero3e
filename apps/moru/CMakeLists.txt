@@ -10,6 +10,29 @@ project(moru)
 string(TIMESTAMP MORU_BUILD_TIME "%Y-%m-%d %H:%M:%S" UTC)
 target_compile_definitions(app PRIVATE MORU_BUILD_TIME="${MORU_BUILD_TIME} UTC")
 
+#
+# ⚠ 작업 트리가 더러운지(커밋 전 변경이 있는지) 박는다.
+#
+# 왜 필요한가: APP_BUILD_VERSION 은 `git describe` 에 **--dirty 가 없다.**
+# 그래서 **커밋 전 트리로 빌드한 이미지가 HEAD 해시로 찍힌다.** 2026-11-07 에
+# 실기에서 "8 MiB 상한이 없는 커밋(54da428)" 으로 보이는 이미지가 실제로는
+# 상한을 갖고 있어 한참 혼동했다.
+#
+# 왜 여기서 하는가: Zephyr 의 app_version.h 는 **별도 cmake 스크립트 호출**로
+# 생성되고 최상위 -DAPP_BUILD_VERSION 이 그 호출에 전달되지 않는다
+# (cmake/gen_version_h.cmake 는 자기 인자만 본다). 게다가 그 매크로는
+# **따옴표 없는 토큰**이라 `-dirty` 같은 하이픈을 담기에도 부적합하다.
+# 그래서 문자열로 직접 주입한다.
+execute_process(COMMAND git -C ${CMAKE_CURRENT_SOURCE_DIR} status --porcelain
+                OUTPUT_VARIABLE MORU_GIT_STATUS
+                OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+if(MORU_GIT_STATUS STREQUAL "")
+  set(MORU_GIT_DIRTY "")
+else()
+  set(MORU_GIT_DIRTY "-dirty")
+endif()
+target_compile_definitions(app PRIVATE MORU_GIT_DIRTY="${MORU_GIT_DIRTY}")
+
 # 보드 모델은 moru_boot.c 의 고정 문자열이다.
 # DT 루트의 model 속성은 바인딩에 없어 매크로가 생성되지 않고(DT_PROP 불가)
 # dt_prop() 도 비어 돌아온다. zephyr.dts 를 정규식으로 긁는 방법은 되지만,
