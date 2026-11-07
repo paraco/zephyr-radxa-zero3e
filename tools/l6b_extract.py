@@ -47,7 +47,16 @@ def main() -> int:
     want += ["l_out-%d" % i for i in range(24)]
     want += ["norm", "result_norm", "result_output"]
 
-    rows = [(n, k, op, sm) for (n, k, op, sm) in ordered if n in want]
+    # ⚠ **구간을 나눈다.** 이 구조는 1 ulp 를 층 15 에서 50.8% 로 증폭한다
+    #   (docs/l6b-sensitivity.md, -ffp-contract=fast 교란으로 측정). 그래서
+    #   층 16 이후의 합 비교는 어떤 구현 차이도 가리지 못한다.
+    #     gate=1  층 0~15 와 앞단 → **실제 정확성 관문** (1,000 ppb)
+    #     gate=0  층 16 이후     → **보고만** 한다
+    #   로짓은 합이 아니라 argmax/top-5 로 가린다 (src/host_top.inc).
+    deep = set("l_out-%d" % i for i in range(16, 24)) | {
+        "norm", "result_norm", "result_output"}
+    rows = [(n, k, op, sm, 0 if n in deep else 1)
+            for (n, k, op, sm) in ordered if n in want]
 
     out = sys.stdout
     out.write("/* tools/l6b_golden.sh 가 만든다 — 손으로 고치지 않는다. */\n")
@@ -57,13 +66,13 @@ def main() -> int:
     out.write("/* ⚠ 이름이 유일하지 않다 — nth(같은 이름 중 몇 번째)가 키의 일부다. */\n\n")
     out.write("#define L6B_TOKEN %d\n" % token)
     out.write("#define L6B_N_NODES %d\n\n" % len(nodes))
-    out.write("static const struct { const char *name; int nth; "
-              "const char *op; float sum; } l6b_golden[] = {\n")
-    for n, k, op, sm in rows:
-        out.write('\t{ "%s", %d, "%s", %.6ff },\n' % (n, k, op, sm))
+    out.write("static const struct { const char *name; int nth; const char *op; "
+              "float sum; int gate; } l6b_golden[] = {\n")
+    for n, k, op, sm, g in rows:
+        out.write('\t{ "%s", %d, "%s", %.6ff, %d },\n' % (n, k, op, sm, g))
     out.write("};\n")
 
-    missing = [w for w in want if not any(n == w for n, _, _, _ in rows)]
+    missing = [w for w in want if not any(n == w for n, _, _, _, _ in rows)]
     if missing:
         out.write("\n/* ⚠ 골든 로그에 없는 이름: %s */\n" % ", ".join(missing))
         sys.stderr.write("⚠ 못 찾은 이름: %s\n" % ", ".join(missing))

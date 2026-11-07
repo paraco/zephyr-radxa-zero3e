@@ -45,6 +45,7 @@
 #include <cstdlib>
 
 #include "golden.inc"
+#include "host_top.inc"
 
 extern "C" int malloc_runtime_stats_get(struct sys_memory_stats *stats);
 
@@ -67,7 +68,23 @@ extern "C" int malloc_runtime_stats_get(struct sys_memory_stats *stats);
  * ⚠ 이 값을 "맞을 때까지" 키우지 않는다. 넘으면 **어디서** 갈렸는지
  *   좁히는 것이 할 일이다 — 지점이 9개인 이유다.
  */
-#define TOL_PPB 20000	/* 2e-5 상대오차 */
+/*
+ * ⚠ **구간을 나눈다.** 근거는 docs/l6b-sensitivity.md 의 측정이다 —
+ *   `-ffp-contract=fast` 로 ~1 ulp 를 넣으면 호스트 자신이
+ *     층  2~ 8  1,000~3,000 ppb
+ *     층  9     5,738,985 ppb (0.57%)
+ *     층 15     508,390,575 ppb (50.8%)
+ *   로 갈린다. 즉 **층 16 이후의 합 비교는 어떤 구현 차이도 가리지 못한다.**
+ *
+ *   그래서 관문은 층 0~15 에만 둔다. 그 구간은 **더 엄격하게** 했다
+ *   (처음의 20,000 → 1,000 ppb). 보드는 거기서 0~14 ppb 다 — 여유 70배.
+ *
+ * ⚠ 허용 오차를 "맞을 때까지" 키운 것이 아니다. 깊은 층은 **판정에서
+ *   빼고** 로짓의 argmax 로 가린다 — 추론 결과를 결정하는 유일한 양이다.
+ *   호스트의 두 빌드가 층 23 에서 50.8% 갈려도 **같은 글**을 낸다
+ *   (`hi, I am a student`). argmax 는 교란에 견디고 2·3위만 뒤집힌다.
+ */
+#define TOL_PPB 1000	/* 층 0~15 관문. 1e-6 상대오차 */
 
 static int fails;
 static int seen;
@@ -75,6 +92,7 @@ static int skipped;
 
 struct cb_state {
 	int matched;
+	int reported;
 };
 
 /*
@@ -189,7 +207,13 @@ static bool eval_cb(struct ggml_tensor *t, bool ask, void *user_data)
 	const float scale = fs.abssum > 1.0f ? fs.abssum : 1.0f;
 	const int64_t ppb = (int64_t)(fabsf(diff) / scale * 1e9f);
 
-	if (ppb <= TOL_PPB) {
+	if (l6b_golden[gi].gate == 0) {
+		/* 깊은 층 — 보고만 한다. 1 ulp 가 1e8 ppb 를 만드는 구간이다. */
+		printk("      %-18s#%d ..   합 %14.6f (골든 %14.6f) %" PRId64 " ppb"
+		       "  (민감 구간 — 판정 제외)\n",
+		       l6b_golden[gi].name, nth, (double)fs.sum, (double)want, ppb);
+		st->reported++;
+	} else if (ppb <= TOL_PPB) {
 		printk("      %-18s#%d OK  합 %14.6f (골든 %14.6f) %" PRId64 " ppb\n",
 		       l6b_golden[gi].name, nth, (double)fs.sum, (double)want, ppb);
 		st->matched++;
@@ -396,16 +420,110 @@ int main(void)
 		}
 		heap("순전파 뒤");
 
-		printk("  [5] 대조 결과 ... ");
-		if (st.matched == N_GOLDEN && fails == 0) {
-			printk("OK — %d/%d 지점 일치\n", st.matched, N_GOLDEN);
+		/* [5] 층별 관문 — 층 0~15 만
+		 * ⚠ 블록으로 감싼다. 위쪽 `goto done` 이 이 선언들을 건너뛰면
+		 *   "jump to label 'done'" 으로 컴파일이 깨진다 — 겪었다. */
+		{
+		int n_gate = 0;
+		for (int i = 0; i < N_GOLDEN; i++) {
+			if (l6b_golden[i].gate) {
+				n_gate++;
+			}
+		}
+		printk("  [5] 층 관문 (층 0~15) ... ");
+		if (st.matched == n_gate && fails == 0) {
+			printk("OK — %d/%d 일치 (허용 %d ppb)\n",
+			       st.matched, n_gate, TOL_PPB);
 		} else {
-			printk("%d/%d 지점 일치 (본 노드 %d개 · 골든에 없는 차례 %d개)\n",
-			       st.matched, N_GOLDEN, seen, skipped);
-			if (st.matched < N_GOLDEN) {
-				printk("      ⚠ 못 본 지점이 있다 — 그래프의 노드 이름이\n");
-				printk("        골든(호스트)과 다르다. golden.inc 를 다시 만들어라.\n");
+			printk("%d/%d 일치 · 깊은 층 %d개 보고 · 본 노드 %d개\n",
+			       st.matched, n_gate, st.reported, seen);
+			if (st.matched < n_gate) {
+				printk("      ⚠ 관문 지점을 못 봤다 — 노드 이름이 골든과 다르다\n");
 				fails++;
+			}
+		}
+
+		/*
+		 * [6] **로짓 argmax · top-5** — 깊은 층을 대신하는 진짜 관문.
+		 *
+		 * ⚠ 왜 이것인가: 호스트의 두 빌드가 층 23 에서 50.8%, 로짓 합에서
+		 *   4.3% 갈려도 **같은 글**을 낸다. 추론의 결과를 결정하는 양은
+		 *   합이 아니라 argmax 다.
+		 *
+		 * ⚠ 어디까지 요구하나 (측정으로 정했다, docs/l6b-sensitivity.md):
+		 *     argmax      — 1 ulp 교란에도 **안정** → **일치를 요구한다**
+		 *     top-5 집합  — 안정 → **일치를 요구한다**
+		 *     2~5위 순서  — 뒤집힌다(로짓 차 0.15 이내) → **요구하지 않는다**
+		 *     로짓 값     — 0.8% 갈린다 → **보고만**
+		 */
+		}
+
+		printk("  [6] 로짓 argmax · top-5\n");
+		{
+			const float *lg = llama_get_logits_ith(ctx, 0);
+			const int nv = llama_vocab_n_tokens(llama_model_get_vocab(model));
+			if (lg == nullptr || nv <= 0) {
+				printk("      FAIL — 로짓을 못 읽었다\n");
+				fails++;
+			} else {
+				/* top-5 를 고른다 (부분 선택, 어휘 248,320개) */
+				int top[L6B_TOP_N];
+				for (int k = 0; k < L6B_TOP_N; k++) {
+					int best = -1;
+					for (int i = 0; i < nv; i++) {
+						bool used = false;
+						for (int j = 0; j < k; j++) {
+							if (top[j] == i) {
+								used = true;
+								break;
+							}
+						}
+						if (used) {
+							continue;
+						}
+						if (best < 0 || lg[i] > lg[best]) {
+							best = i;
+						}
+					}
+					top[k] = best;
+				}
+
+				for (int k = 0; k < L6B_TOP_N; k++) {
+					printk("      %d위 id %6d 로짓 %10.6f   (호스트 %d위 id %6d %10.6f '%s')\n",
+					       k + 1, top[k], (double)lg[top[k]],
+					       k + 1, l6b_host_top[k].id,
+					       (double)l6b_host_top[k].logit,
+					       l6b_host_top[k].piece);
+				}
+
+				/* 관문 ① argmax */
+				if (top[0] == l6b_host_top[0].id) {
+					printk("      argmax OK — id %d ('%s') 일치\n",
+					       top[0], l6b_host_top[0].piece);
+				} else {
+					printk("      argmax FAIL — 보드 %d · 호스트 %d\n",
+					       top[0], l6b_host_top[0].id);
+					fails++;
+				}
+
+				/* 관문 ② top-5 **집합** (순서는 요구하지 않는다) */
+				int inter = 0;
+				for (int k = 0; k < L6B_TOP_N; k++) {
+					for (int j = 0; j < L6B_TOP_N; j++) {
+						if (top[k] == l6b_host_top[j].id) {
+							inter++;
+							break;
+						}
+					}
+				}
+				if (inter == L6B_TOP_N) {
+					printk("      top-5 집합 OK — %d/%d (순서는 1 ulp 에도 뒤집히므로 요구하지 않는다)\n",
+					       inter, L6B_TOP_N);
+				} else {
+					printk("      top-5 집합 FAIL — %d/%d 만 겹친다\n",
+					       inter, L6B_TOP_N);
+					fails++;
+				}
 			}
 		}
 	}
