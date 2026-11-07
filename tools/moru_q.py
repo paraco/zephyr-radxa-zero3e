@@ -38,6 +38,12 @@ def query(fd, cmd, settle=0.6):
                 chunk = os.read(fd, 4096)
             except BlockingIOError:
                 continue
+            except OSError as e:
+                # ⚠ 재부팅시키는 명령(`moru reboot`, `moru ota apply`)은 USB
+                #   포트를 사라지게 한다 — Errno 6 "Device not configured".
+                #   그것은 **정상 동작**이므로 예외로 죽지 않고 알려 준다.
+                out += f'\n  [포트가 사라졌다 — 보드가 재부팅한 것으로 보인다: {e}]'.encode()
+                break
             if chunk:
                 out += chunk
                 deadline = time.time() + settle	# 더 오면 기다린다
