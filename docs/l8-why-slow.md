@@ -759,3 +759,54 @@ A55 는 **인오더** 코어다. L1 로드 지연(약 3 사이클)을 숨기려�
 - **수치 동일성** — `-ffp-contract=off` 는 이미 고정돼 있다. 그래도 `-O2` 가
   평문 C 루프를 벡터화하면 누적 순서가 바뀔 수 있다. **12/12 토큰 일치가
   판정이다** — 깨지면 그 자체가 정보다
+
+---
+
+# ⚠ 정정 — "`-Os` 가 레버다" 는 **틀렸다.** L6c 는 이미 `-O2` 였다
+
+빌드해 확인했다. 커밋된 L6c(`prj.conf` 에 최적화 줄 **없음**):
+
+```
+CONFIG_SPEED_OPTIMIZATIONS=y · 409 × -O2
+3,916,536 bytes · md5 8f2b64489d9cb020b0c283423cca1a00
+```
+
+**그 md5 가 21:34 에 올려 토큰당 1.423초를 잰 바로 그 바이너리다.** 즉 그
+측정은 처음부터 `-O2` 였다.
+
+강제로 `-Os` 를 주면 **3,064,536 bytes · md5 ca86c54c…** 로 달라진다. 크기가
+850 KB 차이 나므로 둘은 분명히 다른 빌드다.
+
+## 왜 틀렸나
+
+`CONFIG_SIZE_OPTIMIZATIONS=y` 를 본 것은 **L8n(C 앱)의 `.config`** 였다.
+그것을 L6c 의 설정으로 읽었다. **다른 앱의 생성물을 보고 이 앱을 말했다.**
+
+## 왜 L6c 가 SPEED 를 받는지는 **모른다**
+
+Zephyr 의 기본은 `default SIZE_OPTIMIZATIONS`(`Kconfig.zephyr:517`)이고,
+`SIZE_OPTIMIZATIONS` 에는 의존성이 없다. 그런데 L6c 는 SPEED 를 받는다.
+찾아본 곳(전부 해당 없음):
+
+- `apps/llm_l6c/prj.conf` · `apps/llm_common/ladder.conf` — 최적화 줄 없음
+- `apps/llm_l6c/CMakeLists.txt` · `cmake/llm_ggml.cmake` · `llm_llama.cmake`
+  — `CONFIG_*` 를 세우지 않는다
+- 저장소의 `Kconfig` 들 · `build.sh` — 해당 없음
+- Zephyr 트리에서 `SPEED_OPTIMIZATIONS` 를 `select`/`imply` 하는 곳 없음
+
+**추측하지 않는다.** 경로를 못 찾았다고 적어 둔다. 실측은 분명하다 —
+L6c 는 `-O2`, L8n 은 `-Os` 다. 알아야 할 때 다시 판다.
+
+⚠ 교훈: `.config` 를 읽을 때 **어느 빌드 디렉터리의 것인지** 확인한다.
+  `/tmp/claude-501/rz3e-build` 는 앱마다 덮어쓰인다.
+
+## 그래서 남은 레버 (갱신)
+
+| 인자 | 배수 | 상태 |
+|---|---|---|
+| ~~UART 폭주~~ | ~~4~17×~~ | ✅ 끝 |
+| ~~캐시/매핑~~ | — | ✅ 문제 없음 (쓰기가 크기에 반응한다) |
+| ~~`-Os` → `-O2`~~ | — | ❌ **이미 `-O2` 였다** |
+| `-O2` → **`-O3`** | 미지 | Zephyr 에 `-O3` 선택지가 없다. `llm_ggml_flags()` 에서 파일 단위로 준다 |
+| `n_threads=4` | 최대 4× | 코어는 올라왔다. ggml 이 쓰게 하는 것은 별개 |
+| 클럭 816 → 1800 MHz | 2.2× | 전압 동반 필요 (`vdd_cpu` rk8600 @ i2c0 0x40) |
