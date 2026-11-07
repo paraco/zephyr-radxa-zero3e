@@ -25,6 +25,25 @@ set(LLM_GGML_MCPU "cortex-a55" CACHE STRING "ggml 소스에 줄 -mcpu (실기와
 # 성능 측정(L8)에서는 `fast` 로 바꿔 다시 잰다.
 set(LLM_GGML_FP_CONTRACT "off" CACHE STRING "ggml 소스의 -ffp-contract (off=재현성, fast=성능)")
 
+# ── ggml·llama 소스의 최적화 수준 (2026-11-07 밤) ──────────────────────
+#
+# Zephyr 의 Kconfig 에는 **-O3 선택지가 없다** (Kconfig.zephyr:512-548 —
+# SIZE/-Os · SIZE_AGGRESSIVE/-Oz · SPEED/-O2 · DEBUG/-Og · NONE/-O0).
+# 업스트림 llama.cpp 는 Release 에서 -O3 를 쓴다. 그 차이를 보려면 파일
+# 단위로 줘야 한다 — 전역 Kconfig 는 그대로 두고 여기서만 덮는다.
+#
+# ⚠ **커널에는 주지 않는다.** ggml·llama 소스와 앱의 main 에만 붙는다.
+#   커널 전체를 -O3 로 올리는 것은 이 시험의 변수가 아니다.
+#
+# ⚠ 빈 문자열이면 아무것도 붙이지 않는다 → Kconfig 가 고른 값(이 앱에서는
+#   -O2)이 그대로 쓰인다. 되돌리기가 한 줄이다.
+#
+# ⚠ -O3 는 평문 C 루프를 벡터화할 수 있어 누적 순서가 바뀔 수 있다.
+#   -ffp-contract 는 위에서 off 로 고정돼 있지만 그것이 전부를 막지는
+#   않는다. **판정에 12/12 토큰 일치를 반드시 포함한다.**
+set(LLM_GGML_OPT_LEVEL "" CACHE STRING
+    "ggml·llama 소스에만 줄 최적화 수준 (예: -O3). 빈 값이면 Kconfig 를 따른다")
+
 #
 # repack — 가중치를 Q4_X_X 로 **다시 배치**해 블록 GEMM 커널을 타는 기능.
 #
@@ -142,5 +161,11 @@ function(llm_ggml_flags)
 		set_property(SOURCE ${f} APPEND PROPERTY
 			COMPILE_OPTIONS "-mcpu=${LLM_GGML_MCPU}"
 			                "-ffp-contract=${LLM_GGML_FP_CONTRACT}")
+		# ⚠ **뒤에 붙는다 = 이긴다.** gcc/clang 은 마지막 -O 를 쓴다.
+		#   Kconfig 가 준 -Os/-O2 를 이 파일들에서만 덮는 방식이다.
+		if(NOT LLM_GGML_OPT_LEVEL STREQUAL "")
+			set_property(SOURCE ${f} APPEND PROPERTY
+				COMPILE_OPTIONS "${LLM_GGML_OPT_LEVEL}")
+		endif()
 	endforeach()
 endfunction()
