@@ -71,6 +71,94 @@ reviewer 지적 5건 수정 뒤 세운 기준선이다. 이후에는 연관 시�
 | **창 안 합계** | **약 43 MiB** / 128 MB | |
 | 가중치 (읽기 전용) | **507.9 MiB** — 창 밖 `0x60000000` | L1 에서 640 MiB 창 확인 |
 
+## ✅ 호스트 llama.cpp 빌드 완료 (사용자가 돌렸다) — L6 전제가 풀렸다
+
+`llama-cli` · `llama-eval-callback` · `llama-bench` · `llama-perplexity` 생성됨.
+`build : b1-6c01da6`.
+
+### 계획서 §124 의 걱정은 **재현되지 않았다**
+
+포크에서 "qwen35 결과가 쓰레기" 보고가 있었다는 항목이다. 호스트에서 확인했다:
+
+```
+$ llama-cli -m Qwen3.5-0.8B-Q4_K_M.gguf -p "The capital city of France is"     -n 24 --temp 0 -s 1 -t 4 -st
+> The capital city of France is
+[Start thinking]
+Thinking Process:
+1.  **Analyze the Request:**
+    *   Question: "The capital city of
+```
+
+**멀쩡한 출력이고 결정적이다.** 같은 시드·greedy 로 두 번 돌려 생성 토큰이
+같았다. CPU 전용(`-ngl 0 --device none`)과 Metal 실행이 24토큰에서 **같은
+토큰 열**을 냈다 — 계획서의 L7 판정 기준(토큰 열 일치)이 호스트 안에서 이미
+성립한다.
+
+⚠ 처음에 "결정적이지 않다" 고 판정했는데 **제 측정 오류**였다 — 로딩
+스피너 애니메이션과 t/s 줄까지 비교했다. 생성 토큰만 추려 비교하면 같다.
+
+### 하이퍼파라미터가 내 실측과 **정확히** 맞는다
+
+```
+arch = qwen35 · n_layer 24 · n_embd 1024 · n_head 8
+ssm_d_conv 4 · ssm_d_inner 2048 · ssm_d_state 128 · ssm_dt_rank 16 · ssm_n_group 16
+n_ctx_train 262144 · model type 0.8B · model params 752.39 M
+token_embd.weight{1024, 248320}   ← vocab 248,320 확인
+```
+
+`gguf_dump` 로 읽은 값과 구현이 보고하는 값이 전부 일치한다. 파라미터 수가
+safetensors 의 873 M 보다 작은 것은 GGUF 본체에 **비전 타워가 없기** 때문이다
+— 텍스트 전용이라는 또 하나의 증거다(`modalities : text` 도 찍힌다).
+
+### 층 구성이 **구현으로** 확인됐다 — 추론이 아니다
+
+`llama-eval-callback` 이 이름 붙은 중간 텐서를 층 번호까지 찍는다:
+
+```
+어텐션 (Qcur_full-N):  3  7  11  15  19  23          →  6층
+DeltaNet (conv_input-N): 0 1 2  4 5 6  8 9 10  12 13 14  16 17 18  20 21 22  → 18층
+```
+
+**`6 × (3 DeltaNet → 1 Attention)`** 이다. 계획서의 가정이 맞았다.
+
+### L6 골든값 장치가 작동한다
+
+노드 **1,431개**를 덤프했고 각 노드마다 이름·연산·형태·값 표본·**`sum`** 을
+찍는다(제가 `llm_fullsum.h` 에 넣은 상한과 같은 발상이다).
+
+쓸 수 있는 골든 지점(층 번호 생략):
+
+| 계층 | 이름 |
+|---|---|
+| DeltaNet | `linear_attn_qkv_mixed` · `qkv_mixed_transposed` · `conv_input` · `conv_states` · `conv_output_raw` · **`conv_output_silu`** · `q_conv`/`k_conv` · `q_conv_predelta`/`k_conv_predelta`/`v_conv_predelta` · `beta`/`beta_sigmoid` · `alpha`/`a_softplus` · `gate` · `z` · `state_predelta` · **`new_state`** · `final_output` · `linear_attn_out` |
+| 어텐션 | `Qcur_full` · `Qcur_reshaped` · `Qcur_normed` · `Kcur_normed` · `gate_reshaped` · `gate_sigmoid` · `attn_pregate` · `attn_gated` · `attn_output` |
+| 공통 | `attn_norm` · `attn_post_norm` · `attn_residual` · `ffn_up`/`ffn_gate`/`ffn_swiglu`/`ffn_out` · `l_out` · `norm` · `result_norm` · `result_output` |
+
+**즉 L5a·L5b 를 합성 가중치에서 실제 가중치로 올릴 수 있다.** 지금의 합성판은
+충실한 부분집합이지만 빠진 것이 있다 — 목록을 보면 `conv_output_silu` 가
+있는데 내 L5a 그래프에는 **conv 뒤 SiLU 가 없다.** `linear_attn_qkv_mixed`
+(결합 QKVZ 투영)도 없다. 실제 가중치판에서 채워야 한다.
+
+### ⚠ 골든값을 뽑을 때 반드시 지킬 것 둘
+
+**① CPU 를 강제한다.** macOS 기본 빌드는 **Metal 을 켠다.** 그냥 돌리면
+가중치 497 MiB 가 `MTL0` 버퍼로 가고 순환층도 `dev = MTL0` 다. 그러면
+골든값이 **Metal 커널**에서 나온다 — 우리가 포팅하는 CPU 백엔드와 다른
+구현이다. `-ngl 0 --device none` 을 반드시 준다.
+
+**② repack 이 이 빌드에서 켜져 있다.** `system_info: … REPACK = 1` 이고
+`CPU_REPACK` 이 선호 버퍼 타입이다. 즉 호스트 CPU 골든값은 **repack 경로**에서
+나오는데 우리 Zephyr 빌드는 repack 이 꺼져 있다. **다른 코드다.**
+아래 열린 결정 ①이 이론이 아니라 구체적인 문제가 됐다.
+
+### Gate 0 은 **절반만** 끝났다
+
+계획서의 0단계는 "보드에 Linux 를 올려 확인" 이다. 지금 답한 것은
+**정확성 절반**(qwen35 가 0.8B 에서 멀쩡한가)이고, 호스트는 macOS arm64 다.
+**보드 성능·보드 커널 경로는 여전히 둘째 SD 카드가 필요하다.**
+
+---
+
 ## ⚠ L6 전에 결정해야 하는 것 둘 (reviewer 지적, 아직 안 고쳤다)
 
 둘 다 **지금 틀린 것은 아니지만** L6 에서 드러난다. 설계 판단이 필요해
