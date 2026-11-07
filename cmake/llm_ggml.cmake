@@ -25,6 +25,31 @@ set(LLM_GGML_MCPU "cortex-a55" CACHE STRING "ggml 소스에 줄 -mcpu (실기와
 # 성능 측정(L8)에서는 `fast` 로 바꿔 다시 잰다.
 set(LLM_GGML_FP_CONTRACT "off" CACHE STRING "ggml 소스의 -ffp-contract (off=재현성, fast=성능)")
 
+#
+# repack — 가중치를 Q4_X_X 로 **다시 배치**해 블록 GEMM 커널을 타는 기능.
+#
+# ⚠ 상류 기본값은 **ON** 이다 (ggml/CMakeLists.txt:152). 우리는 **끈다.**
+#   근거는 docs/l6-decisions.md 결정 1 에 있다. 요약:
+#     ① 메모리 — 재배치 **사본**이 별도 버퍼 타입에 생긴다. 모델 창 512 MiB 에
+#        모델이 507.85 MiB 로 여유가 4.15 MiB 다. 사본이 들어갈 자리가 없고,
+#        제자리 적재(결정 3)와 정면으로 충돌한다.
+#     ② 한 왕복에 변수 하나 — repack 은 가중치 배치와 matmul 커널을 **동시에**
+#        바꾼다. L6·L7 은 모델 그래프를 가리는 칸이다. L8 의 소재다.
+#
+#   (처음엔 「호스트 i8mm vs 실기 dotprod」를 근거로 들었으나 **틀렸다.**
+#    tools/host_golden.sh 가 이미 호스트의 i8mm 을 끄고 있어 양쪽이 같은
+#    dotprod 경로다. 그 근거는 철회했다 — 결정 1 참고.)
+#
+# ⚠ repack.cpp · arch/arm/repack.cpp 는 cmake/ggml-sources.txt 에 **들어 있다.**
+#   매크로가 없으면 코드는 링크되지만 ggml-cpu.cpp:64 가 버퍼 타입을 등록하지
+#   않아 쓰이지 않는다. 즉 끄는 것은 소스 목록이 아니라 **이 매크로**다.
+#
+# ⚠ 호스트와 **반드시 같아야 한다.** tools/host_golden.sh 가 LLM_GGML_REPACK 를
+#   환경변수로 읽는다 — 한쪽만 바꿀 수 없게 해 두었다. ggml-sources.txt 를
+#   단일 출처로 만든 것과 같은 이유다(한쪽만 바뀌어 호스트 골든값과 Zephyr
+#   결과가 다른 코드에서 나온 적이 있다).
+option(LLM_GGML_REPACK "ggml repack (Q4_0 -> Q4_X_X 재배치) — L8 성능 측정에서만 ON" OFF)
+
 function(llm_add_ggml)
 	set(LLAMA_DIR "${LLM_GGML_CMAKE_DIR}/../../upstream/llama.cpp"
 	    CACHE PATH "llama.cpp 체크아웃")
@@ -73,6 +98,14 @@ function(llm_add_ggml)
 		${CMAKE_CURRENT_BINARY_DIR}/ggml-gen
 		${LLM_GGML_CMAKE_DIR}/../apps/llm_common)
 	target_compile_definitions(app PRIVATE GGML_USE_CPU GGML_BACKEND_BUILD)
+	if(LLM_GGML_REPACK)
+		target_compile_definitions(app PRIVATE GGML_USE_CPU_REPACK)
+		message(WARNING
+			"ggml repack ON — 호스트 골든값도 LLM_GGML_REPACK=1 로 다시 만들어라.\n"
+			"  모델 창 여유 4.15 MiB 로는 재배치 사본이 들어가지 않는다 (docs/l6-decisions.md).")
+	else()
+		message(STATUS "ggml repack OFF (상류 기본값은 ON — docs/l6-decisions.md 결정 1)")
+	endif()
 	# 호환 층을 모든 소스에 강제 포함한다 — 상류를 고치지 않기 위한 수단이다.
 	target_compile_options(app PRIVATE -include ggml_zephyr_compat.h)
 

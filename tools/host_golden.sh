@@ -79,6 +79,13 @@ done < "$REPO/cmake/ggml-sources.txt"
 INC=(-I"$G/include" -I"$G/src" -I"$G/src/ggml-cpu" -I"$WORK/gen" -I"$APPSRC"
      -I"$REPO/apps/llm_common")
 DEF=(-DGGML_USE_CPU -DGGML_BACKEND_BUILD)
+# ⚠ repack 은 **Zephyr 쪽과 반드시 같아야 한다.** 한쪽만 켜면 호스트 골든값이
+#   다른 코드에서 나오고 그 사실이 드러나지 않는다. 기본은 끔 —
+#   근거는 docs/l6-decisions.md 결정 1 (cmake/llm_ggml.cmake 의 LLM_GGML_REPACK).
+if [ "${LLM_GGML_REPACK:-0}" != "0" ]; then
+	DEF+=(-DGGML_USE_CPU_REPACK)
+	echo "⚠ repack ON — Zephyr 도 -DLLM_GGML_REPACK=ON 으로 빌드해야 한다" >&2
+fi
 # ⚠ -ffp-contract 를 양쪽에서 똑같이 맞춘다. gcc 와 clang 이 `sumf += a*b` 를
 #   fmadd 로 묶는 기준이 달라 1 ulp 가 갈리고, 상쇄가 있는 합에서는 상대오차로
 #   크게 보인다. off 로 두면 비트 비교가 가능해진다.
