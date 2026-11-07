@@ -67,4 +67,59 @@ long ggml_zephyr_sysconf(int opt);
  */
 #define sysconf(x) ggml_zephyr_sysconf(x)
 
+
+/*
+ * ── ggml 스케줄러 문맥 버퍼 — 포팅 항목 9번 ─────────────────────────────
+ *
+ * `ggml-backend.cpp:2251`:
+ *     context_buffer_size = ggml_sched_max_splits
+ *                         * GGML_SCHED_MAX_SPLIT_INPUTS * 2
+ *                         * sizeof(struct ggml_tensor)
+ *                         + ggml_graph_overhead_custom(graph_size, false);
+ *
+ * qwen35 에서 `graph_size = max_nodes = 32 * n_tensors = 10240` 이고
+ * (`llama-context.cpp:2745`), `ggml_sched_max_splits = graph_size` 다
+ * ("노드마다 split 하나" 라는 최악 가정, `:2241` 주석).
+ *
+ *     10240 × 30 × 2 × 336 ≈ **197 MB**
+ *
+ * 실기에서 그 malloc 이 실패해 멈췄다. 호스트에서는 같은 197 MB 를 조용히
+ * 받아 가므로 드러나지 않는다 — 호스트의 `compute buffer size = 2.22 MiB`
+ * 는 **다른 버퍼**(활성)다.
+ *
+ * ⚠ 두 추정이 **곱해진다**:
+ *   ① `graph_size` 10240 은 실제 노드 ~1,431개의 7배다.
+ *   ② `GGML_SCHED_MAX_SPLIT_INPUTS` 30 은 **백엔드가 여러 개일 때** 쪼갠
+ *      조각의 입력 수다. 우리는 **백엔드가 1개**라 split 이 사실상 하나뿐이고
+ *      백엔드 간 복사도 없다.
+ *   ①은 llama_context 안에 있어 손댈 수 없다. ②는 `#ifndef` 로 감싸여
+ *   있으므로(`ggml-backend.cpp:1167`) 여기서 정한다 — **상류 수정 0건**.
+ *
+ * **2 로 둔다.** 측정으로 정했다:
+ *     30 → 197.41 MB  (실패)
+ *      4 →  26.79 MB  (실패 — 모델·어휘 뒤 남은 자리가 48.3 MB 인데
+ *                      output 0.95 + KV 3.00 + RS 19.27 를 먼저 쓴다)
+ *      2 →  13.4 MB   (들어간다)
+ *
+ * ⚠ **줄여도 안전한 근거.** 이 값은 `split->inputs_capacity` 와
+ *   `sched->graph_inputs_capacity` 의 **초기** 용량일 뿐이다.
+ *   `ggml_backend_sched_split_inputs_grow`(`:1255`) ·
+ *   `ggml_backend_sched_graph_inputs_grow`(`:1270`) 가 모자라면
+ *   **`realloc` 로 2배씩 늘린다** — 그 배열은 힙에 있고 문맥 버퍼가 아니다.
+ *   즉 이 값이 바꾸는 것은 **문맥 버퍼 크기 하나**다.
+ *
+ * ⚠ 그래도 모자라면 **조용히 틀리지 않는다** — `ggml_init` 이 no_alloc 로
+ *   그 버퍼를 쓰므로 텐서 자리가 없으면 거기서 멈춘다. 백엔드를 늘리는 날
+ *   (GPU·NPU) 이 값을 되돌려야 한다.
+ *
+ * ⚠ **상류에 보고할 것:** `ggml-backend.cpp:2252` 의
+ *   `sched->context_buffer = (char *) malloc(...)` 가 **결과를 확인하지
+ *   않는다.** 그래서 메모리가 부족한 시스템에서는 실패가 한참 뒤
+ *   `ggml_init` 의 `GGML_ASSERT(ctx->mem_buffer != NULL)`(ggml.c:1662)로
+ *   나타나 원인을 가리기 어렵다. 우리가 그 길을 겪었다.
+ */
+#ifndef GGML_SCHED_MAX_SPLIT_INPUTS
+#define GGML_SCHED_MAX_SPLIT_INPUTS 2
+#endif
+
 #endif /* GGML_ZEPHYR_COMPAT_H */

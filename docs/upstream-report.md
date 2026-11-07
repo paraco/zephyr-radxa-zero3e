@@ -340,3 +340,55 @@ Zephyr `v4.4.0-3902-gfb0fa3dd488d`, out-of-tree `radxa_zero_3e/rk3568` board
   (`TRACING_ASYNC` 가 `USE_SWITCH` 에서 전환 중 커널 타이머를 건다)를 찾았는데
   **다른 버그**다(우리 구성에는 `CONFIG_TRACING` 이 없다). 다만 같은 영역에
   아키텍처별 함정이 있다는 맥락으로 링크할 만하다.
+
+---
+
+## (4) `ggml_backend_sched_new` 가 `malloc` 결과를 확인하지 않는다
+
+**파일:** `ggml/src/ggml-backend.cpp:2251-2252`
+
+```c
+sched->context_buffer_size = ggml_sched_max_splits*GGML_SCHED_MAX_SPLIT_INPUTS*2*sizeof(struct ggml_tensor)
+                           + ggml_graph_overhead_custom(graph_size, false);
+sched->context_buffer = (char *) malloc(sched->context_buffer_size);   // ← 결과 미확인
+```
+
+실패하면 `context_buffer` 가 `NULL` 이 된 채로 진행하고, 한참 뒤
+`ggml_backend_sched_split_graph`(`:1480`)가 그것을 `mem_buffer` 로 넘긴다.
+`ggml_init` 은 `mem_buffer == NULL` 이면 **스스로 할당**하므로 거기서
+`ggml_aligned_malloc` 이 실패하고, 증상은 이렇게 나타난다:
+
+```
+ggml_aligned_malloc: insufficient memory (attempted to allocate 197.41 MB)
+ggml/src/ggml.c:1662: GGML_ASSERT(ctx->mem_buffer != NULL) failed
+```
+
+**왜 문제인가:** 197 MB 를 **누가** 요구했는지 알 수 없다. 메시지는
+`ggml_init` 을 가리키지만 실제 요구자는 스케줄러 생성이다. 우리는 이 때문에
+"포팅 결함" 으로 오진하고 호스트와 버퍼 크기를 하나하나 대조하는 데 시간을
+썼다 (호스트의 `compute buffer size = 2.22 MiB` 는 **다른 버퍼**라 더
+헷갈렸다).
+
+**제안:** `malloc` 뒤에 확인을 넣는다.
+
+```c
+sched->context_buffer = (char *) malloc(sched->context_buffer_size);
+if (sched->context_buffer == NULL) {
+    GGML_LOG_ERROR("%s: failed to allocate context buffer of %zu bytes "
+                   "(graph_size=%zu, max_split_inputs=%d)\n",
+                   __func__, sched->context_buffer_size,
+                   graph_size, GGML_SCHED_MAX_SPLIT_INPUTS);
+    ggml_backend_sched_free(sched);
+    return NULL;
+}
+```
+
+**곁들여:** 그 크기 추정이 단일 백엔드에서 매우 보수적이다.
+`ggml_sched_max_splits = graph_size` 는 "노드마다 split 하나" 가정인데
+(`:2241` 주석), 백엔드가 하나면 split 은 하나다. qwen35 + 단일 CPU 백엔드에서
+`graph_size = 10240` · `GGML_SCHED_MAX_SPLIT_INPUTS = 30` 이면 197 MB 이고,
+실제로 쓰이는 양은 그 수백 분의 일이다. `sched->n_backends == 1` 일 때
+`ggml_sched_max_splits` 를 1 로 두면 임베디드에서 쓸 수 있게 된다.
+
+(우리는 `GGML_SCHED_MAX_SPLIT_INPUTS` 를 강제 포함으로 낮춰 우회했다 —
+`#ifndef` 가드가 있어 상류 수정 없이 됐다. 그 가드는 고맙다.)

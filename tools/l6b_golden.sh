@@ -53,7 +53,20 @@ echo "골든 바이너리: $BIN" >&2
 echo "모델:          $MODEL" >&2
 echo "토큰:          $TOKEN ('$PROMPT')" >&2
 
-"$BIN" -m "$MODEL" -p "$PROMPT" -n 1 -t 1 > "$LOG" 2>&1 || {
+#
+# ⚠ **보드와 같은 설정으로 돌려야 한다.** 그래프가 설정에 따라 달라진다 —
+#   기본값에서는 노드가 1,017개인데 `-c 256 -b 1 -ub 1` 에서는 1,431개다.
+#   노드 이름(`l_out-3` 등)도 갈릴 수 있으므로 골든을 보드 설정에서 뽑는다.
+#
+#   보드가 쓰는 값 (apps/llm_l6b/src/main.cpp):
+#     n_ctx   32 를 주면 llama.cpp 가 **256 으로 올린다** (최소 단위)
+#     n_batch 1 · n_ubatch 1 · n_threads 1
+#     flash-attn 끔 (기본이 끔이므로 플래그 없음)
+N_CTX="${L6B_N_CTX:-256}"
+echo "설정:          n_ctx=$N_CTX n_batch=1 n_ubatch=1 n_threads=1" >&2
+
+"$BIN" -m "$MODEL" -p "$PROMPT" -n 1 -t 1 \
+       -c "$N_CTX" -b 1 -ub 1 > "$LOG" 2>&1 || {
 	echo "eval-callback 실패 — $LOG 를 보라" >&2; exit 2; }
 
 # ── 관문: 기능 집합이 보드와 같은가 ────────────────────────────────────
