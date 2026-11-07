@@ -115,8 +115,20 @@ int main(void)
 		cp.n_ctx           = 256;
 		cp.n_batch         = 1;
 		cp.n_ubatch        = 1;
-		cp.n_threads       = 1;
-		cp.n_threads_batch = 1;
+		/* ── n_threads=4 (2026-11-07 밤) ────────────────────────────
+		 * L8e 가 실기에서 네 코어를 올렸다. 여기서 ggml 이 실제로
+		 * 그것을 쓰게 한다. ggml 은 워커 3개를 pthread 로 만든다.
+		 *
+		 * ⚠ **호스트 골든은 n_threads=1 로 뽑은 그대로 둔다.**
+		 *   그러면 이 시험이 묻는 것이 분명해진다 —
+		 *   "4스레드 보드가 1스레드 호스트와 **여전히** 같은 토큰을
+		 *    내는가". 행렬곱은 보통 스레드가 행/덩이를 나눠 가져
+		 *    누적 순서가 바뀌지 않으므로 비트 일치가 기대되지만,
+		 *    **기대는 증거가 아니다.** 12/12 일치가 깨지면 그 자체가
+		 *    정보이고, 어느 층에서 갈라지는지 L6b 로 내려가 본다.
+		 */
+		cp.n_threads       = 4;
+		cp.n_threads_batch = 4;
 		cp.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED;
 		llama_context *ctx = llama_init_from_model(model, cp);
 		if (ctx == nullptr) {
