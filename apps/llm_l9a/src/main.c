@@ -52,7 +52,8 @@
 #define RELAY_BASE   0x51000000UL
 #define RELAY_MAGIC  0x4d4f5255UL	/* "MORU" — boot.cmd 블록이 돌았다는 표식 */
 #define RELAY_OFF_MAGIC  0x00
-#define RELAY_OFF_I2C    0x08		/* VSEL0 · VSEL1 · CONTROL 3바이트 */
+#define RELAY_OFF_I2C    0x08		/* VSEL0 · VSEL1 · CONTROL 3바이트 (부팅 끝 상태) */
+#define RELAY_OFF_I2C_W  0x10		/* 같은 셋 — **쓰기 직후** 상태 */
 #define RELAY_FILL   0xdeadbeefUL	/* i2c read 가 덮어쓸 자리의 초기값 */
 
 #define CRU_BASE     0xfdd20000UL
@@ -130,6 +131,22 @@ int main(void)
 			       rk8600_uv(vsel1));
 			printk("      CONTROL (0x02) = 0x%02x  (slew = bits[6:4] = %u)\n",
 			       ctrl, (unsigned)((ctrl >> 4) & 7));
+
+			/* ⚠ **쓰기 직후** 스냅샷. 1차 시도에서 VSEL0 이 0x8f 그대로였는데
+			 *   "안 써졌다" 와 "써졌다가 되돌아갔다" 를 구분할 수 없었다.
+			 *   boot.cmd 가 i2c mw 직후 한 번 더 읽어 여기 놓아 둔다. */
+			const uint32_t raw_w = sys_read32(relay + RELAY_OFF_I2C_W);
+			printk("      ─ **쓰기 직후** 스냅샷: 0x%08x\n", raw_w);
+			if (raw_w == RELAY_FILL) {
+				printk("        (i2c read 2회차가 돌지 않았다)\n");
+			} else {
+				printk("        VSEL0 0x%02x (%u µV) · VSEL1 0x%02x (%u µV)\n",
+				       (uint8_t)(raw_w & 0xff), rk8600_uv((uint8_t)(raw_w & 0xff)),
+				       (uint8_t)((raw_w >> 8) & 0xff),
+				       rk8600_uv((uint8_t)((raw_w >> 8) & 0xff)));
+				printk("        → 여기서 0x99 인데 위에서 0x8f 면 **되돌아간 것**이다.\n");
+				printk("          여기서도 0x8f 면 **쓰기가 안 된 것**이다\n");
+			}
 			printk("      ─ 읽는 법: **850000 µV 근처(sel 11)인 쪽이 살아 있는 쪽**이다.\n");
 			printk("        U-Boot 가 816 MHz 로 두었으니 그 전압이어야 한다\n");
 			printk("        1.10 V 는 sel 31 · 1.15 V 는 sel 35 다\n");
