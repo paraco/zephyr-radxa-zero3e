@@ -2,10 +2,20 @@
 # 받는 방법은 docs/ 에 적혀 있다.
 images/
 
-# 빌드 산출물. zephyr.bin 은 build.sh 가 만든 것을 복사해 둔 것이므로
+# 빌드 산출물. sdcard/ 의 .bin 은 build.sh 가 만든 것을 복사해 둔 것이므로
 # 소스에서 언제든 다시 만들 수 있다.
-sdcard/**/zephyr.bin
-sdcard/zephyr.bin
+#
+# ⚠ 전에는 `sdcard/zephyr.bin` 만 막았다. 그래서 OTA 로 올릴 이미지를
+#   `sdcard/<이름>.bin` 으로 떠 두는 동안 **9 MB 가 커밋에 들어갔다**
+#   (2026-11-07: l6c-o3.bin 4.4 MB · l6c-smp4.bin 3.9 MB · moru*.bin 등).
+#   원인은 `git add -A` 를 반복한 것이다. 이제 이름 전체를 막는다.
+sdcard/**/*.bin
+sdcard/*.bin
+
+# ⚠ 예외: blob.bin 은 **시험용 GGUF**(3,872 B)이고 L2·L3 의 골든값이 이
+#   파일에서 나온다. 생성물이 아니므로 추적한다.
+!sdcard/blob.bin
+!sdcard/**/blob.bin
 build/
 *.o
 *.obj
