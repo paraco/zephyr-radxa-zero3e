@@ -107,7 +107,23 @@ function(llm_add_ggml)
 		message(STATUS "ggml repack OFF (상류 기본값은 ON — docs/l6-decisions.md 결정 1)")
 	endif()
 	# 호환 층을 모든 소스에 강제 포함한다 — 상류를 고치지 않기 위한 수단이다.
-	target_compile_options(app PRIVATE -include ggml_zephyr_compat.h)
+	# ⚠ 강제 포함은 **둘** 이다. 둘 다 "상류를 고치지 않는" 수단이다.
+	#   ggml_zephyr_compat.h — 없는 선언(sysconf · _SC_PHYS_PAGES · M_PI)
+	#   zephyr_future.h      — libstdc++ 가 _GLIBCXX_HAS_GTHREADS 없이 빌드돼
+	#                          비워 둔 <future> (docs/l6a-compile-matrix.md)
+	#   ⚠ ggml 소스에만 걸면 llama 소스가 다른 전제로 컴파일된다. 둘 다
+	#     app 타깃 전체에 건다.
+	#
+	# ⚠ **`SHELL:` 가 반드시 필요하다.** cmake 의 target_compile_options 는
+	#   같은 플래그를 **중복 제거**한다. 그냥 `-include a.h -include b.h` 로
+	#   주면 두 번째 `-include` 가 지워져 `-include a.h b.h` 가 되고, gcc 는
+	#   b.h 를 **입력 파일**로 읽는다:
+	#       fatal error: cannot specify '-o' with '-c' … with multiple files
+	#   실제로 겪었다(L6a 첫 빌드). `SHELL:` 는 그 안을 한 덩이로 보내
+	#   중복 제거를 막는다.
+	target_compile_options(app PRIVATE
+		"SHELL:-include ggml_zephyr_compat.h"
+		"SHELL:-include zephyr_future.h")
 
 	llm_ggml_flags(${_srcs})
 endfunction()

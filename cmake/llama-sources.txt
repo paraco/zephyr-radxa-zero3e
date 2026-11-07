@@ -1,0 +1,24 @@
+# llama.cpp src/ 소스 목록 — **단일 출처**.
+#
+# cmake/llm_llama.cmake(Zephyr)와 tools/host_golden_llama.sh(호스트)가
+# **이 파일 하나**를 읽는다. cmake/ggml-sources.txt 와 같은 이유다 — 목록을
+# 두 군데 두었다가 한쪽에만 파일을 더해 "호스트 골든값과 보드 결과가 다른
+# 코드에서 나온" 상태가 된 적이 있다.
+#
+# 경로는 llama.cpp/ 기준.
+#
+# ⚠ `llama-mmap.cpp` 는 **없다.** 이 툴체인은 _POSIX_MAPPED_FILES 를 정의하지
+#   않아 상류가 fallback 로 가고 llama_mmap::SUPPORTED=false 가 된다
+#   (llama-mmap.cpp:691). 그러면 로더가 use_mmap 을 끄고 508 MiB 를 또
+#   복사한다 — 창 여유 4.15 MiB 에 불가능하다.
+#   대신 apps/llm_common/llama_mmap_zephyr.cpp 를 링크한다
+#   (docs/l6-decisions.md 결정 3).
+
+# ── L6a — 메타데이터 + 어휘 ─────────────────────────────────────────────
+L6A src/llama-model-loader.cpp
+L6A src/llama-arch.cpp
+L6A src/llama-hparams.cpp
+L6A src/llama-impl.cpp
+L6A src/llama-vocab.cpp
+L6A src/unicode.cpp
+L6A src/unicode-data.cpp
