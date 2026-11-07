@@ -1,4 +1,4 @@
-# Zephyr 상류 보고 문안 — 3건
+# Zephyr 상류 보고 문안 — 5건
 
 **상태: 원고 완성. 올림 여부 미확정 (2026-11-07).**
 
@@ -20,6 +20,8 @@
 | 1 | EL2 에서 캐시를 켠 채 부팅하면 조용히 멈춘다 (`ARM64_BOOT_DISABLE_DCACHE`) | `area: ARM64` | 실기 3회, QEMU 비재현 확인 |
 | 2 | `SCHED_THREAD_USAGE_AUTO_ENABLE` 을 끌 수 없다 (빌드 깨짐) | `area: Kernel` | 빌드 로그 |
 | 3 | Rockchip UART 인터럽트 트리거가 트리 안에서 모순되고, ns16550 이 쓰지 않는 포트의 IRQ 를 켠다 | `area: UART`, `area: Devicetree` | 실기 실측 + 트리 내부 모순 |
+| 4 | `ggml_backend_sched_new` 가 `malloc` 결과를 확인하지 않는다 | (llama.cpp) | 실기 할당 실패 |
+| 5 | **ns16550 이 DesignWare busy-detect 를 지우지 않아 사이클의 77% 를 잃는다** | `area: UART` | **실기 PMU 실측 + 양성·음성 대조** |
 
 3번이 가장 쓸모 있을 것이다 — **트리 안에서 같은 UART 를 서로 다르게
 선언한 곳**을 찾았고, 그것이 실기에서 부팅 불가로 이어지는 경로를 끝까지
@@ -392,3 +394,101 @@ if (sched->context_buffer == NULL) {
 
 (우리는 `GGML_SCHED_MAX_SPLIT_INPUTS` 를 강제 포함으로 낮춰 우회했다 —
 `#ifndef` 가드가 있어 상류 수정 없이 됐다. 그 가드는 고맙다.)
+
+---
+
+## (5) ns16550 이 DesignWare 의 busy-detect 인터럽트를 처리하지 않아, Rockchip UART 를 인터럽트 구동으로 쓰면 코어가 **사이클의 77% 를 잃는다**
+
+**상태: 원고 완성, 올리지 않았다 (2026-11-07). 실기 실측 완료.**
+
+보고 3 과 같은 영역이지만 **다른 결함**이다. 보고 3 은 DT 의 트리거 선언
+모순과 쓰지 않는 포트의 IRQ 를 켜는 문제이고, 이것은 **드라이버가 이 하드웨어의
+인터럽트 하나를 지울 줄 모른다**는 문제다.
+
+### 제목 (영문)
+
+> `drivers/serial/uart_ns16550`: DesignWare busy-detect interrupt is never
+> cleared on Rockchip RK356x — interrupt storm costs 77% of CPU cycles
+
+### 본문 (영문)
+
+**Summary.** On Rockchip RK3566 (Radxa ZERO 3E, `rockchip,rk3568-uart`
+which binds `uart_ns16550`), enabling `CONFIG_UART_INTERRUPT_DRIVEN=y`
+produces a permanent interrupt storm on the console UART. Measured with the
+PMU: the CPU loses **77% of its cycles** to the ISR. An ALU-only loop that
+touches no memory runs at IPC 0.45; masking interrupts with
+`msr daifset, #0xf` raises it to IPC 1.99.
+
+**Root cause.** The RK356x UART is a Synopsys DesignWare DW_APB_UART, not a
+plain 16550. It has an extra interrupt that standard 16550 does not:
+`IIR[3:0] == 0x7`, "busy detect". It is raised when `LCR` is written while
+the transmitter is busy, and it is **cleared only by reading the UART Status
+Register (USR) at offset 0x7C**. Reading `LSR` or `IIR` does not clear it,
+and — crucially — **it cannot be masked via `IER`**.
+
+Zephyr's generic `uart_ns16550.c` has no knowledge of `USR`. Linux handles
+this in a dedicated driver: `drivers/tty/serial/8250/8250_dw.c`,
+`dw8250_handle_irq()` reads `UART_USR` when `(iir & 0x3f) == UART_IIR_BUSY`.
+
+The trigger in practice: the bootloader (U-Boot) leaves the UART running at
+1.5 Mbps; Zephyr's init writes `LCR` to reconfigure to 115200 8N1 while the
+transmitter is still busy.
+
+**Measurements** (RK3566 Cortex-A55 r2p0, MIDR `0x412fd050`, 815 MHz;
+Zephyr `v4.4.0-3902-gfb0fa3dd488d`; UART at `0xfe660000`, Zephyr IRQ 150):
+
+```
+                        cycles/iter   IPC    EXC_TAKEN   IIR
+baseline (untouched)       21.96      0.45     21,971    0xc7  (busy detect)
+after reading IIR          21.96      0.45     21,970    —     (not cleared)
+after reading USR (0x7C)    5.00      1.99          0    0xc1  (none pending)
+after irq_disable()         5.00      1.99          0          (positive control)
+after irq_enable()          5.00      1.99          0          (stays fixed)
+```
+
+`IER` was `0x00` throughout — **every maskable UART interrupt was already
+disabled** and the IRQ still fired. That is what identifies busy-detect
+specifically; nothing maskable can explain it. `USR` read `0x03` with
+`BUSY=1`.
+
+Cost per exception: `(10,981,957 − 2,500,719) / 21,972 ≈ 386 cycles`.
+
+**End-to-end impact.** A llama.cpp inference app on this board went from
+**23.6 s/token to 1.423 s/token (16.6×)** purely by setting
+`CONFIG_UART_INTERRUPT_DRIVEN=n`, with bit-identical output (12/12 token ids
+and logits unchanged).
+
+**Suggested fix.** Handle the DesignWare case in the ISR, gated on a new
+Kconfig or on a `snps,dw-apb-uart`-style compatible:
+
+```c
+/* DW_APB_UART: busy detect (IIR[3:0] == 0x7) is cleared only by reading
+ * USR at 0x7C. It is not maskable via IER. */
+if ((iir & 0xf) == 0x7) {
+        (void)ns16550_inbyte(dev, 0x7C / sizeof(...));
+}
+```
+
+A second, complementary fix is to avoid writing `LCR` while `USR.BUSY` is
+set (Linux also does this, in `dw8250_set_termios`).
+
+**Why this matters beyond one board.** `dts/arm64/rockchip/rk3568.dtsi` is
+in-tree and declares `compatible = "rockchip,rk3568-uart", "ns16550"`, so
+any in-tree RK356x board (`roc_rk3568_pc`, `rock_3b`, …) that turns on
+interrupt-driven UART hits this. The symptom is not a failure — output is
+correct — it is a silent 4–17× slowdown, which is the hardest kind to find.
+
+### 올리기 전 확인할 것
+
+- [ ] `uart_ns16550.c` 의 현재 `dev`(메인라인) 상태를 다시 읽어 그 사이에
+      DW 처리가 들어왔는지 확인한다
+- [ ] 다른 DW_APB_UART SoC(예: Intel, Altera, 일부 Allwinner)에서 같은
+      드라이버를 쓰는 보드가 영향을 받는지 한 줄 조사한다
+- [ ] 우리 쪽 고침(`soc_init/`)이 돌아간 뒤의 moru 측정값을 본문에 넣는다
+
+### 우리 쪽 근거 문서
+
+- `docs/l8-why-slow.md` — L8i(지목)·L8j(확정) 전체 출력
+- `apps/llm_l8i/src/main.c` — PMU 이벤트 계수판
+- `apps/llm_l8j/src/main.c` — 양성·음성 대조를 포함한 확정판
+- `apps/llm_common/ladder.conf` — 사다리 쪽 우회(=n)와 그 근거

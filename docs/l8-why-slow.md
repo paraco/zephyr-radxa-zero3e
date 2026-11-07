@@ -466,3 +466,63 @@ ALU 보다 ISR 비용을 더 크게 물고 있었다.
 ⚠ PASS 뒤의 치명 오류(`ELR=0`, `EC 0x20`)는 그대로다. 정적 소멸자 쪽으로
   보이지만 **원인 미확인**이고 L6b 처럼 `k_sleep(K_FOREVER)` 로 우회하지
   않았다. 판정 뒤라 결과에는 영향이 없다.
+
+---
+
+# ✅✅ 2026-11-07 밤 — 근본 원인 확정: **DesignWare busy-detect 인터럽트**
+
+L8j 실기 결과. 모든 대조가 설계대로 나왔다.
+
+```
+[0] uart2 @ 0xfe660000 (phys) → 0xfe660000 (virt) · Zephyr IRQ 150
+
+[1] 기준선 (레지스터 미접촉)   21.96 사이클/바퀴 · IPC 0.45 · EXC_TAKEN 21,971
+[2] 레지스터
+      IER 0x00   (ERBFI=0 ETBEI=0 ELSI=0 EDSSI=0)   ← **전부 마스크돼 있다**
+      IIR 0xc7   → bits[3:0] = 0x7 = **BUSY DETECT**
+      LCR 0x03 · MCR 0x0b · LSR 0x00 · MSR 0x00
+[3] IIR 읽은 뒤                21.96 사이클 · EXC 21,970   ← **안 지워진다**
+[4] USR 0x03 (BUSY=1 TFNF=1)
+    USR 읽은 뒤                 5.00 사이클 · IPC 1.99 · EXC 0   ← **고쳐졌다**
+      IIR 0xc1 → 대기 인터럽트 없음
+[5] irq_disable                 5.00 (이미 고쳐짐 — 양성 대조)
+[6] irq_enable                  5.00 ← 다시 켜도 안 돌아온다 = **영구**
+```
+
+## 결정적 증거: `IER = 0x00` 인데도 IRQ 가 걸린다
+
+드라이버가 UART 인터럽트를 **전부 마스크해 두었다.** 그런데도 폭주한다.
+**DW_APB_UART 의 busy-detect 는 `IER` 로 마스크할 수 없다.** 이 하나가
+다른 모든 가설(ISR 이 LSR 을 안 지운다 / U-Boot 가 IER 를 켜 둔다 /
+DTS 의 IRQ_TYPE_EDGE)을 배제한다. IER 가 0 이면 그 어느 것도 IRQ 를
+만들 수 없다.
+
+`USR = 0x03` 에 `BUSY=1` — UART 가 자기를 전송 중이라고 보고한다. 조건은
+**전송 중에 LCR 을 쓰는 것**이고, U-Boot 가 1.5 Mbps 로 쓰던 UART 를
+Zephyr 가 115200 으로 다시 설정하는 그 순간이다. `LCR 0x03` 은 8N1 로
+Zephyr 가 쓴 값이다.
+
+## 왜 고침이 영구인가
+
+busy-detect 는 **LCR 쓰기마다 새로 걸린다.** Zephyr 는 init 에서 한 번만
+LCR 을 쓰므로, 그 뒤 USR 을 한 번 읽으면 다시 걸릴 일이 없다. `[6]` 에서
+`irq_enable` 뒤에도 5.00 을 유지하는 것이 그 증거다.
+
+⚠ 단 **보율을 바꾸면 다시 걸린다.** moru 셸에서 `uart_configure` 를 부르는
+  경로가 생기면 그때 또 USR 을 읽어야 한다. 그래서 고침을 init 한 번이 아니라
+  **ISR 에서 처리**하는 쪽이 옳다 (Linux 가 그렇게 한다).
+
+## 고침
+
+Linux 는 전용 드라이버로 처리한다 — `drivers/tty/serial/8250/8250_dw.c` 의
+`dw8250_handle_irq()` 가 `(iir & 0x3f) == UART_IIR_BUSY` 일 때 USR 을 읽는다.
+
+**Zephyr 의 범용 `uart_ns16550.c` 에는 그 처리가 없다.** 그런데
+`dts/arm64/rockchip/rk3568.dtsi` 가
+`compatible = "rockchip,rk3568-uart", "ns16550"` 로 선언해 그 드라이버에
+바인딩된다. 즉 **메인라인 Zephyr 에서 이 SoC 의 UART 를 인터럽트 구동으로
+쓰면 누구나 이 손해를 본다.** 업스트림 보고 거리다.
+
+우리 저장소의 고침은 `soc_init/` 에 넣는다 — 모듈 수준이라 moru 와 앞으로의
+앱 전부에 걸린다. 업스트림 ns16550 을 수정하지 않는다(지금까지 업스트림
+편집 0줄을 유지해 왔다).
