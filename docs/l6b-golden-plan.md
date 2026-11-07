@@ -93,3 +93,55 @@ L6b 는 **첫 토큰 하나**다. 토크나이저·샘플러는 쓰지 않고 �
 6. `result_output` (로짓)
 
 하나라도 어긋나면 그 사이를 좁힌다.
+
+---
+
+## ✅ 골든 경로 완성 — 2026-11-07
+
+`build-golden` 의 `system_info` 가 관문을 통과했다:
+
+```
+CPU : NEON = 1 | ARM_FMA = 1 | FP16_VA = 1 | DOTPROD = 1 |
+```
+
+`MATMUL_INT8` · `REPACK` · `ACCELERATE` · `LLAMAFILE` · `MTL` · `BLAS` 가
+**전부 없다.** ggml 이 실제로 보는 ARM 매크로 8개가 보드와 일치한다
+(`SVE`·`SVE2`·`SME`·`SME2`·`MATMUL_INT8` = 0, `DOTPROD`·`FP16_VECTOR_ARITHMETIC`
+·`FMA` = 1).
+
+처음 설정에서 **두 가지가 어긋났고 고쳤다**:
+
+| 어긋남 | 왜 중요한가 | 고침 |
+|---|---|---|
+| `FP16_VECTOR_ARITHMETIC` 호스트 OFF · 보드 ON | ggml 이 **10곳**에서 이 매크로로 갈린다 (`ggml/src` 전수 조사) | `-DGGML_CPU_ARM_ARCH=armv8.2-a+dotprod+fp16` |
+| `LLAMAFILE` 호스트 ON · 보드 OFF | `ggml-cpu.c:1310,1395` 의 matmul 경로를 바꾼다 | `-DGGML_LLAMAFILE=OFF` |
+
+### 뽑은 값 — `apps/llm_l6b/golden.inc`
+
+토큰 **5834** (`llama-tokenize -p "hi" --ids`). 노드 전체 **1,017개** 중
+대조 지점 9개:
+
+| 노드 | 연산 | sum |
+|---|---|---|
+| `model.input_embed` | GET_ROWS | -0.762861 |
+| `norm-0` | RMS_NORM | -35.549904 |
+| `attn_norm-0` | MUL | -43.128544 |
+| `l_out-0` | ADD | -0.245448 |
+| `l_out-3` | ADD | 0.605366 |
+| `l_out-23` | ADD | 10.362761 |
+| `norm` | RMS_NORM | 34.496681 |
+| `result_norm` | MUL | 109.291367 |
+| **`result_output`** | **MUL_MAT** | **-565930.500000** |
+
+`l_out-0` 은 **DeltaNet** 층이고 `l_out-3` 은 **어텐션** 층이다 — qwen35 의
+어텐션은 3·7·11·15·19·23 이다(측정값, `docs/llm-hub-test-plan.md`). 두 갈래를
+각각 하나씩 본다.
+
+`result_output` 이 로짓이므로 **끝까지 한 번에 가린다.** 어긋나면 위
+지점들로 좁힌다.
+
+### 되돌릴 수 없는 함정 하나
+
+`tools/l6b_golden.sh` 는 `system_info` 관문을 **먼저** 돌리고 아니면 멈춘다.
+이것을 건너뛰면 **잘못된 골든값을 조용히** 쓴다 — 플래그가 안 먹은 빌드는
+겉보기에 똑같이 동작한다. 이 프로젝트에서 가장 비싸게 배운 종류의 실수다.
