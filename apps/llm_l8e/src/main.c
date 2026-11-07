@@ -50,27 +50,61 @@ static inline uint64_t cnt(void)
 	return v;
 }
 
-static uint64_t sweep(uintptr_t base, size_t sz, uint64_t frq)
+/* ── PMU 사이클 카운터 — **코어마다** 켜야 한다 ───────────────────────
+ * PMCR_EL0·PMCNTENSET_EL0 는 per-CPU 레지스터다. 주 코어에서 켜도 보조
+ * 코어에는 적용되지 않는다. probe_core 가 자기 코어에서 부른다.
+ */
+static void pmu_enable_this_core(void)
+{
+	uint64_t v = SYSREG_R("pmcr_el0");
+	v &= ~(uint64_t)(1U << 3);                           /* D(64분주)를 지운다 */
+	v |= (1U << 0) | (1U << 2) | (1U << 6);              /* E | C(리셋) | LC */
+	__asm__ volatile("msr pmcr_el0, %0" ::"r"(v));
+	__asm__ volatile("msr pmcntenset_el0, %0" ::"r"((uint64_t)1 << 31));
+	__asm__ volatile("isb");
+}
+static inline uint64_t pmccnt(void)
+{
+	return SYSREG_R("pmccntr_el0");
+}
+
+/* 읽기 대역을 **사이클당 바이트 × 100** 으로 돌려준다.
+ *
+ * ⚠ 전 판은 바이트 단위 로드에 의존성 체인이 있어 캐시가 아니라 **루프
+ *   지연**을 쟀다 (815 MHz 에서 L1 이 0.83 B/cyc 로 나왔다 — A55 의 L1
+ *   히트로는 터무니없다). 여기서는 L8h 에서 검증된 꼴을 쓴다:
+ *   64비트 로드 · 독립 누산기 8개 · 8단 언롤. 그리고 MiB/s 가 아니라
+ *   **사이클당 바이트**로 돌려준다 — 클럭이 낮은 것과 캐시가 안 먹는
+ *   것을 섞지 않으려면 이 단위여야 한다.
+ */
+static uint64_t sweep(uintptr_t base, size_t sz)
 {
 	const volatile uint64_t *p = (const volatile uint64_t *)base;
 	const size_t n = sz / 8;
-	uint64_t acc = 0;
-	for (size_t i = 0; i < n; i++) {
-		acc += p[i];
+	uint64_t a0=0,a1=0,a2=0,a3=0,a4=0,a5=0,a6=0,a7=0;
+
+	/* 예열 — 첫 바퀴는 캐시를 채운다. 그걸 재면 전부 미스가 섞인다. */
+	for (size_t i = 0; i + 8 <= n; i += 8) {
+		a0 += p[i]; a1 += p[i+1]; a2 += p[i+2]; a3 += p[i+3];
+		a4 += p[i+4]; a5 += p[i+5]; a6 += p[i+6]; a7 += p[i+7];
 	}
-	const int reps = (int)(16u * 1024u * 1024u / sz);
-	const uint64_t t0 = cnt();
+
+	int reps = 1;
+	while ((size_t)reps * sz < (4u << 20)) { reps *= 2; }
+
+	const uint64_t t0 = pmccnt();
 	for (int r = 0; r < reps; r++) {
 		for (size_t i = 0; i + 8 <= n; i += 8) {
-			acc += p[i] + p[i + 1] + p[i + 2] + p[i + 3]
-			     + p[i + 4] + p[i + 5] + p[i + 6] + p[i + 7];
+			a0 += p[i]; a1 += p[i+1]; a2 += p[i+2]; a3 += p[i+3];
+			a4 += p[i+4]; a5 += p[i+5]; a6 += p[i+6]; a7 += p[i+7];
 		}
 	}
-	const uint64_t tk = cnt() - t0;
-	if (acc == 0x5a5a5a5aULL) {
+	const uint64_t dc = pmccnt() - t0;
+
+	if ((a0+a1+a2+a3+a4+a5+a6+a7) == 0x5a5a5a5aULL) {
 		printk("(안 일어난다)");
 	}
-	return tk ? (uint64_t)sz * (uint64_t)reps * frq / tk / 1048576 : 0;
+	return dc ? ((uint64_t)sz * (uint64_t)reps * 100) / dc : 0;
 }
 
 #define STACK_SZ 4096
@@ -82,25 +116,45 @@ static K_SEM_DEFINE(done, 0, 1);
 static void probe_core(void *a, void *b, void *c)
 {
 	const int want = (int)(uintptr_t)a;
-	const uint64_t frq = (uint64_t)(uintptr_t)b;
+	ARG_UNUSED(b);
 	ARG_UNUSED(c);
 
 	k_sem_take(&turn, K_FOREVER);
 
+	/* ⚠ PMU 는 per-CPU 다 — 이 코어에서 켠다. 주 코어에서 켜도 여기엔
+	 *   적용되지 않아 사이클이 0 으로 읽히고 대역이 0 으로 나온다. */
+	pmu_enable_this_core();
+
 	const uint64_t mpidr = SYSREG_R("mpidr_el1");
-	const uint64_t ectlr = SYSREG_R("S3_0_C15_C1_0");
+	/* ⚠ **정정 (2026-11-07).** 전 판은 S3_0_C15_C1_0 을 `CPUECTLR` 이라 부르고
+	 *   bit 6 을 SMPEN 으로 읽었다. 둘 다 틀렸다. ARM 의 TF-A 헤더가 정본이다
+	 *   (include/lib/cpus/aarch64/cortex_a55.h):
+	 *       CORTEX_A55_CPUECTLR_EL1 = S3_0_C15_C1_4
+	 *       CORTEX_A55_CPUACTLR_EL1 = S3_0_C15_C1_0
+	 *   그리고 **A55 의 CPUECTLR 에는 SMPEN 비트가 없다** — A55 는 DynamIQ(DSU)
+	 *   기반이라 코히런시를 DSU 가 관리한다. SMPEN 은 A53/A57/A72 의 필드다.
+	 *   그래서 둘을 **읽기만** 하고 해석을 붙이지 않는다. */
+	const uint64_t ectlr = SYSREG_R("S3_0_C15_C1_4");	/* 진짜 CPUECTLR */
+	const uint64_t actlr = SYSREG_R("S3_0_C15_C1_0");	/* CPUACTLR */
 	const uint64_t sctlr = SYSREG_R("sctlr_el1");
 
-	printk("      코어 %d (Zephyr cpu %d · MPIDR 0x%08x · Aff0=%u)\n",
+	printk("      코어 %d (Zephyr cpu %d · MPIDR 0x%08x · Aff1=%u Aff0=%u)\n",
 	       want, (int)arch_curr_cpu()->id, (uint32_t)mpidr,
-	       (unsigned)(mpidr & 0xff));
-	printk("        CPUECTLR 0x%016" PRIx64 "  **SMPEN=%u**  (SCTLR C=%u I=%u)\n",
-	       ectlr, (unsigned)((ectlr >> 6) & 1),
-	       (unsigned)((sctlr >> 2) & 1), (unsigned)((sctlr >> 12) & 1));
-	printk("        읽기 32 KiB %5" PRIu64 " MiB/s · 32 MiB %5" PRIu64 " MiB/s",
-	       sweep(BLOB_ADDR, 32u * 1024, frq),
-	       sweep(BLOB_ADDR, 32u * 1024 * 1024, frq));
-	printk("   ← 둘이 크게 다르면 **이 코어는 캐시가 먹는다**\n");
+	       (unsigned)((mpidr >> 8) & 0xff), (unsigned)(mpidr & 0xff));
+	printk("        CPUECTLR(C1_4) 0x%016" PRIx64 " L1WSCTL=%u · "
+	       "CPUACTLR(C1_0) 0x%016" PRIx64 "\n",
+	       ectlr, (unsigned)((ectlr >> 25) & 3), actlr);
+	printk("        SCTLR C=%u I=%u M=%u\n",
+	       (unsigned)((sctlr >> 2) & 1), (unsigned)((sctlr >> 12) & 1),
+	       (unsigned)(sctlr & 1));
+	{
+		const uint64_t s32k = sweep(BLOB_ADDR, 32u * 1024);
+		const uint64_t s32m = sweep(BLOB_ADDR, 32u * 1024 * 1024);
+		printk("        읽기 32 KiB %" PRIu64 ".%02" PRIu64 " B/cyc · "
+		       "32 MiB %" PRIu64 ".%02" PRIu64 " B/cyc\n",
+		       s32k/100, s32k%100, s32m/100, s32m%100);
+		printk("        기준: A55 의 L1 히트는 8~16 B/cyc 여야 한다\n");
+	}
 
 	k_sem_give(&done);
 }
