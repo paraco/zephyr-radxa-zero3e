@@ -295,6 +295,67 @@ kernel uptime → 53210 ms
 
 ---
 
+## L2·L3 실기 준비 완료 — 카드 작업 한 번 남았다 (2026-11-07)
+
+L2(GGUF 파서)·L3(역양자화)는 블롭을 읽는다. QEMU 는 `-device loader` 로
+넣지만 실기에는 그 경로가 없었다 — `boot.cmd` 에 넣었다.
+
+```
+if fatload ${devtype} ${devnum}:${distro_bootpart} 0x58000000 blob.bin; then
+	echo "=== blob.bin -> 0x58000000 (${filesize} bytes) ==="
+else
+	echo "=== blob.bin 없음 — 블롭 없이 계속한다 ==="
+fi
+```
+
+- **있으면 올리고 없으면 넘어간다** — 블롭을 안 쓰는 앱(L0·L1·L4·L5)과 moru 가
+  이 줄 때문에 부팅을 못 하면 안 된다.
+- `fatload` 는 크기 인자가 없으면 **파일 전체**를 읽는다. `fatwrite` 와 달리
+  고정 크기가 필요 없다.
+
+### 주소가 두 파일에 있다 — build.sh 가 대조한다
+
+`sdcard/boot.cmd` 의 `fatload` 와 `apps/llm_common/model_blob.overlay` 의
+`reg` 가 같아야 한다. 어긋나면 U-Boot 가 엉뚱한 곳에 올리고 앱은 창을 읽어
+**전부 0** 이 된다 — 역양자화 결과가 ±0.0 이라 그럴듯해 보여 "포팅이 틀렸다"
+로 오진한다(실제로 겪었다). `build.sh` 가 빌드마다 DT 를 정본으로 대조하고
+어긋나면 **빌드를 멈춘다**:
+
+```
+블롭 주소: 0x58000000 (DT = boot.cmd) ✓
+```
+
+### 넣을 파일 (카드 작업 한 번)
+
+| 파일 | 크기 | CRC32 |
+|---|---|---|
+| `boot.scr` | 9,496 B | `12446d0f` |
+| `blob.bin` (L2·L3 시험 GGUF) | 3,872 B | `8320cd20` |
+
+```bash
+cd ~/Projects/PiZZa/rk3566/sdcard && \
+  sudo mcopy -i /dev/rdisk4s2 -o boot.scr blob.bin ::/ && \
+  sudo mdir -i /dev/rdisk4s2 ::/ && diskutil eject /dev/disk4
+```
+
+되돌리기: `boot.scr.known-good`(5,478 B)이 옆에 있다.
+
+실기 이미지도 준비됐다 — L2 **74,344 B** `023eb0bc` · L3 **74,344 B** `dfd84b66`.
+
+### ⚠ 실제 모델은 이 파티션에 **안 들어간다**
+
+| | 크기 |
+|---|---|
+| boot 파티션 (`mmc 1:2`) | **314.6 MB** |
+| 시험 GGUF | 3,872 B ✅ |
+| **실제 모델** (Qwen3.5-0.8B Q4_K_M) | **507.85 MiB ❌** |
+
+카드에 15.6 GB 파티션(`disk4s3`)이 따로 있다. L6·L7 에서는 거기서 읽도록
+`fatload mmc 1:3 …` 를 쓰거나 다른 수단을 정해야 한다 — **그 파티션이 FAT
+인지 아직 확인하지 않았다.** 열린 항목으로 남긴다.
+
+---
+
 ## 사람이 해야 하는 일 (에이전트가 못 하는 것)
 
 1. **실기 확인 3건** — L0 부팅 · 128 MB 창 · L2 의 캐시 항목.

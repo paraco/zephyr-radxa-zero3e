@@ -135,6 +135,32 @@ if itest.l *${ota_addr} -eq ${ota_magic_try}; then
 	fi
 fi
 
+# ── 모델 블롭 적재 (2026-11-07) ───────────────────────────────────────────
+#
+# QEMU 의 `-device loader,file=…,addr=0x58000000` 에 해당하는 실기 경로다.
+# 사다리 L2(GGUF 파서)·L3(역양자화)가 이 블롭을 읽는다.
+#
+# ⚠ 주소 **0x58000000** 은 apps/llm_common/model_blob.overlay 의 reg 와
+#   **반드시 같아야 한다.** 어긋나면 앱이 전부 0 을 읽고, 역양자화 결과가
+#   ±0.0 이라 그럴듯해 보여 "포팅이 틀렸다" 로 오진한다(실제로 겪었다).
+#   build.sh 가 빌드할 때마다 두 값을 대조한다.
+#
+# ⚠ **있으면 올리고 없으면 넘어간다.** 블롭을 안 쓰는 앱(L0·L1·L4·L5)과
+#   moru 가 이 줄 때문에 부팅을 못 하면 안 된다.
+#
+# fatload 는 크기 인자를 안 주면 **파일 전체**를 읽는다 — fatwrite 와 달리
+# 고정 크기가 필요 없다(헤더에서 크기를 읽을 필요도 없다).
+#
+# ⚠ **실제 모델(507.85 MiB)은 이 파티션에 안 들어간다.** boot 파티션이
+#   314.6 MB 다. L6·L7 에서는 더 큰 파티션(카드의 15.6 GB 쪽)에서 읽도록
+#   `fatload mmc 1:3 …` 를 쓰거나 다른 수단을 정해야 한다. 지금 시험
+#   GGUF(3,872 B)는 문제없다.
+if fatload ${devtype} ${devnum}:${distro_bootpart} 0x58000000 blob.bin; then
+	echo "=== blob.bin -> 0x58000000 (${filesize} bytes) ==="
+else
+	echo "=== blob.bin 없음 — 블롭 없이 계속한다 ==="
+fi
+
 if fatload ${devtype} ${devnum}:${distro_bootpart} ${zaddr} zephyr.bin.try; then
 	echo "=== one-shot try image ==="
 	# ⚠ 뛰기 전에 지운다. 이 순서가 복구의 전부다.

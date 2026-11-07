@@ -75,6 +75,29 @@ echo
 echo "산출물:"
 ls -la "$BUILD_DIR/zephyr/zephyr.bin" "$BUILD_DIR/zephyr/zephyr.elf" | awk '{printf "  %-50s %s bytes\n",$NF,$5}'
 
+# ── 블롭 적재 주소 일치 확인 ──────────────────────────────────────────
+#
+# ⚠ 같은 주소가 **두 파일**에 있다 — sdcard/boot.cmd 의 fatload 와
+#   apps/llm_common/model_blob.overlay 의 reg. 어긋나면 U-Boot 가 엉뚱한
+#   곳에 올리고 앱은 창을 읽어 **전부 0** 이 된다. 역양자화 결과가 ±0.0 이라
+#   그럴듯해 보여 "포팅이 틀렸다" 로 오진한다 — 실제로 겪었다.
+#   DT 쪽이 정본이므로 거기서 읽어 boot.cmd 와 대조한다.
+OVL="$HERE/apps/llm_common/model_blob.overlay"
+BOOTCMD="$HERE/sdcard/boot.cmd"
+if [ -f "$OVL" ] && [ -f "$BOOTCMD" ]; then
+	DT_ADDR=$(grep -oE 'reg = <0x0 0x[0-9a-fA-F]+' "$OVL" | grep -oE '0x[0-9a-fA-F]+$' | tail -1)
+	UB_ADDR=$(grep -oE '0x[0-9a-fA-F]+ blob\.bin' "$BOOTCMD" | grep -oE '^0x[0-9a-fA-F]+')
+	if [ -n "$DT_ADDR" ] && [ -n "$UB_ADDR" ]; then
+		if [ "$((DT_ADDR))" -eq "$((UB_ADDR))" ]; then
+			echo "블롭 주소: $DT_ADDR (DT = boot.cmd) ✓"
+		else
+			echo "❌ 블롭 주소가 어긋났다 — DT $DT_ADDR vs boot.cmd $UB_ADDR" >&2
+			echo "   앱이 전부 0 을 읽게 된다. 둘을 맞춰라." >&2
+			exit 1
+		fi
+	fi
+fi
+
 # ── OTA 상한 여유 ──────────────────────────────────────────────────────
 #
 # ⚠ 왜 빌드 때 알려야 하나: sdcard/boot.cmd 의
