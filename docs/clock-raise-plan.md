@@ -286,3 +286,45 @@ fi
 4. 클럭을 1608 로 — 분주 먼저, PLL 나중 (위 순서대로)
 5. L9a 로 실측 주파수·전압 재확인
 6. L6c 재측정 (12/12 일치 + 토큰당 시간)
+
+---
+
+# 2026-11-08 — 쓰기 전 관문 ①: **PLL 매크로를 원문으로 재확인했다**
+
+조사 보고는 WebFetch 의 요약 모델을 거쳤다. 실제로 PLL 에 쓰게 될 값이므로
+`firecrawl` 의 `directQuote` 모드로 `clk_pll.c` 를 **직접** 다시 읽었다.
+
+결과: **조사 보고와 글자 단위로 같다.**
+
+```
+RK3036_PLLCON0_FBDIV_MASK     0xfff        SHIFT  0
+RK3036_PLLCON0_POSTDIV1_MASK  0x7 << 12    SHIFT 12
+RK3036_PLLCON1_REFDIV_MASK    0x3f         SHIFT  0
+RK3036_PLLCON1_POSTDIV2_MASK  0x7 << 6     SHIFT  6
+RK3036_PLLCON1_DSMPD_MASK     0x1 << 12    SHIFT 12
+RK3036_PLLCON2_FRAC_MASK      0xffffff     SHIFT  0
+RK3036_PLLCON1_PWRDOWN_SHIFT  13
+```
+
+그리고 **`LOCK` 전용 매크로가 없다**는 것도 확인됐다 — lock 비트는 `PLL()`
+매크로 인자의 `lock_shift` 에서 오고, APLL 은 그 값이 10 이다(con1 bit 10).
+`pll_rk3328` 이 `rk3036_pll_set_rate` 로 분기하는 것도 확인됐다.
+
+⚠ 함수 본문(`rk3036_pll_set_rate` 전체)은 directQuote 가 서명만 돌려주어
+  **글자 단위로는 못 받았다.** 순서 서술은 요약본에 의존한다. 다만 순서보다
+  비트 위치가 위험한 값이고, 그쪽은 확정됐다.
+
+## 남은 쓰기 전 관문
+
+| | 관문 | 상태 |
+|---|---|---|
+| ① | PLL 비트 위치 | ✅ **원문 확인** |
+| ② | CRU 베이스 0xfdd20000 | ✅ 출처 둘 일치 |
+| ③ | 1608 의 PLL 파라미터 (1, 67, 1, 1, 1, 0) | 요약본. **다시 대조 필요** |
+| ④ | `V = 712500 + 12500 × sel` | 요약본. **다시 대조 필요** |
+| ⑤ | **어느 VSEL 이 살아 있나** | ❌ **소스로 알 수 없다 — 측정해야 한다** |
+| ⑥ | 1608 의 OPP 전압 1.10 V | 요약본. RK3566 전용 OPP 는 **미대조** |
+
+③④ 는 다음 회차에 directQuote 로 닫는다. ⑤ 는 L9a 가 답한다. ⑥ 은
+`rk3566.dtsi` 를 따로 봐야 한다 — 지금까지 본 OPP 는 **RK3568 기준**이고
+이 보드는 **RK3566** 이다.
