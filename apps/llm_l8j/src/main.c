@@ -240,10 +240,21 @@ int main(void)
 			printk("         위 [2] 의 IIR 값이 어느 원인인지 말해 준다\n");
 		}
 	} else {
-		printk("      ⚠ **기준선이 이미 정상이다 (%" PRIu64 ".%02" PRIu64
-		       ").** 이 앱에서는 폭주가 재현되지 않았다.\n", base/100, base%100);
-		printk("         L8i 와 다른 점을 찾아야 한다 — 이 앱은 셸이 없고\n");
-		printk("         출력량도 적다. moru 에서 다시 확인한다\n");
+		/* ⚠ 2026-11-07: 이 갈래의 뜻이 **바뀌었다.** 처음에는 "폭주가
+		 *   재현되지 않았다, L8i 와 다른 점을 찾아라" 였다. 그 뒤
+		 *   soc_init/dw_uart_busy.c 가 모듈 수준 POST_KERNEL priority 0
+		 *   에서 USR 을 읽어 치우게 됐다. 그것이 main() 보다 먼저이므로
+		 *   **고침이 돌면 기준선이 정상으로 나오는 것이 정상이다.**
+		 *   옛 문구를 그대로 두면 고침이 작동하는 것을 "재현 실패" 로
+		 *   오독한다. */
+		printk("      ✓ 기준선이 이미 정상이다 (%" PRIu64 ".%02" PRIu64
+		       "). **모듈 고침이 돌았다.**\n", base/100, base%100);
+		printk("         soc_init/dw_uart_busy.c 가 POST_KERNEL 0 에서\n");
+		printk("         USR 을 읽어 치운다 — main() 보다 먼저다.\n");
+		printk("         IIR 이 0xc1(대기 없음)로 시작하면 그 확인이다\n");
+		printk("         ⚠ 고침을 빼고 폭주를 다시 보려면 soc_init 의\n");
+		printk("           CONFIG_UART_INTERRUPT_DRIVEN 게이트를 손대거나\n");
+		printk("           SYS_INIT 등록을 지운다\n");
 	}
 #undef OK
 	printk("      ⚠ 어느 경우든 **moru 에서 다시 확인**해야 한다. 이 앱은\n");
