@@ -86,7 +86,21 @@ OVL="$HERE/apps/llm_common/model_blob.overlay"
 BOOTCMD="$HERE/sdcard/boot.cmd"
 if [ -f "$OVL" ] && [ -f "$BOOTCMD" ]; then
 	DT_ADDR=$(grep -oE 'reg = <0x0 0x[0-9a-fA-F]+' "$OVL" | grep -oE '0x[0-9a-fA-F]+$' | tail -1)
-	UB_ADDR=$(grep -oE '0x[0-9a-fA-F]+ blob\.bin' "$BOOTCMD" | grep -oE '^0x[0-9a-fA-F]+')
+	# ⚠ boot.cmd 에 blob.bin 적재가 **두 줄** 이다 (파티션 3 먼저, 없으면
+	#   boot 파티션). 전부 같은 주소여야 한다. `sort -u` 로 추리고,
+	#   두 개 이상 남으면 그것 자체가 오류다 — 예전에는 한 줄만 있다고 보고
+	#   `$(( ))` 에 여러 값을 넣어 "syntax error in expression" 이 났다.
+	UB_ALL=$(grep -oE '0x[0-9a-fA-F]+ blob\.bin' "$BOOTCMD" \
+		| grep -oE '^0x[0-9a-fA-F]+' | sort -u)
+	UB_N=$(printf '%s\n' "$UB_ALL" | grep -c .)
+	if [ "$UB_N" -gt 1 ]; then
+		echo "❌ boot.cmd 의 blob.bin 적재 주소가 서로 다르다:" >&2
+		printf '   %s\n' $UB_ALL >&2
+		echo "   파티션마다 다른 주소에 올리면 어느 쪽이 올라왔는지에 따라" >&2
+		echo "   앱이 엉뚱한 곳을 읽는다. 하나로 맞춰라." >&2
+		exit 1
+	fi
+	UB_ADDR=$UB_ALL
 	if [ -n "$DT_ADDR" ] && [ -n "$UB_ADDR" ]; then
 		if [ "$((DT_ADDR))" -eq "$((UB_ADDR))" ]; then
 			echo "블롭 주소: $DT_ADDR (DT = boot.cmd) ✓"
