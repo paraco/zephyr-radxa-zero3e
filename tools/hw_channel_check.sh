@@ -39,6 +39,19 @@ else
 	fail=1
 fi
 
+# ③-a tio 가 **지금 열려 있는 어댑터 인스턴스**보다 먼저 시작됐는가
+#
+# ⚠ 이것이 2026-11-07 ③ 함정의 핵심이다. 어댑터가 빠졌다 다시 꽂히면 노드
+#   이름(/dev/cu.usbserial-0001)은 같지만 **다른 장치 인스턴스**다. 먼저
+#   시작된 tio 는 **죽은 핸들**을 쥔 채 ps 에는 살아 있다. 노드 존재만
+#   보면 "정상" 으로 보인다 — 실제로 내 첫 도구가 그렇게 속았다.
+if [[ -n "${TIO:-}" ]]; then
+	tio_pid=$(echo "$TIO" | awk '{print $1}')
+	tio_start=$(ps -o lstart= -p "$tio_pid" 2>/dev/null | head -1)
+	say "tio 시작 시각" "$tio_start"
+	say "" "⚠ 어댑터를 다시 꽂았다면 **tio 도 다시 열어야 한다**(ctrl-t q)"
+fi
+
 # ③ 로그 파일이 **최근에** 자랐는가 (채널이 실제로 흐르는가)
 LOG=${HW_LOG:-/tmp/l0-hw.log}
 if [[ -f $LOG ]]; then
@@ -56,6 +69,35 @@ if compgen -G "/dev/cu.usbmodem*" >/dev/null; then
 	say "보드 셸 (USB CDC)" "✅ moru 가 돌고 있다 — 전송·적용 가능"
 else
 	say "보드 셸 (USB CDC)" "⚠ 없다 — 사다리 앱이 돌고 있거나 멈췄다 (전원 재투입)"
+fi
+
+# ⑤ **흐름 시험** — --watch N 을 주면 N 초 안에 로그가 자라는지 본다.
+#
+# 노드 존재·프로세스 존재는 전부 **정적** 확인이고 ③ 함정을 못 잡는다.
+# 실제로 바이트가 흐르는지 보는 것이 유일하게 확실하다. 보드가 부팅 중이거나
+# 사다리 앱이 도는 중이라면 수 초 안에 무언가 나온다.
+WATCH=${WATCH:-0}
+for a in "$@"; do
+	case $a in --watch) WATCH=15 ;; --watch=*) WATCH=${a#*=} ;; esac
+done
+if (( WATCH > 0 )) && [[ -f $LOG ]]; then
+	before=$(wc -c < "$LOG" | tr -d ' ')
+	echo
+	echo "── 흐름 시험 (${WATCH}초) — 보드가 뭔가 찍어야 한다"
+	for ((t = 0; t < WATCH; t++)); do
+		sleep 1
+		now=$(wc -c < "$LOG" | tr -d ' ')
+		if (( now > before )); then
+			say "흐름" "✅ ${t}초에 $((now - before)) 바이트 들어왔다"
+			break
+		fi
+	done
+	now=$(wc -c < "$LOG" | tr -d ' ')
+	if (( now == before )); then
+		say "흐름" "❌ ${WATCH}초 동안 한 바이트도 안 왔다 — **채널이 죽었다**"
+		say "" "어댑터를 다시 꽂고 tio 를 **새로** 열어라"
+		fail=1
+	fi
 fi
 
 echo
