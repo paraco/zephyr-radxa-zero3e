@@ -95,53 +95,6 @@ done
 echo "✓ 기능 집합이 보드와 같다" >&2
 
 # ── 노드별 sum 추출 ────────────────────────────────────────────────────
-python3 - "$LOG" "$TOKEN" <<'PY'
-import re, sys, io
-log, token = sys.argv[1], int(sys.argv[2])
-lines = io.open(log, encoding='utf-8', errors='replace').read().splitlines()
-
-nodes, cur = [], None
-for ln in lines:
-    m = re.match(r'common_debug_cb_eval:\s+(\S+) = \((\w+)\)\s+(\w+)\(', ln)
-    if m:
-        cur = (m.group(1), m.group(3))
-    elif cur and ln.strip().startswith('sum = '):
-        nodes.append((cur[0], cur[1], float(ln.strip()[6:])))
-        cur = None
-
-if not nodes:
-    sys.exit("노드를 하나도 못 읽었다 — eval-callback 출력 형식이 바뀌었나?")
-
-# L6b 가 보는 지점. 하나라도 어긋나면 그 사이를 좁힌다.
-#   docs/l6b-golden-plan.md 의 "범위" 참고.
-want = ['model.input_embed', 'norm-0', 'attn_norm-0',
-        'l_out-0', 'l_out-3', 'l_out-23', 'norm', 'result_norm', 'result_output']
-by_name = {}
-for n, op, s in nodes:
-    by_name.setdefault(n, (op, s))
-
-print("/* tools/l6b_golden.sh 가 만든다 — 손으로 고치지 않는다. */")
-print("/* 출처: upstream/llama.cpp/build-golden (보드와 같은 기능 집합). */")
-print(f"/* 토큰 {token} · 노드 전체 {len(nodes)}개 중 아래 지점을 대조한다. */")
-print()
-print(f"#define L6B_TOKEN {token}")
-print(f"#define L6B_N_NODES {len(nodes)}")
-print()
-print("static const struct { const char *name; const char *op; float sum; } l6b_golden[] = {")
-missing = []
-for w in want:
-    if w in by_name:
-        op, s = by_name[w]
-        print(f'\t{{ "{w}", "{op}", {s:.6f}f }},')
-    else:
-        missing.append(w)
-print("};")
-if missing:
-    print()
-    print("/* ⚠ 골든 로그에 없는 이름: " + ", ".join(missing) + " */")
-    print("/*   qwen35 의 노드 이름이 예상과 다르다. 아래 전체 목록에서 고른다. */")
-    sys.stderr.write("⚠ 못 찾은 이름: " + ", ".join(missing) + "\n")
-    sys.stderr.write("   첫 40개 노드 이름:\n")
-    for n, op, s in nodes[:40]:
-        sys.stderr.write(f"     {n:30s} {op:12s} {s}\n")
-PY
+# 노드별 sum 추출 — 별도 파일이다 (heredoc 안에 파이썬을 넣으면 인용이 중첩돼
+# 깨진다, 실제로 겪었다).
+exec python3 "$HERE/l6b_extract.py" "$LOG" "$TOKEN"

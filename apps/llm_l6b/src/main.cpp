@@ -42,6 +42,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
 
 #include "golden.inc"
 
@@ -70,36 +71,85 @@ extern "C" int malloc_runtime_stats_get(struct sys_memory_stats *stats);
 
 static int fails;
 static int seen;
+static int skipped;
 
 struct cb_state {
 	int matched;
 };
 
-/* 골든 목록에서 이름을 찾는다. 없으면 -1. */
-static int golden_index(const char *name)
+/*
+ * 골든 목록에서 **(이름, 몇 번째)** 로 찾는다. 없으면 -1.
+ *
+ * ⚠ **이름이 유일하지 않다.** 1,017개 노드에 서로 다른 이름이 933개뿐이다.
+ *   `norm-0` 은 3번 나오고 값이 전부 다르다
+ *   (-35.549904 · 184.643585 · -8.183719).
+ *   처음에 이름만으로 찾았더니 2·3번째가 1번째 골든과 비교돼 **보드가
+ *   정확히 맞춘 값이 FAIL 로 나왔다** — 실제로 겪었다. 셋 다 비트 일치였다.
+ *
+ * 그래서 콜백이 같은 이름을 몇 번째로 보는지 센다. 상류 eval-callback 도
+ * 그래프 순서대로 찍으므로 순서가 맞는다.
+ */
+#define SEEN_MAX 64
+static struct { const char *name; int count; } seen_names[SEEN_MAX];
+static int seen_names_n;
+
+static int bump_seen(const char *name)
+{
+	for (int i = 0; i < seen_names_n; i++) {
+		if (strcmp(seen_names[i].name, name) == 0) {
+			return seen_names[i].count++;
+		}
+	}
+	if (seen_names_n < SEEN_MAX) {
+		seen_names[seen_names_n].name = name;	/* 텐서가 이름을 소유한다 */
+		seen_names[seen_names_n].count = 1;
+		seen_names_n++;
+	}
+	return 0;
+}
+
+static int golden_index(const char *name, int nth)
 {
 	for (int i = 0; i < N_GOLDEN; i++) {
-		if (strcmp(l6b_golden[i].name, name) == 0) {
+		if (l6b_golden[i].nth == nth &&
+		    strcmp(l6b_golden[i].name, name) == 0) {
 			return i;
 		}
 	}
 	return -1;
 }
 
+/* 이 이름이 골든에 **하나라도** 있나 — ask 단계에서 쓴다 */
+static bool name_wanted(const char *name)
+{
+	for (int i = 0; i < N_GOLDEN; i++) {
+		if (strcmp(l6b_golden[i].name, name) == 0) {
+			return true;
+		}
+	}
+	return false;
+}
+
 static bool eval_cb(struct ggml_tensor *t, bool ask, void *user_data)
 {
 	struct cb_state *st = (struct cb_state *)user_data;
 
-	const int gi = golden_index(ggml_get_name(t));
+	const char *nm = ggml_get_name(t);
 
 	if (ask) {
 		/*
 		 * ⚠ 여기서 값을 읽으면 안 된다 — 아직 계산 전이다.
-		 *   우리가 보는 노드에만 true 를 돌려준다.
+		 * ⚠ 세는 것도 여기서 하면 안 된다 — ask 와 실제 호출이 1:1 이
+		 *   아닐 수 있다. ask 는 이름만 보고 답한다.
 		 */
-		return gi >= 0;
+		return name_wanted(nm);
 	}
+
+	const int nth = bump_seen(nm);
+	const int gi  = golden_index(nm, nth);
 	if (gi < 0) {
+		/* 골든에 없는 차례다 — 조용히 넘기지 않고 센다 */
+		skipped++;
 		return true;
 	}
 
@@ -140,14 +190,12 @@ static bool eval_cb(struct ggml_tensor *t, bool ask, void *user_data)
 	const int64_t ppb = (int64_t)(fabsf(diff) / scale * 1e9f);
 
 	if (ppb <= TOL_PPB) {
-		printk("      %-20s OK  합 %14.6f (골든 %14.6f) %" PRId64 " ppb · %lld개\n",
-		       l6b_golden[gi].name, (double)fs.sum, (double)want, ppb,
-		       (long long)n);
+		printk("      %-18s#%d OK  합 %14.6f (골든 %14.6f) %" PRId64 " ppb\n",
+		       l6b_golden[gi].name, nth, (double)fs.sum, (double)want, ppb);
 		st->matched++;
 	} else {
-		printk("      %-20s FAIL 합 %14.6f (골든 %14.6f) **%" PRId64 " ppb** · %lld개\n",
-		       l6b_golden[gi].name, (double)fs.sum, (double)want, ppb,
-		       (long long)n);
+		printk("      %-18s#%d FAIL 합 %14.6f (골든 %14.6f) **%" PRId64 " ppb**\n",
+		       l6b_golden[gi].name, nth, (double)fs.sum, (double)want, ppb);
 		fails++;
 	}
 	return true;
@@ -238,6 +286,38 @@ int main(void)
 		 *   정렬·최대크기·장치 메모리 보고다 — 셋 다 우리 포팅이 손댄
 		 *   자리다(ggml_port.c 의 ggml_zephyr_sysconf).
 		 */
+		/*
+		 * [2b] **가장 큰 연속 블록**을 잰다.
+		 *
+		 * ⚠ 왜 필요한가: 남은 자리가 25 MB 인데 13.66 MB 할당이 실패했다.
+		 *   `malloc_runtime_stats_get` 의 `free_bytes` 는 **합계**지, 연속
+		 *   블록이 아니다. 어휘 적재가 248,320개 토큰의 작은 할당을 하고
+		 *   그 중 20 MB 를 돌려주므로(최대 82,667 → 지금 62,839 KiB) 구멍이
+		 *   흩어진다. ggml 은 **연속** 블록을 요구한다.
+		 *
+		 *   "합계가 남았는데 왜 안 되나" 를 추측으로 메우지 않고 잰다.
+		 */
+		printk("  [2b] 가장 큰 연속 블록 ... ");
+		{
+			size_t lo = 0, hi = 128u * 1024 * 1024;
+			while (lo + 65536 < hi) {
+				const size_t mid = lo + (hi - lo) / 2;
+				void *q = malloc(mid);
+				if (q != nullptr) {
+					free(q);
+					lo = mid;
+				} else {
+					hi = mid;
+				}
+			}
+			printk("%zu KiB\n", lo / 1024);
+			struct sys_memory_stats ms;
+			if (malloc_runtime_stats_get(&ms) == 0) {
+				printk("      (합계로 남은 %zu KiB — 차이가 **단편화**다)\n",
+				       ms.free_bytes / 1024);
+			}
+		}
+
 		printk("  [2a] 백엔드 수치\n");
 		printk("      장치 %zu개 · 백엔드 %zu개\n",
 		       ggml_backend_dev_count(), ggml_backend_reg_count());
@@ -320,8 +400,8 @@ int main(void)
 		if (st.matched == N_GOLDEN && fails == 0) {
 			printk("OK — %d/%d 지점 일치\n", st.matched, N_GOLDEN);
 		} else {
-			printk("%d/%d 지점 일치 (본 노드 %d개)\n",
-			       st.matched, N_GOLDEN, seen);
+			printk("%d/%d 지점 일치 (본 노드 %d개 · 골든에 없는 차례 %d개)\n",
+			       st.matched, N_GOLDEN, seen, skipped);
 			if (st.matched < N_GOLDEN) {
 				printk("      ⚠ 못 본 지점이 있다 — 그래프의 노드 이름이\n");
 				printk("        골든(호스트)과 다르다. golden.inc 를 다시 만들어라.\n");

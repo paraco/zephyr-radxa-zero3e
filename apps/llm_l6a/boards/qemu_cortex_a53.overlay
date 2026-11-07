@@ -1,0 +1,3 @@
+/* QEMU 로 빌드할 때만 적용된다 (Zephyr 가 boards/<board>.overlay 를 자동 포함).
+ * 내용은 공용 파일에 있다 — 앱마다 복사하면 갈린다. */
+#include "../../llm_common/qemu_sram256.dtsi"
