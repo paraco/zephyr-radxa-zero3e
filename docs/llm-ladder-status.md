@@ -192,9 +192,52 @@ llama.cpp 가 `ggml_backend_dev_*` 로 쓰므로 **L6 에서 링크가 깨진다
 1. **실기 확인 3건** — L0 부팅 · 128 MB 창 · L2 의 캐시 항목.
    QEMU TCG 는 데이터 캐시를 모형화하지 않아 캐시 위험은 **QEMU 에서 실패할 수
    없다**. 양성 결과에 정보가 없다.
+
+   ⚠ `ota_test.py --apply-try` 라는 플래그는 **없다**(내가 틀리게 적었다).
+   `ota_test.py` 는 **RAM 으로 전송만** 하고, 적용은 **보드 셸 명령**이다.
+
+   **순서 (보드가 평소 `moru` 로 떠 있어야 한다):**
+
+   ```bash
+   # ⓪ 먼저 UART2 를 열어 살아 있는지 확인한다. L0~L3 은 USB 가 없어 출력이
+   #    UART2 로만 나온다(보드 DTS 의 zephyr,console = &uart2). 젬퍼가 빠져
+   #    있으면 "조용한 죽음" 과 구분이 안 된다 — 실제로 그렇게 오진했다.
+   tio /dev/cu.usbserial-0001 -b 115200 -L --log-file /tmp/hw.log --log-strip
    ```
-   python3 tools/ota_test.py --apply-try
+
+   ```bash
+   # ① RAM 으로 전송 + CRC 검증.  ⚠ tio 로 셸 포트를 열어 두면 스크립트가
+   #    포트를 못 연다 — 셸 포트 쪽 tio 는 먼저 닫는다 (ctrl-t q).
+   python3 tools/ota_test.py /tmp/claude-501/q-llm_l0/zephyr/zephyr.bin
    ```
+
+   ```
+   ② 보드 셸(USB CDC)에서:  moru ota apply try
+   ```
+
+   멈춰도 전원 재투입으로 `moru` 로 돌아온다 — `boot.cmd` 가 **뛰기 전에**
+   `zephyr.bin.try` 를 지운다.
+
+### ⚠ 실험 슬롯은 **256 KiB 고정** — 큰 앱은 이 경로로 못 간다
+
+`sdcard/boot.cmd` 의 `fatwrite … 0x40000` 이 고정 크기이고
+`moru ota begin` 도 `MORU_OTA_MAX_SIZE` 에서 거부한다.
+
+| 앱 | 크기 | 실험 슬롯 |
+|---|---|---|
+| `llm_l0` | 100 KiB | ✅ |
+| `llm_l1` | 40 KiB | ✅ |
+| `llm_l2` | 44 KiB | ✅ |
+| `llm_l3` | 40 KiB | ✅ |
+| `llm_l4` | **585 KiB** | ❌ |
+| `llm_l5a` | **592 KiB** | ❌ |
+| `llm_l5b` | **604 KiB** | ❌ |
+
+ggml 이 들어간 L4 이후는 **카드를 직접 마운트해 `zephyr.bin` 을 바꾸는**
+수밖에 없다(원본 백업 필요). 다행히 실기 확인 3건은 전부 들어간다.
+
+슬롯을 키우려면 `boot.cmd` 의 `0x40000` 과 `MORU_OTA_MAX_SIZE` 를 **함께**
+올리고 `ota_addr`(0x50000000)에서 Zephyr 영역까지의 여유를 다시 계산해야 한다.
 2. **호스트 llama.cpp 전진 빌드** — L6·L7 의 골든값(`llama-eval-callback`)에
    필요하다. 샌드박스 분류기가 이 명령을 거부했다.
    ```
