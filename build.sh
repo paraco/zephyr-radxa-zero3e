@@ -77,7 +77,7 @@ ls -la "$BUILD_DIR/zephyr/zephyr.bin" "$BUILD_DIR/zephyr/zephyr.elf" | awk '{pri
 # ── OTA 상한 여유 ──────────────────────────────────────────────────────
 #
 # ⚠ 왜 빌드 때 알려야 하나: sdcard/boot.cmd 의
-#   `fatwrite … zephyr.bin 0x40000` 이 **고정 크기**다. 그래서 OTA 로 올릴
+#   `fatwrite … zephyr.bin <고정크기>` 가 **고정 크기**다. 그래서 OTA 로 올릴
 #   수 있는 이미지에 상한이 있다. 펌웨어의 `moru ota begin` 이 그 상한을
 #   넘는 크기를 거부하므로 조용히 잘리지는 않는다
 #   (apps/moru/src/moru_shell.c 의 MORU_OTA_MAX_SIZE).
@@ -88,13 +88,28 @@ ls -la "$BUILD_DIR/zephyr/zephyr.bin" "$BUILD_DIR/zephyr/zephyr.elf" | awk '{pri
 #
 #   U-Boot 가 크기를 DRAM 헤더에서 읽어 쓰면 상한이 필요 없지만, 이 U-Boot
 #   에는 `setexpr` 가 없어 헤더의 값을 변수로 만들 수 없다. 그래서 고정이다.
-OTA_CAP=$((256 * 1024))
+#
+# ⚠ **상한을 여기에 적지 않는다.** 같은 숫자가 세 군데(boot.cmd · moru_shell.c
+#   · 이 파일)에 있으면 반드시 어긋난다. boot.cmd 의 fatwrite 고정 크기를
+#   **읽어 온다** — 그것이 U-Boot 가 실제로 쓰는 값이고, 유일한 정본이다.
+OTA_CAP=$(grep -oE 'zephyr\.bin 0x[0-9a-fA-F]+' "$HERE/sdcard/boot.cmd" \
+	| grep -oE '0x[0-9a-fA-F]+' | head -1)
+if [ -z "$OTA_CAP" ]; then
+	echo "⚠ sdcard/boot.cmd 에서 OTA 고정 크기를 읽지 못했다 — 보고를 건너뛴다" >&2
+	OTA_CAP=0
+else
+	OTA_CAP=$((OTA_CAP))
+fi
 BIN_SIZE=$(wc -c < "$BUILD_DIR/zephyr/zephyr.bin" | tr -d ' ')
+if [ "$OTA_CAP" -eq 0 ]; then
+	printf "OTA 상한: %d bytes / 상한 미확인\n" "$BIN_SIZE"
+	exit 0
+fi
 PCT=$((BIN_SIZE * 100 / OTA_CAP))
 printf "OTA 상한: %d / %d bytes (%d%%)" "$BIN_SIZE" "$OTA_CAP" "$PCT"
 if [ "$BIN_SIZE" -gt "$OTA_CAP" ]; then
 	printf "  ❌ 넘었다 — OTA 로 올릴 수 없다\n"
-	echo "   boot.cmd 의 0x40000 을 키우고 boot.scr 을 다시 만들어 카드에 쓴다"
+	echo "   boot.cmd 의 fatwrite 고정 크기를 키우고 boot.scr 을 다시 만들어 카드에 쓴다"
 	echo "   (moru_shell.c 의 MORU_OTA_MAX_SIZE 도 같이 맞춘다 — 두 값이 일치해야 한다)"
 elif [ "$PCT" -ge 90 ]; then
 	printf "  ⚠ 여유가 거의 없다\n"

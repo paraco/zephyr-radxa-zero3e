@@ -40,6 +40,30 @@ setenv zentry 0x40001084
 #
 # ⚠ 폴백: 이 블록이 무엇을 실패해도 아래 평소 적재 경로가 그대로 돈다.
 #   fatwrite 가 실패하면 기존 zephyr.bin 이 손상되지 않고 남는다.
+# ── OTA 슬롯 크기 = 8 MiB (2026-11-07, 256 KiB 에서 키웠다) ─────────────
+#
+# 왜 고정 크기인가: 이 U-Boot 에는 **setexpr 가 없다.** 헤더에 적힌 실제
+# 크기(ota_addr+4)를 env 변수로 읽어 올 수단이 없으므로 fatwrite 에 상수를
+# 줘야 한다. itest.l 은 비교만 하고 대입을 못 한다.
+#
+# 왜 8 MiB 인가:
+#   · 사다리 L4~L5b 이미지가 585~604 KiB 다. 256 KiB 로는 **안 들어갔다** —
+#     그래서 그 칸들을 실기에서 돌릴 수 없었다.
+#   · 슬롯을 바꿀 때마다 **카드 리더 작업이 필요하다**(OTA 는 zephyr.bin 만
+#     쓰고 boot.scr 은 못 쓴다). 그래서 한 번에 넉넉히 잡는다.
+#     L6 은 ggml + llama.cpp 모델 그래프라 몇 MB 가 될 수 있다.
+#   · 영역은 0x50000000 + 8 MiB → 0x50800000 에서 끝난다. 모델 창
+#     (0x58000000)까지 112 MiB 여유다.
+#
+# 대가: 이미지가 작아도 매번 8 MiB 를 쓴다(SD 에 몇 초). zephyr.bin 파일도
+# 8 MiB 가 되지만 fatload 가 sram 창(128 MiB)에 올리고 go 가 진입점으로
+# 뛰므로 뒤쪽 쓰레기는 무해하다.
+#
+# ⚠ **moru 의 MORU_OTA_MAX_SIZE 와 반드시 같아야 한다**
+#   (apps/moru/src/moru_shell.c). moru 쪽이 더 크면 이미지가 **조용히 잘려**
+#   부팅이 멈춘다. 그래서 moru ota begin 이 256 KiB 를 넘을 때 이 boot.scr
+#   버전을 요구한다고 경고한다.
+
 setenv ota_addr 0x50000000
 setenv ota_body 0x50000010
 setenv ota_magic 0x4d4f5255
@@ -60,8 +84,8 @@ if itest.l *${ota_addr} -eq ${ota_magic}; then
 		fi
 	fi
 
-	if fatwrite ${devtype} ${devnum}:${distro_bootpart} ${ota_body} zephyr.bin 0x40000; then
-		echo "  applied zephyr.bin (256 KiB fixed)"
+	if fatwrite ${devtype} ${devnum}:${distro_bootpart} ${ota_body} zephyr.bin 0x800000; then
+		echo "  applied zephyr.bin (8 MiB fixed)"
 		# 매직을 지워 다음 부팅에 다시 적용되지 않게 한다
 		mw.l ${ota_addr} 0 1
 		echo "  magic cleared"
@@ -83,8 +107,8 @@ fi
 #       없어 평소 zephyr.bin 으로 돌아온다.
 if itest.l *${ota_addr} -eq ${ota_magic_try}; then
 	echo "=== OTA(try) image in RAM at ${ota_addr} ==="
-	if fatwrite ${devtype} ${devnum}:${distro_bootpart} ${ota_body} zephyr.bin.try 0x40000; then
-		echo "  staged zephyr.bin.try (one-shot, 256 KiB fixed)"
+	if fatwrite ${devtype} ${devnum}:${distro_bootpart} ${ota_body} zephyr.bin.try 0x800000; then
+		echo "  staged zephyr.bin.try (one-shot, 8 MiB fixed)"
 		mw.l ${ota_addr} 0 1
 		echo "  magic cleared"
 	else

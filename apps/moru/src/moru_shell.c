@@ -245,8 +245,32 @@ static int cmd_moru_reboot(const struct shell *sh, size_t argc, char **argv)
  *   문맥이므로 적법하다 — moru_stage.c 가 바로 그것을 어겨 삭제됐다.
  */
 #define MORU_OTA_PHYS		0x50000000UL
-#define MORU_OTA_MAX_SIZE	(256U * 1024U)	/* boot.scr 이 쓰는 고정 크기 */
-#define MORU_OTA_MAP_SIZE	(MORU_OTA_HDR_SIZE + MORU_OTA_MAX_SIZE)
+
+/*
+ * 슬롯 크기 = **8 MiB** (2026-11-07, 256 KiB 에서 키웠다).
+ *
+ * ⚠ **이 값은 sdcard/boot.cmd 의 `fatwrite … 0x800000` 과 반드시 같아야
+ *   한다.** 여기가 더 크면 U-Boot 가 앞쪽만 쓰고 이미지가 **조용히 잘려**
+ *   부팅이 멈춘다. 그래서 아래 `moru ota begin` 이 256 KiB 를 넘는 요청에
+ *   대해 "카드의 boot.scr 이 8 MiB 판인가" 를 경고한다.
+ *
+ * 왜 키웠나: 사다리 L4~L5b 이미지가 585~604 KiB 라 256 KiB 로는 실기에서
+ * 돌릴 수 없었다. 슬롯을 바꿀 때마다 카드 리더 작업이 필요하므로(OTA 는
+ * zephyr.bin 만 쓰고 boot.scr 은 못 쓴다) 한 번에 넉넉히 잡았다.
+ *
+ * 영역은 0x50000000 + 8 MiB → 0x50800000. 모델 창(0x58000000)까지 112 MiB
+ * 여유다. TRM Part1 Table 1-1 로 이 구간에 주변장치 아페처가 없음을 확인했다
+ * (docs/trm-grounding.md §5-a).
+ */
+#define MORU_OTA_MAX_SIZE	(8U * 1024U * 1024U)
+
+/*
+ * device_map 은 CONFIG_MMU_PAGE_SIZE(4 KiB)로 올림한다. 2 MiB 배수로 맞춰
+ * 2 MiB 블록만 쓰게 한다 — 그러지 않으면 끝단에 L3 테이블이 하나 더 생겨
+ * MAX_XLAT_TABLES 를 더 먹는다.
+ */
+#define MORU_OTA_MAP_SIZE	ROUND_UP(MORU_OTA_HDR_SIZE + MORU_OTA_MAX_SIZE, \
+					 2U * 1024U * 1024U)
 
 /*
  * ⚠ 매직을 두 개로 나눈다.
@@ -668,10 +692,30 @@ static int cmd_moru_ota_begin(const struct shell *sh, size_t argc, char **argv)
 	if (size > MORU_OTA_MAX_SIZE) {
 		shell_error(sh, "이미지가 OTA 상한을 넘는다 — %lu > %u",
 			    size, MORU_OTA_MAX_SIZE);
-		shell_print(sh, "  이 상한은 boot.cmd 의 fatwrite 고정 크기(0x40000)다.");
+		shell_print(sh, "  이 상한은 boot.cmd 의 fatwrite 고정 크기(0x800000)다.");
 		shell_print(sh, "  올리려면 boot.cmd 를 고쳐 boot.scr 을 다시 만들고");
 		shell_print(sh, "  **카드에 직접** 써야 한다. MORU_OTA_MAX_SIZE 도 같이 맞춘다.");
 		return -EINVAL;
+	}
+
+	/*
+	 * ⚠ 조용한 잘림을 막는 유일한 방어다.
+	 *
+	 * moru 의 상한(8 MiB)과 카드 boot.scr 의 고정 크기는 **서로 다른 파일**에
+	 * 있고, boot.scr 은 OTA 로 바꿀 수 없다(카드 리더가 필요하다). 그래서
+	 * 옛 256 KiB boot.scr 이 꽂힌 카드에 큰 이미지를 올리면 U-Boot 가 앞쪽
+	 * 256 KiB 만 쓰고 **조용히 잘린 이미지**가 부팅한다 — 멈춤으로 나타난다.
+	 *
+	 * 여기서 막을 방법은 없다(moru 는 카드를 읽지 못한다). 대신 그 경우를
+	 * 사람이 알아보게 하고 복구 경로를 알려 준다.
+	 */
+	if (size > (256U * 1024U)) {
+		shell_warn(sh, "⚠ 256 KiB 를 넘는다 — 카드의 boot.scr 이 "
+			       "**8 MiB 판**이어야 한다.");
+		shell_print(sh, "  옛 256 KiB 판이면 U-Boot 가 앞쪽만 쓰고 이미지가");
+		shell_print(sh, "  조용히 잘려 멈춘다. moru 는 카드를 읽지 못해 확인할 수 없다.");
+		shell_print(sh, "  → 확신이 없으면 **moru ota apply try** 로 올려라.");
+		shell_print(sh, "     멈춰도 전원 재투입으로 복구된다(카드를 건드리지 않는다).");
 	}
 	if (size > (MORU_OTA_MAX_SIZE / 10U) * 9U) {
 		shell_warn(sh, "상한의 %lu%% 다 — 여유 %lu B. 곧 카드 작업이 필요하다",

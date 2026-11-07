@@ -280,26 +280,51 @@ kernel uptime → 53210 ms
    멈춰도 전원 재투입으로 `moru` 로 돌아온다 — `boot.cmd` 가 **뛰기 전에**
    `zephyr.bin.try` 를 지운다.
 
-### ⚠ 실험 슬롯은 **256 KiB 고정** — 큰 앱은 이 경로로 못 간다
+### ✅ OTA 슬롯을 **8 MiB** 로 키웠다 (2026-11-07) — 사다리 전체가 들어간다
 
-`sdcard/boot.cmd` 의 `fatwrite … 0x40000` 이 고정 크기이고
-`moru ota begin` 도 `MORU_OTA_MAX_SIZE` 에서 거부한다.
+전에는 `256 KiB` 고정이라 ggml 이 들어간 L4 이후를 실기에서 돌릴 수 없었다.
 
-| 앱 | 크기 | 실험 슬롯 |
+| 앱 | 크기 | 8 MiB 슬롯 |
 |---|---|---|
-| `llm_l0` | 100 KiB | ✅ |
-| `llm_l1` | 40 KiB | ✅ |
-| `llm_l2` | 44 KiB | ✅ |
-| `llm_l3` | 40 KiB | ✅ |
-| `llm_l4` | **585 KiB** | ❌ |
-| `llm_l5a` | **592 KiB** | ❌ |
-| `llm_l5b` | **604 KiB** | ❌ |
+| `llm_l0` | 101 KiB | ✅ 여유 7.9 MiB |
+| `llm_l1`·`llm_l2`·`llm_l3` | 40~44 KiB | ✅ 여유 8.0 MiB |
+| `llm_l4` | 585 KiB | ✅ 여유 7.4 MiB |
+| `llm_l5a` | 593 KiB | ✅ 여유 7.4 MiB |
+| `llm_l5b` | 605 KiB | ✅ 여유 7.4 MiB |
 
-ggml 이 들어간 L4 이후는 **카드를 직접 마운트해 `zephyr.bin` 을 바꾸는**
-수밖에 없다(원본 백업 필요). 다행히 실기 확인 3건은 전부 들어간다.
+**왜 8 MiB 인가:** 슬롯을 바꿀 때마다 **카드 리더 작업이 필요하다**(OTA 는
+`zephyr.bin` 만 쓰고 `boot.scr` 은 못 쓴다). 그래서 한 번에 넉넉히 잡았다 —
+L6 은 ggml + llama.cpp 모델 그래프라 몇 MB 가 될 수 있다. 영역은
+`0x50000000 + 8 MiB → 0x50800000` 이고 모델 창(`0x58000000`)까지 112 MiB
+여유다. TRM Table 1-1 로 이 구간에 아페처가 없음을 확인했다.
 
-슬롯을 키우려면 `boot.cmd` 의 `0x40000` 과 `MORU_OTA_MAX_SIZE` 를 **함께**
-올리고 `ota_addr`(0x50000000)에서 Zephyr 영역까지의 여유를 다시 계산해야 한다.
+**왜 고정 크기인가:** 이 U-Boot 에 **`setexpr` 가 없다.** 헤더에 적힌 실제
+크기를 env 변수로 읽을 수단이 없어 `fatwrite` 에 상수를 줘야 한다.
+대가는 이미지가 작아도 매번 8 MiB 를 쓰는 것(SD 에 몇 초)이다.
+
+#### ⚠ 같은 숫자가 세 군데 있었다 — 단일 출처로 묶었다
+
+`boot.cmd`(U-Boot) · `moru_shell.c`(펌웨어 가드) · `build.sh`(빌드 보고).
+어긋나면 **이미지가 조용히 잘려 부팅이 멈춘다.**
+
+- `build.sh` 는 이제 **`boot.cmd` 에서 읽어 온다** — 하드코딩을 없앴다.
+- `moru_shell.c` 는 값을 가질 수밖에 없다(펌웨어는 카드를 읽지 못한다).
+  그래서 **256 KiB 를 넘는 요청에 경고**한다 — "카드의 `boot.scr` 이 8 MiB
+  판인가, 확신이 없으면 `moru ota apply try` 로 올려라"(멈춰도 전원
+  재투입으로 복구된다).
+
+#### 카드에 한 번 써야 한다 (닭과 알)
+
+`boot.scr` 은 OTA 로 바꿀 수 없다. **한 번만** 카드 리더로 넣으면 그 뒤로는
+L4~L5b 를 포함해 전부 OTA 로 간다. `zephyr.bin`(새 moru)도 같이 넣으면
+창이 어긋나는 구간이 없다.
+
+```bash
+diskutil list | grep -i "FAT\|boot"       # 카드 번호 찾기
+cd ~/Projects/PiZZa/rk3566/sdcard && \
+  sudo mcopy -i /dev/rdiskNs2 -o boot.scr zephyr.bin ::/ && \
+  sudo mdir -i /dev/rdiskNs2 ::/ && diskutil eject /dev/diskN
+```
 2. **호스트 llama.cpp 전진 빌드** — L6·L7 의 골든값(`llama-eval-callback`)에
    필요하다. 샌드박스 분류기가 이 명령을 거부했다.
    ```
