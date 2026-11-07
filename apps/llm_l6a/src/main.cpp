@@ -316,6 +316,35 @@ int main(void)
 			printk("      ⚠ Qwen3.5 는 248,320 개여야 한다\n");
 			bad("어휘 수");
 		}
+
+		/*
+		 * [6] 로더를 해제하면 얼마가 돌아오나.
+		 *
+		 * ⚠ **L6b 의 자리가 여기서 나온다.** 측정으로 알아낸 것:
+		 *   메타데이터가 ~20 MB 를 쓰는데 그것은 GGUF KV 안의 어휘 배열
+		 *   (248,320개 토큰 문자열)이고, `llama_vocab` 이 그것을 자기 map
+		 *   둘에 **복사**한다. 즉 적재가 끝나면 **두 사본 중 하나는 쓸모가
+		 *   없다.** 상류 llama.cpp 도 모델 적재 뒤 로더를 버린다.
+		 *
+		 * ⚠ 순서가 중요하다 — `vocab` 이 적재 중에만 `ml` 을 본다
+		 *   (`llama_vocab::load(ml, kv)`). 적재가 끝난 뒤에는 자기 사본만
+		 *   쓰므로 로더를 버려도 된다. **거꾸로 하면 안 된다.**
+		 */
+		printk("  [6] 로더 해제 ... ");
+		delete ml;
+		ml = nullptr;
+		printk("OK\n");
+		heap("로더 해제 뒤");
+
+		/* 해제가 정말 먹었는지 — 어휘가 여전히 멀쩡한가 */
+		if (vocab->n_tokens() != 248320) {
+			printk("      FAIL — 로더를 버린 뒤 어휘가 깨졌다 (%u개)\n",
+			       (unsigned)vocab->n_tokens());
+			bad("로더 해제 뒤 어휘");
+		} else {
+			printk("      어휘 %u개 그대로 · EOS %d — 사본이 독립이다\n",
+			       (unsigned)vocab->n_tokens(), (int)vocab->token_eos());
+		}
 	}
 
 done:
