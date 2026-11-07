@@ -22,3 +22,238 @@ L6A src/llama-impl.cpp
 L6A src/llama-vocab.cpp
 L6A src/unicode.cpp
 L6A src/unicode-data.cpp
+
+# ── L6b — 모델 그래프 전체 ───────────────────────────────────────────────
+#
+# ⚠ **왜 전부인가.** `llama-model.cpp:351` 의 공장 switch 가
+#   `new llama_model_qwen35(params)` 꼴로 **175개 모델 클래스의 생성자를
+#   전부 참조**한다. 하나만 쓰더라도 링커는 전부를 요구한다
+#   (`-ffunction-sections -Wl,--gc-sections` 는 **참조된** 심볼을 못 버린다).
+#
+#   176개를 스텁으로 채우는 길도 있었으나, 클래스마다 vtable 과 헤더 정의가
+#   얽혀 있어 상류와 어긋날 위험이 크다. OTA 상한에 여유가 7.2 MB 있으므로
+#   **먼저 재 본다** — 들어가면 그대로 쓴다.
+#
+# ⚠ `llama_split_zephyr.cpp` 는 L6b 에서 **쓰지 않는다.** `src/llama.cpp` 가
+#   들어오면 `llama_split_path`·`llama_split_prefix` 가 중복 정의된다.
+#   `llm_llama.cmake` 가 묶음 이름으로 가린다.
+#
+# ⚠ `src/llama.cpp` 는 cmake 가 만드는 `llama-version.h` 를 요구한다.
+#   `apps/llm_common/llama-version.h` 에 그 자리값을 넣어 두었다.
+#
+# ⚠ `src/llama-quant.cpp` 는 **없다.** 모델 **양자화기**이고 `std::mutex` ·
+#   `std::thread` 를 쓴다 — 이 툴체인의 libstdc++ 에는 둘 다 없다
+#   (`_GLIBCXX_HAS_GTHREADS` 미정의, `zephyr_future.h` 머리말 참고).
+#   `llama_model_quantize` · `llama_model_quantize_default_params` 는 그 파일
+#   안에서만 정의·사용되고 다른 소스가 참조하지 않으므로 **스텁도 필요 없다**.
+#   보드에서 모델을 양자화할 일은 없다(쓸 파일 시스템도 없다).
+#   ⚠ 혹시 나중에 undefined reference 가 나면 그때 스텁을 만든다 —
+#     미리 만들면 "쓰이지 않는 코드" 가 늘기만 한다.
+L6B src/llama-adapter.cpp
+L6B src/llama-arch.cpp
+L6B src/llama-batch.cpp
+L6B src/llama-chat.cpp
+L6B src/llama-context.cpp
+L6B src/llama-cparams.cpp
+L6B src/llama-grammar.cpp
+L6B src/llama-graph.cpp
+L6B src/llama-hparams.cpp
+L6B src/llama-impl.cpp
+L6B src/llama-io.cpp
+L6B src/llama-kv-cache-dsa-iswa.cpp
+L6B src/llama-kv-cache-dsa.cpp
+L6B src/llama-kv-cache-dsv4.cpp
+L6B src/llama-kv-cache-iswa.cpp
+L6B src/llama-kv-cache-msa.cpp
+L6B src/llama-kv-cache.cpp
+L6B src/llama-memory-hybrid-idx.cpp
+L6B src/llama-memory-hybrid-iswa.cpp
+L6B src/llama-memory-hybrid.cpp
+L6B src/llama-memory-recurrent.cpp
+L6B src/llama-memory.cpp
+L6B src/llama-model-loader.cpp
+L6B src/llama-model-saver.cpp
+L6B src/llama-model.cpp
+L6B src/llama-moe-cache.cpp
+L6B src/llama-sampler.cpp
+L6B src/llama-vocab.cpp
+L6B src/llama.cpp
+L6B src/unicode-data.cpp
+L6B src/unicode.cpp
+
+# models/ — 175개. 위 '왜 전부인가' 참고.
+L6B src/models/afmoe.cpp
+L6B src/models/apertus.cpp
+L6B src/models/arcee.cpp
+L6B src/models/arctic.cpp
+L6B src/models/arwkv7.cpp
+L6B src/models/baichuan.cpp
+L6B src/models/bailingmoe.cpp
+L6B src/models/bailingmoe2.cpp
+L6B src/models/bailingmoe3.cpp
+L6B src/models/beam.cpp
+L6B src/models/bert.cpp
+L6B src/models/bitnet.cpp
+L6B src/models/bloom.cpp
+L6B src/models/chameleon.cpp
+L6B src/models/chatglm.cpp
+L6B src/models/clef.cpp
+L6B src/models/clip.cpp
+L6B src/models/clover-moe.cpp
+L6B src/models/codeshell.cpp
+L6B src/models/cogvlm.cpp
+L6B src/models/cohere2.cpp
+L6B src/models/cohere2moe.cpp
+L6B src/models/command-r.cpp
+L6B src/models/dbrx.cpp
+L6B src/models/deci.cpp
+L6B src/models/deepseek.cpp
+L6B src/models/deepseek2.cpp
+L6B src/models/deepseek2ocr.cpp
+L6B src/models/deepseek32.cpp
+L6B src/models/deepseek4.cpp
+L6B src/models/deepseek41.cpp
+L6B src/models/delta-net-base.cpp
+L6B src/models/dflash.cpp
+L6B src/models/dots1.cpp
+L6B src/models/dots3note.cpp
+L6B src/models/dream.cpp
+L6B src/models/eagle3.cpp
+L6B src/models/ernie4-5-moe.cpp
+L6B src/models/ernie4-5.cpp
+L6B src/models/eurobert.cpp
+L6B src/models/exaone-moe.cpp
+L6B src/models/exaone.cpp
+L6B src/models/exaone4.cpp
+L6B src/models/falcon-h1.cpp
+L6B src/models/falcon.cpp
+L6B src/models/flint.cpp
+L6B src/models/gemma-embedding.cpp
+L6B src/models/gemma-embedding2.cpp
+L6B src/models/gemma.cpp
+L6B src/models/gemma2.cpp
+L6B src/models/gemma3.cpp
+L6B src/models/gemma3n.cpp
+L6B src/models/gemma4-assistant.cpp
+L6B src/models/gemma4.cpp
+L6B src/models/glm-dsa.cpp
+L6B src/models/glm4-moe.cpp
+L6B src/models/glm4.cpp
+L6B src/models/glm5-next.cpp
+L6B src/models/gpt2.cpp
+L6B src/models/gptneox.cpp
+L6B src/models/granite-hybrid.cpp
+L6B src/models/granite-moe.cpp
+L6B src/models/granite-swa.cpp
+L6B src/models/granite-switch.cpp
+L6B src/models/granite.cpp
+L6B src/models/grok.cpp
+L6B src/models/grovemoe.cpp
+L6B src/models/hrm-text.cpp
+L6B src/models/hunyuan-dense.cpp
+L6B src/models/hunyuan-moe.cpp
+L6B src/models/hunyuan-vl.cpp
+L6B src/models/hy-v3.cpp
+L6B src/models/hy-v4.cpp
+L6B src/models/internlm2.cpp
+L6B src/models/jais.cpp
+L6B src/models/jais2.cpp
+L6B src/models/jamba.cpp
+L6B src/models/jina-bert-v2.cpp
+L6B src/models/jina-bert-v3.cpp
+L6B src/models/k2-horizon.cpp
+L6B src/models/kimi-k3.cpp
+L6B src/models/kimi-linear.cpp
+L6B src/models/kolibri1.cpp
+L6B src/models/laguna.cpp
+L6B src/models/lfm-base.cpp
+L6B src/models/lfm2.cpp
+L6B src/models/lfm2moe.cpp
+L6B src/models/lfm3.cpp
+L6B src/models/limite.cpp
+L6B src/models/llada-moe.cpp
+L6B src/models/llada.cpp
+L6B src/models/llama-embed.cpp
+L6B src/models/llama.cpp
+L6B src/models/llama4.cpp
+L6B src/models/maincoder.cpp
+L6B src/models/maion-coder.cpp
+L6B src/models/mamba-base.cpp
+L6B src/models/mamba.cpp
+L6B src/models/mamba2.cpp
+L6B src/models/maple.cpp
+L6B src/models/mellum.cpp
+L6B src/models/metis16.cpp
+L6B src/models/mimo2.cpp
+L6B src/models/minicpm.cpp
+L6B src/models/minicpm3.cpp
+L6B src/models/minimax-01.cpp
+L6B src/models/minimax-m2.cpp
+L6B src/models/minimax-m3.cpp
+L6B src/models/mistral-large4.cpp
+L6B src/models/mistral3.cpp
+L6B src/models/mistral4.cpp
+L6B src/models/modern-bert.cpp
+L6B src/models/mpt.cpp
+L6B src/models/muse-glimmer.cpp
+L6B src/models/muse-spark.cpp
+L6B src/models/nanbeige.cpp
+L6B src/models/nemotron-h-moe.cpp
+L6B src/models/nemotron-h.cpp
+L6B src/models/nemotron.cpp
+L6B src/models/neo-bert.cpp
+L6B src/models/nomic-bert-moe.cpp
+L6B src/models/nomic-bert.cpp
+L6B src/models/olmo.cpp
+L6B src/models/olmo2.cpp
+L6B src/models/olmoe.cpp
+L6B src/models/openai-moe.cpp
+L6B src/models/openelm.cpp
+L6B src/models/orion.cpp
+L6B src/models/paddleocr.cpp
+L6B src/models/pangu-embed.cpp
+L6B src/models/phi2.cpp
+L6B src/models/phi3.cpp
+L6B src/models/phimoe.cpp
+L6B src/models/plamo.cpp
+L6B src/models/plamo2.cpp
+L6B src/models/plamo3.cpp
+L6B src/models/plm.cpp
+L6B src/models/pockettts.cpp
+L6B src/models/qwen.cpp
+L6B src/models/qwen2.cpp
+L6B src/models/qwen2moe.cpp
+L6B src/models/qwen2vl.cpp
+L6B src/models/qwen3.cpp
+L6B src/models/qwen35.cpp
+L6B src/models/qwen35moe.cpp
+L6B src/models/qwen3moe.cpp
+L6B src/models/qwen3next.cpp
+L6B src/models/qwen3tts.cpp
+L6B src/models/qwen3vl.cpp
+L6B src/models/qwen3vlmoe.cpp
+L6B src/models/qwen4exp.cpp
+L6B src/models/refact.cpp
+L6B src/models/ricursive.cpp
+L6B src/models/rnd1.cpp
+L6B src/models/rwkv6-base.cpp
+L6B src/models/rwkv6.cpp
+L6B src/models/rwkv6qwen2.cpp
+L6B src/models/rwkv7-base.cpp
+L6B src/models/rwkv7.cpp
+L6B src/models/seed-oss.cpp
+L6B src/models/sensenova-u1.cpp
+L6B src/models/smallthinker.cpp
+L6B src/models/smollm3.cpp
+L6B src/models/spark2-5.cpp
+L6B src/models/stablelm.cpp
+L6B src/models/starcoder.cpp
+L6B src/models/starcoder2.cpp
+L6B src/models/step35.cpp
+L6B src/models/t5.cpp
+L6B src/models/t5encoder.cpp
+L6B src/models/talkie.cpp
+L6B src/models/vllm-decision2.cpp
+L6B src/models/wavtokenizer-dec.cpp
+L6B src/models/xing4-0.cpp
+L6B src/models/xverse.cpp

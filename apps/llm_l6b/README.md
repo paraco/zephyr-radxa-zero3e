@@ -1,0 +1,67 @@
+# L6b — 한 토큰 순전파
+
+L6 의 둘째 칸. 호스트 골든값과 층별 텐서를 대조한다.
+토크나이저·샘플러는 쓰지 않고 **토큰 id 를 고정**한다(5834, `'hi'`).
+
+골든값: `src/golden.inc` — `tools/l6b_golden.sh` 가 만든다.
+출처와 그 함정은 `docs/l6b-golden-plan.md` 에 있다.
+
+## ✅ 1단계 통과 — 링크·크기 (2026-11-07)
+
+**`llama.cpp/src` 전체가 Zephyr 에서 링크된다.**
+
+| | |
+|---|---|
+| 소스 | `src/*.cpp` **31개** + `src/models/*.cpp` **175개** = **206개** + 대체판 3개 |
+| 이미지 | **3,342,920 bytes = OTA 상한 8 MiB 의 39%** (여유 5,045,688) |
+| RAM | 126,292 KB / 128 MB = **96.35%** (아레나 115 MiB) |
+
+### 왜 206개 전부인가
+
+`llama-model.cpp:351` 의 공장 switch 가 `new llama_model_qwen35(params)` 꼴로
+**175개 모델 클래스의 생성자를 전부 참조**한다. qwen35 하나만 쓰더라도
+링커는 전부를 요구한다 — `-ffunction-sections -Wl,--gc-sections` 는
+**참조된** 심볼을 버리지 못한다.
+
+176개를 스텁으로 채우는 길도 있었으나 클래스마다 vtable 과 헤더 정의가
+얽혀 상류와 어긋날 위험이 컸다. **재 보니 39% 였다** — 그래서 전부 넣는다.
+
+### 빠진 것 하나 — `src/llama-quant.cpp`
+
+모델 **양자화기**이고 `std::mutex` · `std::thread` 를 쓴다. 이 툴체인의
+libstdc++ 에는 둘 다 없다(`_GLIBCXX_HAS_GTHREADS` 미정의 —
+`apps/llm_common/zephyr_future.h` 머리말의 그 사정이다).
+
+`llama_model_quantize` · `llama_model_quantize_default_params` 는 그 파일
+안에서만 정의·사용되고 다른 소스가 참조하지 않으므로 **스텁도 필요 없다.**
+보드에서 모델을 양자화할 일은 없다 — 쓸 파일 시스템도 없다.
+
+### 아레나가 L6a 와 다르다
+
+이미지가 L6a(1,150,872)보다 **2.2 MB 크므로** 그만큼 아레나를 줄였다:
+
+```
+창 131,072 − 정적 비-아레나 8,532 − 여유 4,096 = 118,444 KiB → 115 MiB
+```
+
+줄이지 않으면 RAM 98.70% 가 되어 스택이 자랄 자리가 없다. 앱마다 손으로
+맞추는 것이 번거롭지만 Zephyr 는 "남은 만큼 아레나" 를 표현할 수단을 주지
+않는다. `build.sh` 가 찍는 Memory region 사용률을 보고 정한다.
+
+## 다음 — 2단계: 실제 순전파
+
+`llama_model_load_from_file` 은 쓸 수 없다(경로를 받는다). 대신
+`apps/llm_l6a` 가 입증한 길을 쓴다:
+
+1. `fmemopen(블롭)` → `llama_model_loader(…, file, LLAMA_LOAD_MODE_MMAP, …)`
+2. `load_hparams`
+3. **`load_tensors`** — 모델이 **자기** ggml 문맥에 텐서를 다시 만든다
+4. 어휘 적재
+5. **그 다음에** 로더 해제 (순서를 바꾸면 텐서가 죽는다 — `apps/llm_l6a/README.md`)
+6. `llama_context` 생성 (`n_ctx` 는 작게 — 자리가 52.8 MB 뿐이다)
+7. 토큰 5834 하나를 넣고 `llama_decode`
+8. `golden.inc` 의 9개 지점과 대조
+
+⚠ 7번의 층별 값을 보려면 상류의 콜백(`common_debug_cb_eval` 에 해당하는
+`llama_context` 의 `cb_eval`)을 걸어야 한다. `common/` 은 안 넣었으므로
+콜백을 직접 쓴다 — 그 안에서 `llm_fullsum_of()` 로 합을 낸다.

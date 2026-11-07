@@ -46,9 +46,18 @@ function(llm_add_llama GROUP)
 	list(APPEND _srcs
 		"${_common}/llama_mmap_zephyr.cpp"
 		"${_common}/ggml_backend_reg_zephyr.cpp"
-		# ⚠ 상류가 src/llama.cpp 에 정의한 두 함수를 대신 채운다. 그 파일을
-		#   넣으면 src/models/*.cpp 175개가 따라온다 (파일 머리말 참고).
-		"${_common}/llama_split_zephyr.cpp")
+		)
+	# ⚠ `llama_split_zephyr.cpp` 는 **src/llama.cpp 가 없을 때만** 넣는다.
+	#   상류가 llama_split_path·llama_split_prefix 를 그 파일에 정의하므로,
+	#   둘 다 링크하면 중복 정의로 깨진다. 묶음으로 가린다 — L6A 는 대신
+	#   채우고(그 파일을 넣으면 models/*.cpp 175개가 따라온다), L6B 는
+	#   상류 정의를 쓴다.
+	if(NOT _srcs MATCHES "/src/llama\\.cpp")
+		list(APPEND _srcs "${_common}/llama_split_zephyr.cpp")
+		message(STATUS "  llama_split_zephyr.cpp 로 대신 채운다 (src/llama.cpp 없음)")
+	else()
+		message(STATUS "  src/llama.cpp 가 있다 — llama_split_zephyr.cpp 는 넣지 않는다")
+	endif()
 
 	message(STATUS "llama 소스 ${_n}개(${GROUP}) + 대체판 3개")
 

@@ -2,7 +2,7 @@
 #
 # l6b_golden.sh — L6b 의 호스트 골든값을 뽑는다.
 #
-#   ./tools/l6b_golden.sh [모델.gguf] > apps/llm_l6b/golden.inc
+#   ./tools/l6b_golden.sh [모델.gguf] > apps/llm_l6b/src/golden.inc
 #
 # ── 왜 별도 빌드인가 ────────────────────────────────────────────────────
 #

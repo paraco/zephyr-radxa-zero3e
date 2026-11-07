@@ -116,7 +116,7 @@ CPU : NEON = 1 | ARM_FMA = 1 | FP16_VA = 1 | DOTPROD = 1 |
 | `FP16_VECTOR_ARITHMETIC` 호스트 OFF · 보드 ON | ggml 이 **10곳**에서 이 매크로로 갈린다 (`ggml/src` 전수 조사) | `-DGGML_CPU_ARM_ARCH=armv8.2-a+dotprod+fp16` |
 | `LLAMAFILE` 호스트 ON · 보드 OFF | `ggml-cpu.c:1310,1395` 의 matmul 경로를 바꾼다 | `-DGGML_LLAMAFILE=OFF` |
 
-### 뽑은 값 — `apps/llm_l6b/golden.inc`
+### 뽑은 값 — `apps/llm_l6b/src/golden.inc`
 
 토큰 **5834** (`llama-tokenize -p "hi" --ids`). 노드 전체 **1,017개** 중
 대조 지점 9개:
