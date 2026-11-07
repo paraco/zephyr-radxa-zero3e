@@ -37,15 +37,18 @@ static inline uint32_t pattern_word(uint32_t i)
 
 /*
  * 골든 CRC32 — 호스트에서 tools/l1_golden.py 로 계산한 값.
- *   $ python3 tools/l1_golden.py --size 640M   →  0xa8b4f938
+ *
+ *   $ python3 tools/l1_golden.py --size 512M   →  0xc9806e9c
+ *
  * 영역 크기가 DT 에 고정돼 있으므로 이 값은 이 시험의 상수다.
- * ⚠ app.overlay 의 reg 크기나 pattern_word() 를 바꾸면 다시 만들어야 한다.
+ * ⚠ apps/llm_common/model_blob.overlay 의 reg 크기나 pattern_word() 를
+ *   바꾸면 다시 만들어야 한다. 아래 BUILD_ASSERT 가 먼저 막는다.
  */
 #ifndef L1_GOLDEN_CRC32
-#define L1_GOLDEN_CRC32 0xa8b4f938u
+#define L1_GOLDEN_CRC32 0xc9806e9cu
 #endif
-BUILD_ASSERT(BLOB_SIZE == 640u * 1024u * 1024u,
-	     "골든 CRC32 는 640 MiB 전용이다 — 크기를 바꿨으면 tools/l1_golden.py 로 다시 만들어라");
+BUILD_ASSERT(BLOB_SIZE == 512u * 1024u * 1024u,
+	     "골든 CRC32 는 512 MiB 전용이다 — 크기를 바꿨으면 tools/l1_golden.py 로 다시 만들어라");
 
 int main(void)
 {
@@ -61,7 +64,7 @@ int main(void)
 	/*
 	 * [1] 별칭 사전 점검.
 	 * 2 MB 마다 그 주소에서만 나오는 값을 넣고 전부 되읽는다. 창이 실제
-	 * RAM 보다 크면 뒤쪽 쓰기가 앞쪽을 덮어 여기서 걸린다 — 640 MB 를
+	 * RAM 보다 크면 뒤쪽 쓰기가 앞쪽을 덮어 여기서 걸린다 — 512 MB 를
 	 * 다 쓰기 전에, 싸게.
 	 */
 	printk("  [1] 별칭 점검 (2 MiB 보폭 %u 지점) ... ", (unsigned)(BLOB_SIZE / ALIAS_STRIDE));

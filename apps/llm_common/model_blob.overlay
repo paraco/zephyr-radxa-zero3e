@@ -1,0 +1,55 @@
+/*
+ * 모델 가중치 창 — **사다리 전체가 이 파일 하나를 쓴다.**
+ *
+ * 여섯 앱에 같은 내용을 복사해 두었다가 주소를 고칠 때 갈릴 위험이 있었다.
+ * 각 앱의 CMakeLists 가 EXTRA_DTC_OVERLAY_FILE 로 이것을 끌어 쓴다.
+ *
+ * ── 실기 DRAM 배치 (2026-11-07 정정) ────────────────────────────────
+ *
+ * ⚠ **실기 DRAM 은 0x80000000 에서 끝난다.** 라이브 DT 의 memory 노드가
+ *   `reg = <0x0 0x00200000 0x0 0x7fe00000>` 이다 (보드 DTS 주석에 기록됨).
+ *   QEMU 는 `-m 2G` + virt 머신이라 0x40000000~0xC0000000 이고 **다르다.**
+ *   그래서 처음 쓴 `0x60000000 + 640 MiB = 0x88000000` 은 QEMU 에서만
+ *   통과하고 실기에서는 DRAM 끝을 128 MiB 넘어갔다.
+ *   (L1 의 별칭 점검이 바로 이것을 잡으려고 넣은 검사다.)
+ *
+ *   DRAM      0x00200000 .. 0x80000000   2046 MiB
+ *   sram0     0x40000000 .. 0x48000000    128 MiB  (Zephyr 창)
+ *   OTA 적재  0x50000000 .. 0x50040000    256 KiB  (sdcard/boot.cmd 의 ota_addr)
+ *   **모델 창 0x58000000 .. 0x78000000    512 MiB**
+ *   상단 여유 0x78000000 .. 0x80000000    128 MiB  (U-Boot 가 재배치되는 곳)
+ *
+ *   모델 실측 532,517,120 B = 507.85 MiB → 여유 4.15 MiB. **빡빡하다.**
+ *   더 큰 양자화를 쓰려면 OTA 적재 주소를 상단(예: 0x7C000000)으로 옮기고
+ *   창을 0x48000000 부터 잡아야 한다 — boot.cmd 와 moru 를 함께 고치는 일이다.
+ *
+ * ── MMU ────────────────────────────────────────────────────────────
+ *
+ * arm64 가 DT 의 zephyr,memory-region 노드를 부팅 때 평면 매핑한다
+ * (arch/arm64/core/mmu.c:907 의 mmu_dt_regions). C 코드가 0줄이다.
+ *
+ * ⚠ zephyr,memory-attr 가 있어야 항목이 생긴다 —
+ *   MMU_REGION_DT_FLAT_ENTRY_FROM_DT 가 IF_ENABLED 로 감싸고 있다
+ *   (include/zephyr/arch/arm64/arm_mmu.h:236-242). 빼면 빌드는 통과하고
+ *   조용히 안 매핑된다.
+ *
+ * ⚠ 2 MB 정렬이 필수다. set_mapping(mmu.c:372) 은 정렬이 맞을 때만 큰 블록을
+ *   쓴다. 깨지면 4 KB 페이지로 깔려 MAX_XLAT_TABLES 를 넘기고 **콘솔이
+ *   올라오기 전에** 죽는다. 0x58000000 과 512 MiB 는 둘 다 2 MB 정렬이다.
+ */
+#include <zephyr/dt-bindings/memory-attr/memory-attr-arm64.h>
+
+/ {
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		model_blob: memory@58000000 {
+			compatible = "zephyr,memory-region";
+			reg = <0x0 0x58000000 0x0 0x20000000>;	/* 512 MiB */
+			zephyr,memory-region = "MODEL_BLOB";
+			zephyr,memory-attr = <DT_MEM_ARM64_MMU_NORMAL>;
+		};
+	};
+};

@@ -13,6 +13,7 @@ set -uo pipefail
 
 APP=${1:?사용법: ./tools/qemu_run.sh apps/llm_l1 [제한초]}
 LIMIT=${2:-180}
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP=${APP%/}
 NAME=$(basename "$APP")
 OUT=/tmp/claude-501/q-$NAME
@@ -40,11 +41,16 @@ echo "   ok  ($(grep -c . "$OUT.build.log") 줄 로그)"
 
 QEMU_ARGS=(-cpu cortex-a55 -machine virt,secure=on,gic-version=3
 	-m 2G -nographic -no-reboot -kernel "$OUT/zephyr/zephyr.elf")
-# 블롭이 있으면 계획서가 고정한 0x60000000 에 넣는다 (실기 fatload 와 같은 주소)
+# 적재 주소는 **공용 overlay 에서 읽는다** — 하드코딩해 두었다가 창을 옮겼을 때
+# 조용히 엇갈렸다(QEMU 는 엉뚱한 주소에 넣고 앱은 창을 읽어 전부 0 이 된다).
+BLOB_ADDR=$(grep -oE 'reg = <0x0 0x[0-9a-f]+' "$REPO/apps/llm_common/model_blob.overlay" \
+	| grep -oE '0x[0-9a-f]+$' | tail -1)
+: "${BLOB_ADDR:?model_blob.overlay 에서 창 주소를 읽지 못했다}"
+
 if [[ -n "${L_BLOB:-}" ]]; then
 	[[ -f $L_BLOB ]] || { echo "L_BLOB 파일 없음: $L_BLOB" >&2; exit 3; }
-	QEMU_ARGS+=(-device "loader,file=$L_BLOB,addr=0x60000000,force-raw=on")
-	echo "── 블롭: $L_BLOB → 0x60000000"
+	QEMU_ARGS+=(-device "loader,file=$L_BLOB,addr=$BLOB_ADDR,force-raw=on")
+	echo "── 블롭: $L_BLOB → $BLOB_ADDR (실기 fatload 와 같은 주소)"
 elif [[ -f "$APP/NEEDS_BLOB" ]]; then
 	# 이 앱은 블롭을 **읽는다**. 없이 돌리면 전부 0 을 읽는데 역양자화 결과가
 	# ±0.0 이라 그럴듯해 보여 "포팅이 틀렸다" 로 오진한다 — 실제로 겪었다.

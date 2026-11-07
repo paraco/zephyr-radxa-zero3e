@@ -123,8 +123,40 @@ Qwen3.5-0.8B Q4 는 **약 0.55 GB** 라 128 MB 창에 안 들어간다. 그래�
 ```bash
 qemu-system-aarch64 -cpu cortex-a55 -machine virt,secure=on,gic-version=3 \
   -m 2G -nographic -no-reboot -kernel zephyr.elf \
-  -device loader,file=model.gguf,addr=0x60000000,force-raw=on
+  -device loader,file=model.gguf,addr=0x58000000,force-raw=on
 ```
+
+#### ⚠ 2026-11-07 정정 — 주소를 `0x60000000` 에서 `0x58000000` 으로 옮겼다
+
+처음 고정한 `0x60000000 + 640 MiB` 는 **QEMU 에서만 성립한다.**
+
+| | DRAM 범위 |
+|---|---|
+| QEMU (`-m 2G`, virt) | `0x40000000 .. 0xC0000000` |
+| **실기** (라이브 DT `reg = <0x0 0x00200000 0x0 0x7fe00000>`) | **`0x00200000 .. 0x80000000`** |
+
+실기 DRAM 은 `0x80000000` 에서 끝난다. `0x60000000 + 640 MiB = 0x88000000`
+은 **끝을 128 MiB 넘어간다.** QEMU 로만 시험하면 드러나지 않는 종류의 오류다.
+
+고친 배치 — `apps/llm_common/model_blob.overlay` 가 **단일 출처**다:
+
+```
+DRAM      0x00200000 .. 0x80000000   2046 MiB
+sram0     0x40000000 .. 0x48000000    128 MiB  (Zephyr 창 — 이번에 1 MiB 에서 올렸다)
+OTA 적재  0x50000000 .. 0x50040000    256 KiB  (boot.cmd 의 ota_addr)
+모델 창   0x58000000 .. 0x78000000    512 MiB
+상단 여유 0x78000000 .. 0x80000000    128 MiB  (U-Boot 가 재배치되는 곳)
+```
+
+모델 실측 507.85 MiB → 512 MiB 창에 여유 **4.15 MiB**. **빡빡하다.** 더 큰
+양자화를 쓰려면 OTA 적재를 상단으로 옮기고 창을 `0x48000000` 부터 잡아야
+한다(boot.cmd 와 moru 를 함께 고치는 일).
+
+⚠ **두 창이 전 구간 순수 DRAM 인지는 아직 TRM 으로 확인하지 않았다.**
+`docs/trm-grounding.md` §5 의 5·7 번이 Part1 메모리맵을 가리키는데 그 장은
+확보 목록에 없다. DRAM **크기**는 TRM 이 답할 수 없는 값이지만(보드·DDR
+트레이닝 사실, 등급 L), **주소 창에 별칭·구멍이 없는지**는 TRM 이 정본이다.
+그때까지 L1 의 별칭 점검(2 MiB 보폭 256지점)이 유일한 안전장치다.
 
 ### QEMU 로 **안 되는 것** — 측정했다
 

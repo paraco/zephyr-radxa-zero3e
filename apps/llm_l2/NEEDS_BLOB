@@ -1,3 +1,3 @@
-이 앱은 0x60000000 에 적재된 블롭을 **읽는다**.
+이 앱은 모델 창(apps/llm_common/model_blob.overlay)에 적재된 블롭을 **읽는다**.
 tools/qemu_run.sh 와 run_ladder.sh 가 이 파일의 존재로 L_BLOB 필요를 판정한다.
 overlay 에 model_blob 이 있어도 읽지 않는 앱(L1·L4·L5a·L5b)에는 두지 않는다.
