@@ -23,6 +23,20 @@
 #include <zephyr/kernel.h>
 #include <zephyr/devicetree.h>
 #include <zephyr/sys/crc.h>
+#include <zephyr/sys/mem_stats.h>
+
+/*
+ * ⚠ libc 아레나의 **실제** 사용량을 재려면 이 함수가 필요하다.
+ *   `west build` 가 찍는 "RAM 79.48%" 는 아레나(96 MiB)를 **전부 예약으로**
+ *   세어서다 — 어휘가 그 중 얼마를 쓰는지는 알려 주지 않는다. L6b 는 ggml
+ *   문맥과 1,017 노드 그래프가 더 필요하므로 남은 자리를 알아야 한다.
+ *
+ * ⚠ 선언이 **공개 include 밖**에 있다 (zephyr/lib/libc/common/include/
+ *   sys_malloc.h). 앱에서 그 경로를 include 하면 내부 구조에 의존하게
+ *   되므로, 선언만 여기에 적는다. CONFIG_SYS_HEAP_RUNTIME_STATS=y 가
+ *   있어야 정의가 링크된다 (prj.conf 에 있다).
+ */
+extern "C" int malloc_runtime_stats_get(struct sys_memory_stats *stats);
 
 #include "ggml.h"
 #include "ggml-backend.h"
@@ -50,6 +64,20 @@
 #define MODEL_BYTES 532517120u
 
 static int fails;
+
+/* 아레나 사용량 한 줄. 단계마다 부른다 — 어디서 늘었는지 보려고. */
+static void heap(const char *when)
+{
+	struct sys_memory_stats st;
+	if (malloc_runtime_stats_get(&st) != 0) {
+		printk("      힙: (못 읽었다 — CONFIG_SYS_HEAP_RUNTIME_STATS 가 없나)\n");
+		return;
+	}
+	const size_t total = st.free_bytes + st.allocated_bytes;
+	printk("      힙[%s]: 쓴 %zu KiB · 최대 %zu KiB · 남은 %zu KiB / %zu KiB\n",
+	       when, st.allocated_bytes / 1024, st.max_allocated_bytes / 1024,
+	       st.free_bytes / 1024, total / 1024);
+}
 
 static void ok(const char *what)
 {
@@ -178,6 +206,7 @@ int main(void)
 	       (uintptr_t)BLOB_ADDR, (unsigned)(BLOB_SIZE / (1024 * 1024)));
 
 	check_future();
+	heap("시작");
 
 	size_t blob_size = 0;
 	if (!check_blob(&blob_size)) {
@@ -221,6 +250,7 @@ int main(void)
 		printk("      텐서        %d개 (weights_map %zu)\n",
 		       ml->n_tensors, ml->weights_map.size());
 		printk("      데이터 시작 0x%zx\n", gguf_get_data_offset(ml->metadata));
+		heap("메타데이터 뒤");
 
 		/* [3] 제자리 적재가 실제로 켜졌나 — 결정 3 의 핵심 한 줄 */
 		printk("  [3] 제자리 적재 (llama_mmap::SUPPORTED) ... ");
@@ -279,6 +309,8 @@ int main(void)
 		printk("      토큰 %u개 · BOS %d · EOS %d\n",
 		       (unsigned)vocab->n_tokens(), (int)vocab->token_bos(),
 		       (int)vocab->token_eos());
+
+		heap("어휘 뒤");
 
 		if (vocab->n_tokens() < 100000) {
 			printk("      ⚠ Qwen3.5 는 248,320 개여야 한다\n");
