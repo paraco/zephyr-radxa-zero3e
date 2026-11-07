@@ -1,0 +1,74 @@
+# ⚠⚠ 이 파일은 **아직 boot.scr 로 만들지 않는다.** ⚠⚠
+#
+# 2단계(쓰기)용 초안이다. 관문 ⑤("이 U-Boot 에 i2c 명령이 있는가")가
+# 읽기 단계로 측정되기 전에는 카드에 올리지 않는다.
+# 근거와 출처는 docs/clock-raise-plan.md 에 전부 있다.
+#
+# 목표: CPU 816 → **1416 MHz** (1.735배). 쓰는 값은 **전부 U-Boot/Linux 표 원문**이다.
+#   PLL   rk3568_pll_rates:  RK3036_PLL_RATE(1416000000, 1, 118, 2, 1, 1, 0)
+#   분주  rk3568_cpu_rates:  RK3568_CPUCLK_RATE(1416000000, aclk 1, pclk 5)
+#   전압  rk3566.dtsi OPP:   1416 MHz = 1025000 µV → sel 25
+#
+# ⚠ 순서는 **전압 먼저, 분주 다음, PLL 마지막**이다.
+#   (rk3568_armclk_set_clk 원문: 올릴 때는 분주를 먼저 바꾸고 PLL 을 나중에)
+#   순서가 반대면 저전압 또는 범위 밖 버스 클럭으로 불안정해진다.
+#
+# ⚠ 상위 16비트가 write-enable 이다 (hardware.h 의 rk_clrsetreg).
+#   그래서 (마스크<<16)|값 으로 쓰면 **다른 비트는 건드려지지 않는다.**
+#   read-modify-write 가 필요 없다. 아래 모든 mw.l 이 이 꼴이다.
+
+# ── 1. 전압: vdd_cpu 1.025 V ────────────────────────────────────────────
+#
+# 0xD9 = bit7 EN=1 · bit6 MODE=1(강제 PWM) · sel=25 → 712500+12500×25 = 1025000 µV
+#
+# ⚠ bit7 을 **반드시 1 로** 유지한다. sel 만 쓰면 레귤레이터가 꺼져 보드가 즉사한다.
+# ⚠ VSEL0 과 VSEL1 **양쪽에** 쓴다 — 어느 쪽이 활성인지는 칩의 VSEL 핀이
+#   정하고 소스로는 알 수 없다. 1.025 V 는 어느 쪽에 써도 과전압이 아니다
+#   (DT 상한 1.39 V). 이것이 관문 ⑤ 를 우회하는 방법이다.
+if i2c dev 0; then
+	i2c mw 0x40 0 0xd9
+	i2c mw 0x40 1 0xd9
+	# 램프 대기. DT 의 regulator-ramp-delay = 2300 (단위 미확정).
+	# 넉넉히 10 ms 를 준다 — 전압이 오르기 전에 클럭을 올리면 안 된다.
+	sleep 1
+fi
+
+# ── 2. 분주를 먼저 (1416 → pclk_div 5, aclk_div 1) ──────────────────────
+#
+# clksel_con[3] = CRU+0x10c : GICCLK_CORE_DIV [12:8] · ATCLK_CORE_DIV [4:0]
+# clksel_con[4] = CRU+0x110 : PERIPHCLK_CORE_PRE_DIV [12:8] · PCLK_CORE_PRE_DIV [4:0]
+# clksel_con[5] = CRU+0x114 : ACLK_CORE_NDFT_DIV [12:8]
+#
+# 실측(L9a)에서 816 일 때 [3]=0x0303 · [4]=0x0303 · [5]=0x0111 이었고
+# 표의 (816000000, 1, 3) 과 일치했다. 1416 은 (1, 5) 이므로 각 필드가 5 다.
+mw.l 0xfdd2010c 0x1f1f0505 1
+mw.l 0xfdd20110 0x1f1f0505 1
+mw.l 0xfdd20114 0x1f000100 1
+
+# ── 3. PLL 을 마지막에 (fbdiv 118 · postdiv1 2 · refdiv 1 · postdiv2 1) ──
+#
+# APLL = pll[0] = CRU+0x00. con0 +0x00 · con1 +0x04
+# con0: FBDIV [11:0] · POSTDIV1 [14:12]
+# con1: REFDIV [5:0] · POSTDIV2 [8:6] · DSMPD bit12 · PWRDOWN bit13 · LOCK bit10
+#
+# ⚠ rk3036_pll_set_rate 는 slow 모드 → power down → con 쓰기 → power up →
+#   lock 폴링 → normal 복귀 순이다. 그 순서를 따른다.
+# ⚠ lock 폴링에 타임아웃이 없다. 1416 은 표에 있는 값이므로 VCO 가 범위 안이다
+#   (VCO = 24×118/1 = 2832 MHz, postdiv1 2 → 1416). 표에 없는 값을 쓰지 않는 이유다.
+
+# 3a. APLL 을 slow 모드로 (MODE_CON bits[1:0] = 0)
+mw.l 0xfdd200c0 0x00030000 1
+# 3b. power down (con1 bit13 = 1)
+mw.l 0xfdd20004 0x20002000 1
+# 3c. con0: fbdiv 118 (0x76) · postdiv1 2
+mw.l 0xfdd20000 0x7fff2076 1
+# 3d. con1: refdiv 1 · postdiv2 1 · dsmpd 1  (power down 비트는 아직 유지)
+mw.l 0xfdd20004 0x11ff3041 1
+# 3e. power up (con1 bit13 = 0)
+mw.l 0xfdd20004 0x20000000 1
+# 3f. lock 이 설 때까지 기다린다. U-Boot 에 폴링 루프가 없으니 넉넉히 쉰다.
+sleep 1
+# 3g. NORMAL 모드로 (MODE_CON bits[1:0] = 1)
+mw.l 0xfdd200c0 0x00030001 1
+
+echo "=== CPU 1416 MHz 시도 완료 (출력은 1.5 Mbps 라 안 보인다) ==="
