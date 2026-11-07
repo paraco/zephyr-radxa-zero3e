@@ -69,9 +69,12 @@
 	 * +252 KiB 는 페이지 프레임 장부(128 MiB ÷ 4 KiB × 8 B)이고 .bss 라
 	 * 이미지가 커지지 않는다 — OTA 전송량도 그대로다.
 	 *
-	 * ⚠ 빌드가 된다는 것이 부팅한다는 뜻은 아니다. 메모리 배치를 바꾸는
-	 *   변경이므로 `moru ota apply try` 로 올려 확인한다(멈춰도 전원
-	 *   재투입으로 복구된다).
+	 * ✅ **실기 확인 완료 (2026-11-07, `moru ota apply try`)**
+	 *   부팅 로그: `Memory: 0x40000000 + 131072 KiB (zephyr,sram)`
+	 *   셸도 응답한다 (`moru info` · `kernel heap` · `kernel uptime`).
+	 *   Pre-kernel 7.282 s → **7.336 s** (+54 ms) — 페이지 프레임 장부가
+	 *   252 KiB 늘었지만 초기화 시간 대가는 거의 없다.
+	 *   USB 열거·OTP 칩 ID·EP 설정(DALEPENA 0x000002bf) 모두 1 MiB 때와 같다.
 	 */
 	sram0: memory@40000000 {
 		device_type = "memory";
