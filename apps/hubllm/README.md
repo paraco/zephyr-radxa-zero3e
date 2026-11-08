@@ -78,6 +78,12 @@ hub_chat.py 는 기본으로 Qwen non-thinking 틀처럼 `<think>\n\n</think>\n\
 | 같은 답 ("해남군 삼산면 두륜산 … 22 교구 본사") | | 같음 |
 | greedy 호스트 대조 (호스트는 repack OFF) | 24 토큰 뒤 동점 근처(0.056)에서 갈림 | **같은 걸음에서 같은 토큰으로 갈림** (20/64 — 빈 생각 블록 4 토큰이 이제 프롬프트에 들어가 위치가 4 당겨졌다) |
 
+## 부팅 슬롯 (F6, 6873d29 · 새 boot.scr 19,815 B 를 카드에 복사한 뒤 실기)
+
+- apply try 로 뜬 hubllm: `hub info` → "부팅 슬롯 try" · FW_INFO `boot_slot=try` ✓
+- main(카드의 zephyr.bin) 경로는 아직 못 봤다 — 카드의 moru 가 슬롯 기능 전 판(a265d15)이다.
+  hubllm 이나 새 moru 를 영구 적용하면 확인된다.
+
 ## 아직 없는 것
 - boot_slot (boot.cmd 수정 = 카드 작업 필요). 온도 읽기(tsadc 드라이버 없음).
 - 0.8B 모델이라 답의 사실성은 낮다 — 첫 답(저압 활선 확인)은 기술적으로 틀렸다.
