@@ -5,6 +5,7 @@
  */
 #include <zephyr/kernel.h>
 #include <zephyr/shell/shell.h>
+#include <zephyr/kernel/internal/mm.h>
 #include <zephyr/sys/base64.h>
 #include <zephyr/drivers/hwinfo.h>
 #include <zephyr/app_version.h>
@@ -175,6 +176,47 @@ static int cmd_hub_guard(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+/* hub dram — DRAM 꼭대기(0x78000000 ~ 0x80000000)에서 U-Boot 가 쓴 곳을 찾는다 (읽기만).
+ * 블롭 창을 512 → 576 MiB(끝 0x7C000000)로 늘려도 되는지 보려고. 4 MiB 씩 잠깐 매핑한다.
+ *   · "U-Boot " 문자열 위치 = 옮겨진 U-Boot 본체
+ *   · 1 MiB 마다 0 인 64비트가 99 % 이상이면 "0" — U-Boot 는 malloc 구역을 0 으로 채운다 */
+static int cmd_hub_dram(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc); ARG_UNUSED(argv);
+	const uintptr_t base = 0x78000000UL, end = 0x80000000UL, win = 4u << 20, mb = 1u << 20;
+	char map[129] = {0};	/* 1 MiB 마다 한 글자: 0 = 전부 0 · . = 0 아님 · ~ = 섞임 */
+	int hits = 0;
+	for (uintptr_t a = base; a < end; a += win) {
+		uint8_t *v = NULL;
+		k_mem_map_phys_bare(&v, a, win, K_MEM_PERM_RW | K_MEM_CACHE_WB);
+		if (v == NULL) { shell_print(sh, "HUBLLM/1 err id=0 code=map msg=0x%08lx", (unsigned long)a); return -ENOMEM; }
+		for (uintptr_t m = 0; m < win; m += mb) {
+			const uint64_t *q = (const uint64_t *)(v + m);
+			size_t z = 0;
+			for (size_t k = 0; k < mb / 8; k++) { z += (q[k] == 0); }
+			const size_t pct = z * 100 / (mb / 8);
+			map[(a + m - base) / mb] = pct >= 99 ? '0' : (pct <= 1 ? '.' : '~');
+		}
+		for (uintptr_t i = 0; i + 7 < win && hits < 8; i++) {
+			if (v[i] == 'U' && !memcmp(v + i, "U-Boot ", 7)) {
+				char t[40] = {0};
+				for (int k = 0; k < 39 && v[i + k] >= 0x20 && v[i + k] < 0x7f; k++) { t[k] = v[i + k]; }
+				shell_print(sh, "HUBLLM/1 dram uboot_str addr=0x%08lx text=%s", (unsigned long)(a + i), t);
+				hits++;
+				i += 64;
+			}
+		}
+		k_mem_unmap_phys_bare(v, win);
+	}
+	shell_print(sh, "HUBLLM/1 dram map base=0x78000000 mib=128 (0=전부0 .=0아님 ~=섞임)");
+	for (int r = 0; r < 4; r++) {
+		char line[33] = {0};
+		memcpy(line, map + r * 32, 32);
+		shell_print(sh, "HUBLLM/1 dram 0x%08lx %s", (unsigned long)(base + (uintptr_t)r * 32 * mb), line);
+	}
+	return 0;
+}
+
 static int cmd_hub_abort(const struct shell *sh, size_t argc, char **argv)
 {
 	ARG_UNUSED(argc); ARG_UNUSED(argv);
@@ -231,6 +273,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_hub,
 	SHELL_CMD(reset, NULL, "KV(대화) 비우기", cmd_hub_reset),
 	SHELL_CMD_ARG(ctx, NULL, "ctx n=<n> — 문맥 다시 만들기", cmd_hub_ctx, 2, 0),
 	SHELL_CMD_ARG(clk, NULL, "clk 1416|1104 — 코어 클럭", cmd_hub_clk, 2, 0),
+	SHELL_CMD(dram, NULL, "DRAM 꼭대기 조사 (U-Boot 자리, 읽기만)", cmd_hub_dram),
 	SHELL_CMD(temp, NULL, "칩 온도 (TSADC) + 셧다운 문턱 + 부트로더가 남긴 설정", cmd_hub_temp),
 	SHELL_CMD_ARG(tshut, NULL, "tshut <°C> — 하드웨어 셧다운 문턱 (0 끔, 60..95)", cmd_hub_tshut, 2, 0),
 	SHELL_CMD_ARG(guard, NULL, "guard [down pause stop] — 소프트웨어 보호 (°C)", cmd_hub_guard, 1, 3),
