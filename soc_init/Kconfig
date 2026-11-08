@@ -14,3 +14,10 @@ config MORU_LED_FATAL_HANDLER
 	help
 	  앱이 자기 k_sys_fatal_error_handler 를 두면 n 으로 하고 그 끝에서
 	  moru_led_fatal() 을 부른다 (apps/moru 가 그렇다).
+
+config RK3566_TSADC
+	bool "칩 온도 읽기 (soc_init/rk3566_tsadc.c, 읽기 전용)"
+	depends on BOARD_RADXA_ZERO_3E
+	default y
+	help
+	  TSADC 채널 0(CPU)·1(GPU) 온도. 셧다운(TSHUT)은 켜지 않는다.

@@ -13,6 +13,7 @@
 #include <errno.h>
 
 #include "hub.h"
+#include <rk3566_tsadc.h>
 
 static struct hub_req req;	/* 셸 스레드 하나만 쓴다 — submit 이 복사한다 */
 
@@ -129,12 +130,33 @@ static int cmd_hub_clk(const struct shell *sh, size_t argc, char **argv)
 	return submit_simple(sh, HUB_CLK, mhz);
 }
 
+static int cmd_hub_temp(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc); ARG_UNUSED(argv);
+	int c0 = 0, c1 = 0;
+	const int e0 = rk3566_tsadc_get_mc(0, &c0), e1 = rk3566_tsadc_get_mc(1, &c1);
+	const struct rk3566_tsadc_regs *b = rk3566_tsadc_boot_regs();
+	shell_print(sh, "HUBLLM/1 temp cpu_mc=%d gpu_mc=%d err=%d,%d raw=%u,%u "
+		    "boot_auto_con=0x%08x boot_int_en=0x%08x boot_shut=0x%x,0x%x boot_data=0x%x,0x%x",
+		    e0 ? -999999 : c0, e1 ? -999999 : c1, e0, e1,
+		    rk3566_tsadc_raw(0), rk3566_tsadc_raw(1),
+		    b ? b->auto_con : 0, b ? b->int_en : 0, b ? b->comp_shut0 : 0,
+		    b ? b->comp_shut1 : 0, b ? b->data0 : 0, b ? b->data1 : 0);
+	return 0;
+}
+
 static int cmd_hub_abort(const struct shell *sh, size_t argc, char **argv)
 {
 	ARG_UNUSED(argc); ARG_UNUSED(argv);
 	hub_llm_abort();
 	shell_print(sh, "HUBLLM/1 abort_ack");
 	return 0;
+}
+
+static int cpu_mc(void)
+{
+	int mc = 0;
+	return rk3566_tsadc_get_mc(0, &mc) ? -999999 : mc;
 }
 
 static int cmd_hub_info(const struct shell *sh, size_t argc, char **argv)
@@ -156,10 +178,11 @@ static int cmd_hub_info(const struct shell *sh, size_t argc, char **argv)
 		/* F3 — 모르는 값은 '-' (키는 빼지 않는다). model_hash·boot_slot 은 다음 판 */
 		shell_print(sh, "FW_INFO fmt=1 deviceid=%s role=hub release=%s build=%s%s "
 			    "variant=hubllm board=rk3566 model_hash=%s model_smp=%s boot_slot=- "
-			    "llm=%s n_ctx=%d ctx_kib=%d n_past=%d",
+			    "llm=%s n_ctx=%d ctx_kib=%d n_past=%d temp_mc=%d",
 			    hex, APP_VERSION_STRING, STRINGIFY(APP_BUILD_VERSION), MORU_GIT_DIRTY,
 			    hub_llm_model_hash(), hub_llm_model_smp(),
-			    hub_llm_state(), hub_llm_n_ctx(), hub_llm_ctx_kib(), hub_llm_n_past());
+			    hub_llm_state(), hub_llm_n_ctx(), hub_llm_ctx_kib(), hub_llm_n_past(),
+			    cpu_mc());
 	} else {
 		shell_print(sh, "hubllm %s (build %s%s) · 칩 %s", APP_VERSION_STRING,
 			    STRINGIFY(APP_BUILD_VERSION), MORU_GIT_DIRTY, hex);
@@ -178,6 +201,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_hub,
 	SHELL_CMD(reset, NULL, "KV(대화) 비우기", cmd_hub_reset),
 	SHELL_CMD_ARG(ctx, NULL, "ctx n=<n> — 문맥 다시 만들기", cmd_hub_ctx, 2, 0),
 	SHELL_CMD_ARG(clk, NULL, "clk 1416|1104 — 코어 클럭", cmd_hub_clk, 2, 0),
+	SHELL_CMD(temp, NULL, "칩 온도 (TSADC, 읽기 전용) + 부트로더가 남긴 설정", cmd_hub_temp),
 	SHELL_CMD(abort, NULL, "생성 중단 (토큰 사이에서)", cmd_hub_abort),
 	SHELL_CMD_ARG(info, NULL, "상태 · --kv 는 FW_INFO 한 줄", cmd_hub_info, 1, 1),
 	SHELL_SUBCMD_SET_END);

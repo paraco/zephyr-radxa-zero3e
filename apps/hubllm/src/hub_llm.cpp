@@ -29,6 +29,7 @@
 
 #include "hub.h"
 #include "clk1416.h"
+#include <rk3566_tsadc.h>
 #include <moru_led.h>
 
 LOG_MODULE_REGISTER(hub_llm, LOG_LEVEL_INF);
@@ -123,6 +124,12 @@ static void lend(void)
 	line[0] = 0;
 }
 #define OUT(...) do { lput(__VA_ARGS__); lend(); } while (0)
+
+static int temp_mc(void)
+{
+	int mc = 0;
+	return rk3566_tsadc_get_mc(0, &mc) ? -999999 : mc;
+}
 
 static void run_one(void)
 {
@@ -236,11 +243,11 @@ static void run_one(void)
 	const double pp_tps = t_pp ? (double)n * 1000.0 / (double)t_pp : 0.0;
 	const double tg_tps = (n_gen > 1 && t_tg) ? (double)(n_gen - 1) * 1000.0 / (double)t_tg : 0.0;
 	OUT("HUBLLM/1 done id=%u n_prompt=%d n_gen=%d ttft_ms=%" PRId64 " pp_tps=%.2f tg_tps=%.2f "
-	    "n_ctx=%d ctx_kib=%d heap_kib=%u threads=%d n_past=%d keep=%d temp=%.2f pres=%.2f rep=%.2f clk=%d guard_fail=%u stop=%s",
+	    "n_ctx=%d ctx_kib=%d heap_kib=%u threads=%d n_past=%d keep=%d temp=%.2f pres=%.2f rep=%.2f clk=%d guard_fail=%u temp_mc=%d stop=%s",
 	    r.id, n, n_gen, ttft, pp_tps, tg_tps, n_ctx_now, ctx_kib,
 	    (unsigned)heap_used_kib(), HUB_THREADS, n_past_now(), r.keep ? 1 : 0,
 	    (double)r.temp, (double)r.pres, (double)r.rep,
-	    clk1416_is_1416() ? 1416 : 1104, clk1416_guard_fail(), stop);
+	    clk1416_is_1416() ? 1416 : 1104, clk1416_guard_fail(), temp_mc(), stop);
 }
 
 static bool make_ctx(int want);

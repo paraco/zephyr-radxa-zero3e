@@ -65,6 +65,14 @@ def kv(s):
     return dict(x.split('=', 1) for x in s.split(' ')[2:] if '=' in x)
 
 
+def tc(d):
+    try:
+        v = int(d.get('temp_mc', '-999999'))
+    except ValueError:
+        return ''
+    return '' if v <= -999999 else f'{v / 1000:.1f}'
+
+
 def clk(fd, mhz):
     send(fd, f'hub clk {mhz}')
     for s in lines(fd, lambda s: s.startswith('HUBLLM/1 clk') or s.startswith('HUBLLM/1 err'), 30):
@@ -95,6 +103,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--minutes', type=float, default=10)
     ap.add_argument('--max', type=int, default=128)
+    ap.add_argument('--clk', type=int, default=1416, choices=(1104, 1416),
+                    help='오래 돌릴 클럭 (1104 = 대조군)')
+    ap.add_argument('--stop-c', type=float, default=85.0,
+                    help='CPU 온도가 이 값을 넘으면 1104 로 내리고 멈춘다')
     a = ap.parse_args()
     port = os.environ.get('MORU_SHELL') or find_shell_port()
     if not port:
@@ -103,7 +115,7 @@ def main():
     os.makedirs(os.path.join(HERE, '..', 'log'), exist_ok=True)
     csvp = os.path.join(HERE, '..', 'log', time.strftime('hub-soak-%Y%m%dT%H%M%S.csv'))
     out = open(csvp, 'w')
-    out.write('run,clk,elapsed_s,n_gen,same_as_ref,tg_tps,ttft_ms,guard_fail,mhz\n')
+    out.write('run,clk,elapsed_s,n_gen,same_as_ref,tg_tps,ttft_ms,guard_fail,mhz,temp_c\n')
     fd = open_raw(port, os.O_RDWR)
     rid = int(time.time()) % 100000
     bad = 0
@@ -120,13 +132,13 @@ def main():
         ref2, d2 = gen(fd, rid, a.max); rid += 1
         print(f'[기준 1104] {len(ref)} 토큰 · tg {d.get("tg_tps")} · 두 번째와 같다: {ref == ref2}')
         out.write(f'0,1104,0,{len(ref)},{int(ref == ref2)},{d.get("tg_tps")},{d.get("ttft_ms")},'
-                  f'{d.get("guard_fail")},{c.get("mhz")}\n')
+                  f'{d.get("guard_fail")},{c.get("mhz")},{tc(d)}\n')
         if ref != ref2 or not ref:
             print('⚠ 1104 에서도 두 번이 다르다 — 시험의 전제가 깨졌다. 멈춘다')
             return 1
-        c = clk(fd, 1416)
-        print(f'[1416] {c}')
-        if c.get('state') != '1416':
+        c = clk(fd, a.clk)
+        print(f'[{a.clk}] {c}')
+        if c.get('state') != str(a.clk):
             print('⚠ 1416 으로 올라가지 않았다 — 멈춘다 (UART2 로그의 [clk] 줄을 본다)')
             return 1
         t0, run = time.time(), 0
@@ -135,12 +147,16 @@ def main():
             tids, d = gen(fd, rid, a.max); rid += 1
             same = (tids == ref)
             el = time.time() - t0
-            ok = same and d.get('clk') == '1416' and d.get('guard_fail') == '0' and 'err' not in d
+            ok = same and d.get('clk') == str(a.clk) and d.get('guard_fail') == '0' and 'err' not in d
+            t = tc(d)
+            if t and float(t) >= a.stop_c:
+                print(f'  ⚠ CPU {t} °C ≥ {a.stop_c} — 멈춘다 (과열 보호)')
+                ok = False
             print(f'  {run:3d}  {el:6.0f} s  {len(tids):3d} 토큰  {"같다" if same else "**다르다**"}'
-                  f'  tg {d.get("tg_tps")}  clk {d.get("clk")}  guard_fail {d.get("guard_fail")}'
+                  f'  tg {d.get("tg_tps")}  clk {d.get("clk")}  guard_fail {d.get("guard_fail")}  {tc(d)} °C'
                   f'{"" if ok else "  ⚠"}')
             out.write(f'{run},{d.get("clk")},{el:.0f},{len(tids)},{int(same)},{d.get("tg_tps")},'
-                      f'{d.get("ttft_ms")},{d.get("guard_fail")},\n')
+                      f'{d.get("ttft_ms")},{d.get("guard_fail")},,{tc(d)}\n')
             out.flush()
             if not ok:
                 bad += 1
