@@ -16,6 +16,8 @@
 #include <zephyr/fs/fs.h>
 #include <zephyr/devicetree.h>
 #include <ff.h>
+#include <zephyr/sys/base64.h>
+#include <zephyr/sys/crc.h>
 #include <rk_dw_mshc.h>
 #include <zephyr/sys/byteorder.h>
 #include <zephyr/storage/disk_access.h>
@@ -550,10 +552,24 @@ static int cmd_sd_wtest(const struct shell *sh, size_t argc, char **argv)
 	return rc;
 }
 
-/* sd cat <경로> [바이트] — 파일 끝 쪽 (기본 1536 B) */
+/* sd cat <경로> [<바이트>] [b64]          끝에서 <바이트> (기본 1536)
+ * sd cat <경로> <시작> <바이트> [b64]      <시작> 위치부터 <바이트>
+ *   머리  HUBLLM/1 cat path= size= off= len= tail=<len> mode=text|b64
+ *   본문  text: 줄마다 "| " + 원문 (NUL 이 있으면 그 줄은 거기서 끊긴다 — b64 를 쓴다)
+ *         b64 : 줄마다 "= " + base64 (원문 57 B → 76 자)
+ *   끝    HUBLLM/1 cat_done path= off= bytes=<읽은 원문 바이트> crc32=<원문 CRC-32/IEEE 8자리> eol=<마지막 바이트가 \n 이면 1>
+ *   한 번에 최대 256 KiB − 1. 1 MiB 로그는 <시작> 을 옮겨 가며 나눠 받는다. (2026-11-09 Studio 요청) */
 static int do_cat(const struct shell *sh, size_t argc, char **argv)
 {
-	const size_t want = argc > 2 ? (size_t)atoi(argv[2]) : 1536;
+	bool b64 = false;
+	if (argc > 2 && !strcmp(argv[argc - 1], "b64")) { b64 = true; argc--; }
+	const bool ranged = argc > 3;
+	const long a2 = argc > 2 ? atol(argv[2]) : 1536;
+	const long a3 = ranged ? atol(argv[3]) : 0;
+	if (a2 < 0 || a3 < 0) {
+		shell_print(sh, "HUBLLM/1 err id=0 code=bad_arg msg=cat_path_[off]_bytes_[b64]");
+		return -EINVAL;
+	}
 	int rc = ensure_mount(sh);
 	char path[96];
 	snprintf(path, sizeof path, "/0:/%s", argv[1]);
@@ -566,20 +582,42 @@ static int do_cat(const struct shell *sh, size_t argc, char **argv)
 		shell_print(sh, "HUBLLM/1 err id=0 code=cat_open msg=%d", rc);
 		return rc;
 	}
-	const size_t n0 = MIN(want, MIN(e.size, sizeof buf - 1));
-	(void)fs_seek(&f, (off_t)(e.size - n0), FS_SEEK_SET);
-	const ssize_t n = fs_read(&f, buf, n0);
-	fs_close(&f);
-	buf[n > 0 ? n : 0] = 0;
-	shell_print(sh, "HUBLLM/1 cat path=%s size=%zu tail=%zd", argv[1], e.size, n);
-	char *p = (char *)buf;
-	while (*p) {
-		char *nl = strchr(p, '\n');
-		if (nl) { *nl = 0; }
-		shell_print(sh, "| %s", p);
-		if (!nl) { break; }
-		p = nl + 1;
+	const size_t want = MIN((size_t)(ranged ? a3 : a2), sizeof buf - 1);
+	size_t off;
+	if (ranged) {
+		off = MIN((size_t)a2, e.size);
+	} else {
+		off = e.size - MIN(want, e.size);
 	}
+	const size_t n0 = MIN(want, e.size - off);
+	(void)fs_seek(&f, (off_t)off, FS_SEEK_SET);
+	ssize_t n = n0 ? fs_read(&f, buf, n0) : 0;
+	fs_close(&f);
+	if (n < 0) {
+		shell_print(sh, "HUBLLM/1 err id=0 code=cat_read msg=%d", (int)n);
+		return (int)n;
+	}
+	shell_print(sh, "HUBLLM/1 cat path=%s size=%zu off=%zu len=%zd tail=%zd mode=%s", argv[1], e.size, off, n,
+		    n, b64 ? "b64" : "text");
+	if (b64) {
+		for (ssize_t i = 0; i < n; i += 57) {
+			char t[80];
+			size_t ol = 0;
+			(void)base64_encode((uint8_t *)t, sizeof t, &ol, buf + i, (size_t)MIN((ssize_t)57, n - i));
+			t[ol] = 0;
+			shell_print(sh, "= %s", t);
+		}
+	} else {
+		const char *p = (const char *)buf, *endp = p + n;
+		while (p < endp) {
+			const char *nl = memchr(p, '\n', (size_t)(endp - p));
+			const size_t ln = nl ? (size_t)(nl - p) : (size_t)(endp - p);
+			shell_print(sh, "| %.*s", (int)ln, p);
+			p += ln + (nl ? 1 : 0);
+		}
+	}
+	shell_print(sh, "HUBLLM/1 cat_done path=%s off=%zu bytes=%zd crc32=%08x eol=%d", argv[1], off, n,
+		    crc32_ieee(buf, (size_t)n), (n > 0 && buf[n - 1] == '\n') ? 1 : 0);
 	return 0;
 }
 
@@ -595,7 +633,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_sd,
 	SHELL_CMD_ARG(ls, NULL, "ls [<디렉터리>] — SD BLOB 파티션 목록 (기본 models)", cmd_hub_ls, 1, 1),
 	SHELL_CMD_ARG(cmp, NULL, "cmp [<MiB>] — 올린 모델을 SD 에서 읽어 RAM 과 비교 (기본 64)", cmd_hub_sdcmp, 1, 1),
 	SHELL_CMD_ARG(wtest, NULL, "wtest [MiB] — logs/wtest.bin 쓰고 다시 읽어 비교 (기본 1)", cmd_sd_wtest, 1, 1),
-	SHELL_CMD_ARG(cat, NULL, "cat <경로> [바이트] — 파일 끝 쪽 보기 (예: logs/hub-9.txt)", cmd_sd_cat, 2, 1),
+	SHELL_CMD_ARG(cat, NULL, "cat <경로> [[시작] 바이트] [b64] — 파일 보기 (기본 끝 1536 B) · 끝 줄 cat_done crc32", cmd_sd_cat, 2, 3),
 	SHELL_CMD(info, NULL, "카드 버스 클럭 · 폭 · FAT 묶음 크기", cmd_sd_info),
 	SHELL_CMD_ARG(raw, NULL, "raw [MiB] — 파일 시스템 없이 큰 덩어리 읽기 속도 (기본 16)", cmd_sd_raw, 1, 1),
 	SHELL_CMD_ARG(dma, NULL, "dma [rd|wr on|off] — 컨트롤러 DMA 상태·켜고 끄기", cmd_sd_dma, 1, 2),

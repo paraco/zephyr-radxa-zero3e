@@ -117,7 +117,11 @@ hub_chat.py 는 기본으로 Qwen non-thinking 틀처럼 `<think>\n\n</think>\n\
   N = max(logs/ 의 가장 큰 번호 + 1, U-Boot 가 넘긴 다음 번호). hub.conf 는 Zephyr 가 쓰지 않는다.
 - 쓰는 동안 U-Boot 는 로그를 저장하지 않는다('HLOG' 를 지움). 쓰기가 실패하면 예전처럼 재부팅 때 U-Boot 가 쓴다.
 - `hub reboot`·`hub model <파일>` 은 재부팅 직전에 마지막 줄을 쓴다.
-- 명령: `sd log [on|off]` · `sd cat <경로> [바이트]` · `sd wtest [MiB]`. `hub model` 에 `logfile=`.
+- 명령: `sd log [on|off]` · `sd cat` · `sd wtest [MiB]`. `hub model` 에 `logfile=`.
+- `sd cat <경로> [<바이트>] [b64]` (끝에서) · `sd cat <경로> <시작> <바이트> [b64]` (위치부터, 최대 256 KiB − 1).
+  머리 `HUBLLM/1 cat path= size= off= len= tail= mode=text|b64` → 본문(text `| ` 줄 · b64 `= ` 줄, 원문 57 B씩) →
+  끝 `HUBLLM/1 cat_done path= off= bytes= crc32=<CRC-32/IEEE> eol=<마지막 바이트가 \n 이면 1>`.
+  실기: text·b64·위치 지정·NUL 든 hub.conf·바이너리·256 KiB − 1 모두 Mac zlib.crc32 와 일치 (2026-11-09, Studio 요청).
 
 실기 (apply try):
 | 시험 | 결과 |
