@@ -1,0 +1,37 @@
+[1104] {'mhz': '38430396', 'state': '1104', 'guard_reads': '0', 'guard_fail': '0'}
+[기준 1104] 128 토큰 · tg 3.65 · 두 번째와 같다: True
+[1416] {'mhz': '1415', 'state': '1416', 'guard_reads': '0', 'guard_fail': '0'}
+    1      31 s  128 토큰  같다  tg 4.53  clk 1416  guard_fail 0
+    2      63 s  128 토큰  같다  tg 4.51  clk 1416  guard_fail 0
+    3      95 s  128 토큰  같다  tg 4.50  clk 1416  guard_fail 0
+    4     126 s  128 토큰  같다  tg 4.50  clk 1416  guard_fail 0
+    5     158 s  128 토큰  같다  tg 4.50  clk 1416  guard_fail 0
+    6     190 s  128 토큰  같다  tg 4.50  clk 1416  guard_fail 0
+    7     221 s  128 토큰  같다  tg 4.50  clk 1416  guard_fail 0
+    8     253 s  128 토큰  같다  tg 4.50  clk 1416  guard_fail 0
+    9     285 s  128 토큰  같다  tg 4.50  clk 1416  guard_fail 0
+   10     317 s  128 토큰  같다  tg 4.46  clk 1416  guard_fail 0
+   11     349 s  128 토큰  같다  tg 4.44  clk 1416  guard_fail 0
+   12     381 s  128 토큰  같다  tg 4.44  clk 1416  guard_fail 0
+   13     413 s  128 토큰  같다  tg 4.44  clk 1416  guard_fail 0
+   14     445 s  128 토큰  같다  tg 4.44  clk 1416  guard_fail 0
+   15     478 s  128 토큰  같다  tg 4.35  clk 1416  guard_fail 0
+   16     511 s  128 토큰  같다  tg 4.29  clk 1416  guard_fail 0
+   17     544 s  128 토큰  같다  tg 4.29  clk 1416  guard_fail 0
+   18     577 s  128 토큰  같다  tg 4.28  clk 1416  guard_fail 0
+Traceback (most recent call last):
+  File "/Users/paraco/Projects/PiZZa/rk3566/tools/hub_soak.py", line 160, in <module>
+    sys.exit(main())
+             ~~~~^^
+  File "/Users/paraco/Projects/PiZZa/rk3566/tools/hub_soak.py", line 135, in main
+    tids, d = gen(fd, rid, a.max); rid += 1
+              ~~~^^^^^^^^^^^^^^^^
+  File "/Users/paraco/Projects/PiZZa/rk3566/tools/hub_soak.py", line 83, in gen
+    for s in lines(fd, lambda s: (s.startswith('HUBLLM/1 done') or s.startswith('HUBLLM/1 err'))
+             ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                   and f'id={rid}' in s, 300):
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/paraco/Projects/PiZZa/rk3566/tools/hub_soak.py", line 49, in lines
+    buf += os.read(fd, 4096)
+           ~~~~~~~^^^^^^^^^^
+OSError: [Errno 6] Device not configured
