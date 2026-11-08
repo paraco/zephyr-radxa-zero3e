@@ -19,6 +19,8 @@
 
 #include "llama.h"
 #include "gguf.h"
+#include "ggml-cpu.h"
+#include "ggml-backend.h"
 #include "sha256.h"
 
 #include <cerrno>
@@ -58,6 +60,10 @@ static K_SEM_DEFINE(req_sem, 0, 1);
 
 static llama_model *model;
 static llama_context *ctx;
+/* 지속 스레드풀 — ggml 은 기본으로 계산마다 워커 3 개를 만들고 거두는데, Zephyr POSIX 의
+ * 회수가 SMP 에서 아직 안 죽은 스레드의 스택을 못 풀어 128 KiB 씩 잃는다
+ * ('<err> os: tid … is in use!' — kernel/dynamic.c). 스레드를 한 번만 만들어 경쟁을 없앤다. */
+static ggml_threadpool *tpool;
 static const llama_vocab *vocab;
 static llama_token toks[HUB_MAX_PROMPT_IDS];
 
@@ -366,6 +372,9 @@ static void hub_thread(void *, void *, void *)
 	mp.load_mode       = LLAMA_LOAD_MODE_MMAP;
 	mp.check_tensors   = false;
 	mp.use_extra_bufts = true;	/* repack (q4_K/q5_K/q6_K_8x4) — 사본은 llm_heap */
+	/* ⚠ 출력층(token_embd 를 함께 씀, q6_K 199 MiB)도 repack 된다 — CPU_REPACK 495.5 MiB =
+	 *   대상 296 + 출력층 199. tensor_buft_overrides 로 CPU 를 지정해도 로더가 CPU 의 추가
+	 *   버퍼(repack)를 다시 고른다(llama-model-loader.cpp:1253) — 빼려면 상류를 고쳐야 해 그대로 둔다. */
 	model = f ? llama_model_load_from_file_ptr(f, mp) : nullptr;
 	if (model == nullptr) {
 		LOG_ERR("모델 적재 실패");
@@ -392,7 +401,13 @@ static void hub_thread(void *, void *, void *)
 /* n=0 이면 ctx_try 순으로. 실패하면 false (ctx 는 nullptr) */
 static bool make_ctx(int want)
 {
-	if (ctx) { llama_free(ctx); ctx = nullptr; }
+	if (ctx) { llama_detach_threadpool(ctx); llama_free(ctx); ctx = nullptr; }
+	if (tpool == nullptr) {
+		ggml_threadpool_params tp = ggml_threadpool_params_default(HUB_THREADS);
+		tp.poll = 0;	/* 일감이 없으면 바로 잠든다 — 토큰 사이 스핀은 열만 낸다 */
+		tpool = ggml_threadpool_new(&tp);
+		if (tpool == nullptr) { LOG_WRN("스레드풀 생성 실패 — 계산마다 만드는 기본 방식"); }
+	}
 	const size_t before = heap_used_kib();
 	const int one[1] = { want };
 	const int *list = want ? one : ctx_try;
@@ -408,6 +423,7 @@ static bool make_ctx(int want)
 		cp.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED;
 		ctx = llama_init_from_model(model, cp);
 		if (ctx) {
+			if (tpool) { llama_attach_threadpool(ctx, tpool, tpool); }
 			n_ctx_now = nc;
 			ctx_kib = (int)(heap_used_kib() - before);
 			return true;
