@@ -1,5 +1,5 @@
 /*
- * rk3566_tsadc — 칩 온도 읽기 (읽기 전용 첫 판). 설명은 include/rk3566_tsadc.h.
+ * rk3566_tsadc — 칩 온도 + 하드웨어 셧다운(CRU, 기본 95 °C). 설명은 include/rk3566_tsadc.h.
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -27,6 +27,8 @@
 #define AUTO_EN             BIT(0)
 #define AUTO_Q_SEL_EN       BIT(1)		/* TSADCV3_AUTO_Q_SEL_EN (rk_tsadcv3_control) */
 #define AUTO_SRC_EN(c)      BIT(4 + (c))	/* TSADCV2_AUTO_SRC_EN */
+#define SHUT_2GPIO(c)       BIT(4 + (c))	/* INT_EN: TSADCV2_SHUT_2GPIO_SRC_EN */
+#define SHUT_2CRU(c)        BIT(8 + (c))	/* INT_EN: TSADCV2_SHUT_2CRU_SRC_EN */
 #define DATA_MASK           0xfff
 #define USER_INTER_PD_SOC   0xfc0		/* TSADCV5 — 97 µs */
 #define AUTO_PERIOD_TIME    1622		/* TSADCV5 */
@@ -48,6 +50,50 @@ static const struct { uint16_t code; int32_t mc; } tbl[] = {
 
 static mm_reg_t ts, grf;
 static struct rk3566_tsadc_regs boot;
+static int tshut_mc;		/* 0 = 꺼짐 */
+static bool boot_armed;		/* 부트로더가 켜 둔 셧다운 — 그때는 건드리지 않는다 */
+
+/* rk_tsadcv2_temp_to_code (ADC_INCREMENT). 표 밖이면 DATA_MASK */
+static uint32_t temp_to_code(int mc)
+{
+	if (mc < tbl[0].mc || mc > tbl[ARRAY_SIZE(tbl) - 1].mc) { return DATA_MASK; }
+	for (size_t i = 1; i < ARRAY_SIZE(tbl); i++) {
+		if (mc <= tbl[i].mc) {
+			const int32_t dt = tbl[i].mc - tbl[i - 1].mc;
+			if (dt == 0) { return tbl[i].code; }
+			return tbl[i - 1].code + (uint32_t)((tbl[i].code - tbl[i - 1].code) *
+							   (mc - tbl[i - 1].mc) / dt);
+		}
+	}
+	return DATA_MASK;
+}
+
+int rk3566_tsadc_tshut_mc(void) { return tshut_mc; }
+
+/* rk_tsadcv2_tshut_mode(CRU) + rk_tsadcv2_tshut_temp — 채널 0·1 같은 문턱.
+ * CRU 방식: 문턱을 넘으면(디바운스 4 표본) TSADC 가 CRU 에 리셋을 건다.
+ * GPIO 방식(PMIC 로)은 핀 설정이 필요해 쓰지 않는다. */
+int rk3566_tsadc_set_tshut(int mc)
+{
+	if (!ts) { return -ENODEV; }
+	if (boot_armed) { return -EPERM; }
+	uint32_t ie = sys_read32(ts + INT_EN) & ~(SHUT_2GPIO(0) | SHUT_2GPIO(1) |
+						  SHUT_2CRU(0) | SHUT_2CRU(1));
+	if (mc == 0) {
+		sys_write32(ie, ts + INT_EN);
+		sys_write32(DATA_MASK, ts + COMP_SHUT(0));
+		sys_write32(DATA_MASK, ts + COMP_SHUT(1));
+		tshut_mc = 0;
+		return 0;
+	}
+	const uint32_t code = temp_to_code(mc);
+	if (code == DATA_MASK) { return -ERANGE; }
+	sys_write32(code, ts + COMP_SHUT(0));
+	sys_write32(code, ts + COMP_SHUT(1));
+	sys_write32(ie | SHUT_2CRU(0) | SHUT_2CRU(1), ts + INT_EN);
+	tshut_mc = mc;
+	return 0;
+}
 
 uint32_t rk3566_tsadc_raw(int chn)
 {
@@ -95,6 +141,7 @@ static int rk3566_tsadc_init(void)
 	/* ② 부트로더가 셧다운을 켜 두었으면(INT_EN 의 2GPIO/2CRU 비트) **건드리지 않는다** —
 	 *    그 보호를 끄지 않으려고. 그때는 이미 돌고 있는 자동 측정을 그대로 읽는다. */
 	if (boot.int_en & (0xfu << 4 | 0xfu << 8)) {
+		boot_armed = true;
 		return 0;
 	}
 
@@ -112,9 +159,12 @@ static int rk3566_tsadc_init(void)
 	sys_write32(GRF_TSADC_ANA_REG(2), grf + GRF_TSADC_CON);
 	k_busy_wait(150);				/* TRM 18.5: ≥ 90 µs */
 
-	/* ④ 채널 0·1 자동 측정. 셧다운 비교값은 닿지 않는 0xfff, INT_EN 은 0 그대로 */
+	/* ④ 셧다운 문턱(linux 와 같은 순서: 모드·문턱 → 자동 측정 켜기) */
 	sys_write32(DATA_MASK, ts + COMP_SHUT(0));
 	sys_write32(DATA_MASK, ts + COMP_SHUT(1));
+	if (CONFIG_RK3566_TSADC_TSHUT_MC > 0) {
+		(void)rk3566_tsadc_set_tshut(CONFIG_RK3566_TSADC_TSHUT_MC);
+	}
 	sys_write32(AUTO_SRC_EN(0) | AUTO_SRC_EN(1), ts + AUTO_CON);
 	sys_write32(sys_read32(ts + AUTO_CON) | AUTO_EN | AUTO_Q_SEL_EN, ts + AUTO_CON);
 	return 0;

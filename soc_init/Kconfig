@@ -20,4 +20,12 @@ config RK3566_TSADC
 	depends on BOARD_RADXA_ZERO_3E
 	default y
 	help
-	  TSADC 채널 0(CPU)·1(GPU) 온도. 셧다운(TSHUT)은 켜지 않는다.
+	  TSADC 채널 0(CPU)·1(GPU) 온도 + 하드웨어 셧다운(CRU 리셋).
+
+config RK3566_TSADC_TSHUT_MC
+	int "하드웨어 셧다운 문턱 (1/1000 °C, 0 = 끔)"
+	depends on RK3566_TSADC
+	default 95000
+	help
+	  linux rk356x-base.dtsi 의 rockchip,hw-tshut-temp 와 같은 95 °C.
+	  넘으면 TSADC 가 CRU 리셋을 건다.

@@ -131,6 +131,36 @@ static int temp_mc(void)
 	return rk3566_tsadc_get_mc(0, &mc) ? -999999 : mc;
 }
 
+/* 소프트웨어 보호 문턱 (°C) — hub guard 로 바꾼다 */
+static volatile int g_down = 80, g_pause = 85, g_stop = 90;
+extern "C" void hub_llm_set_guard(int d, int p, int t) { g_down = d; g_pause = p; g_stop = t; }
+extern "C" void hub_llm_get_guard(int *d, int *p, int *t) { *d = g_down; *p = g_pause; *t = g_stop; }
+
+/* 토큰 사이에서 부른다. 0 = 계속, 1 = 멈춤(hot). 온도를 못 읽으면 보호 없이 계속한다
+ * (읽기 실패로 생성을 막지 않는다 — done 의 temp_mc 가 -999999 로 드러난다). */
+static int thermal_gate(int *max_mc, int *throttle_ms, int *went_down)
+{
+	int t = temp_mc();
+	if (t <= -999999) { return 0; }
+	if (t > *max_mc) { *max_mc = t; }
+	if (t >= g_stop * 1000) { return 1; }
+	if (t >= g_down * 1000 && clk1416_is_1416()) {
+		clk1416_back_to_1104("과열 보호");
+		*went_down = 1;
+	}
+	if (t >= g_pause * 1000) {
+		while (t >= (g_pause - 5) * 1000) {
+			if (atomic_get(&abort_flag)) { return 0; }
+			k_msleep(250);
+			*throttle_ms += 250;
+			t = temp_mc();
+			if (t > *max_mc) { *max_mc = t; }
+			if (t >= g_stop * 1000) { return 1; }
+		}
+	}
+	return 0;
+}
+
 static void run_one(void)
 {
 	const hub_req &r = cur;
@@ -155,6 +185,13 @@ static void run_one(void)
 	for (int i = 0; i < n; i++) {
 		if (toks[i] < 0 || toks[i] >= nv) {
 			OUT("HUBLLM/1 err id=%u code=bad_token msg=%d", r.id, (int)toks[i]);
+			return;
+		}
+	}
+	{
+		const int t = temp_mc();
+		if (t > -999999 && t >= g_pause * 1000) {	/* 뜨거우면 시작하지 않는다 */
+			OUT("HUBLLM/1 err id=%u code=too_hot msg=%d_mC>=%d", r.id, t, g_pause * 1000);
 			return;
 		}
 	}
@@ -203,6 +240,7 @@ static void run_one(void)
 	}
 	const int64_t t_pp = k_uptime_get() - t0;
 
+	int max_mc = temp_mc(), throttle_ms = 0, went_down = 0;
 	int n_gen = 0;
 	int64_t t_tg = 0, ttft = 0;
 	const char *stop = "max";
@@ -224,6 +262,7 @@ static void run_one(void)
 		if (llama_vocab_is_eog(vocab, tok)) { stop = "eos"; break; }
 		if (n_gen >= r.max_gen) { stop = "max"; break; }
 		if (atomic_get(&abort_flag)) { stop = "abort"; break; }
+		if (thermal_gate(&max_mc, &throttle_ms, &went_down)) { stop = "hot"; break; }
 
 		const int64_t s = k_uptime_get();
 		if (llama_decode(ctx, llama_batch_get_one(&tok, 1)) != 0) {
@@ -243,11 +282,12 @@ static void run_one(void)
 	const double pp_tps = t_pp ? (double)n * 1000.0 / (double)t_pp : 0.0;
 	const double tg_tps = (n_gen > 1 && t_tg) ? (double)(n_gen - 1) * 1000.0 / (double)t_tg : 0.0;
 	OUT("HUBLLM/1 done id=%u n_prompt=%d n_gen=%d ttft_ms=%" PRId64 " pp_tps=%.2f tg_tps=%.2f "
-	    "n_ctx=%d ctx_kib=%d heap_kib=%u threads=%d n_past=%d keep=%d temp=%.2f pres=%.2f rep=%.2f clk=%d guard_fail=%u temp_mc=%d stop=%s",
+	    "n_ctx=%d ctx_kib=%d heap_kib=%u threads=%d n_past=%d keep=%d temp=%.2f pres=%.2f rep=%.2f clk=%d guard_fail=%u temp_mc=%d max_temp_mc=%d throttle_ms=%d clk_down=%d stop=%s",
 	    r.id, n, n_gen, ttft, pp_tps, tg_tps, n_ctx_now, ctx_kib,
 	    (unsigned)heap_used_kib(), HUB_THREADS, n_past_now(), r.keep ? 1 : 0,
 	    (double)r.temp, (double)r.pres, (double)r.rep,
-	    clk1416_is_1416() ? 1416 : 1104, clk1416_guard_fail(), temp_mc(), stop);
+	    clk1416_is_1416() ? 1416 : 1104, clk1416_guard_fail(), temp_mc(), max_mc, throttle_ms,
+	    went_down, stop);
 }
 
 static bool make_ctx(int want);
@@ -385,7 +425,11 @@ static void serve(void)
 			llama_memory_clear(llama_get_memory(ctx), true);
 			OUT("HUBLLM/1 reset n_past=0");
 		} else if (cur.kind == HUB_CLK) {
-			if (cur.ctx_n == 1416 && !clk1416_is_1416()) {
+			const int tnow = temp_mc();
+			if (cur.ctx_n == 1416 && !clk1416_is_1416() && tnow > -999999 &&
+			    tnow >= (g_down - 5) * 1000) {
+				OUT("HUBLLM/1 err id=0 code=too_hot msg=%d_mC>=%d", tnow, (g_down - 5) * 1000);
+			} else if (cur.ctx_n == 1416 && !clk1416_is_1416()) {
 				(void)clk1416_raise();	/* 실패하면 1104 그대로 (이유는 printk) */
 			} else if (cur.ctx_n == 1104) {
 				clk1416_back_to_1104("hub clk 1104");

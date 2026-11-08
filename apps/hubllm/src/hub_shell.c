@@ -136,12 +136,41 @@ static int cmd_hub_temp(const struct shell *sh, size_t argc, char **argv)
 	int c0 = 0, c1 = 0;
 	const int e0 = rk3566_tsadc_get_mc(0, &c0), e1 = rk3566_tsadc_get_mc(1, &c1);
 	const struct rk3566_tsadc_regs *b = rk3566_tsadc_boot_regs();
-	shell_print(sh, "HUBLLM/1 temp cpu_mc=%d gpu_mc=%d err=%d,%d raw=%u,%u "
+	shell_print(sh, "HUBLLM/1 temp cpu_mc=%d gpu_mc=%d err=%d,%d raw=%u,%u tshut_mc=%d "
 		    "boot_auto_con=0x%08x boot_int_en=0x%08x boot_shut=0x%x,0x%x boot_data=0x%x,0x%x",
 		    e0 ? -999999 : c0, e1 ? -999999 : c1, e0, e1,
-		    rk3566_tsadc_raw(0), rk3566_tsadc_raw(1),
+		    rk3566_tsadc_raw(0), rk3566_tsadc_raw(1), rk3566_tsadc_tshut_mc(),
 		    b ? b->auto_con : 0, b ? b->int_en : 0, b ? b->comp_shut0 : 0,
 		    b ? b->comp_shut1 : 0, b ? b->data0 : 0, b ? b->data1 : 0);
+	return 0;
+}
+
+static int cmd_hub_tshut(const struct shell *sh, size_t argc, char **argv)
+{
+	const int c = argc > 1 ? atoi(argv[1]) : -1;
+	if (c != 0 && (c < 60 || c > 95)) {
+		shell_print(sh, "HUBLLM/1 err id=0 code=bad_arg msg=tshut_0_or_60..95");
+		return -EINVAL;
+	}
+	const int rc = rk3566_tsadc_set_tshut(c * 1000);
+	shell_print(sh, "HUBLLM/1 tshut mc=%d rc=%d", rk3566_tsadc_tshut_mc(), rc);
+	return rc;
+}
+
+static int cmd_hub_guard(const struct shell *sh, size_t argc, char **argv)
+{
+	if (argc == 4) {
+		const int d = atoi(argv[1]), p = atoi(argv[2]), t = atoi(argv[3]);
+		if (!(40 <= d && d < p && p < t && t <= 95)) {
+			shell_print(sh, "HUBLLM/1 err id=0 code=bad_arg msg=40<=down<pause<stop<=95");
+			return -EINVAL;
+		}
+		hub_llm_set_guard(d, p, t);
+	}
+	int d, p, t;
+	hub_llm_get_guard(&d, &p, &t);
+	shell_print(sh, "HUBLLM/1 guard down=%d pause=%d stop=%d tshut_mc=%d", d, p, t,
+		    rk3566_tsadc_tshut_mc());
 	return 0;
 }
 
@@ -201,7 +230,9 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_hub,
 	SHELL_CMD(reset, NULL, "KV(대화) 비우기", cmd_hub_reset),
 	SHELL_CMD_ARG(ctx, NULL, "ctx n=<n> — 문맥 다시 만들기", cmd_hub_ctx, 2, 0),
 	SHELL_CMD_ARG(clk, NULL, "clk 1416|1104 — 코어 클럭", cmd_hub_clk, 2, 0),
-	SHELL_CMD(temp, NULL, "칩 온도 (TSADC, 읽기 전용) + 부트로더가 남긴 설정", cmd_hub_temp),
+	SHELL_CMD(temp, NULL, "칩 온도 (TSADC) + 셧다운 문턱 + 부트로더가 남긴 설정", cmd_hub_temp),
+	SHELL_CMD_ARG(tshut, NULL, "tshut <°C> — 하드웨어 셧다운 문턱 (0 끔, 60..95)", cmd_hub_tshut, 2, 0),
+	SHELL_CMD_ARG(guard, NULL, "guard [down pause stop] — 소프트웨어 보호 (°C)", cmd_hub_guard, 1, 3),
 	SHELL_CMD(abort, NULL, "생성 중단 (토큰 사이에서)", cmd_hub_abort),
 	SHELL_CMD_ARG(info, NULL, "상태 · --kv 는 FW_INFO 한 줄", cmd_hub_info, 1, 1),
 	SHELL_SUBCMD_SET_END);

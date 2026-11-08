@@ -24,6 +24,11 @@
  *                        1416 은 vdd_cpu 1.025 V 를 먼저 쓰고, 감시 스레드가 0.5 s 마다
  *                        VSEL 을 읽어 어긋나면 즉시 1104 로 내린다.
  *                        → HUBLLM/1 clk mhz=<실측> state=<1416|1104> guard_reads= guard_fail=
+ *   hub tshut <°C>       하드웨어 셧다운 문턱 (0 = 끔, 60..95). 기본 95 — 시험할 때만 낮춘다
+ *   hub guard <down> <pause> <stop>   소프트웨어 보호 문턱 (°C, 기본 80 85 90):
+ *                        토큰마다 CPU 온도를 본다. ≥ down 이고 1416 이면 1104 로 내린다.
+ *                        ≥ pause 면 (pause−5) 아래로 식을 때까지 토큰 사이를 쉰다.
+ *                        ≥ stop 이면 생성을 멈춘다 (stop=hot). 1416 올림은 ≥ down−5 면 거절.
  *   hub abort
  *   hub info [--kv]
  *
@@ -74,6 +79,8 @@ int hub_llm_n_ctx(void);
 int hub_llm_ctx_kib(void);
 int hub_llm_load_ms(void);
 int hub_llm_n_past(void);
+void hub_llm_set_guard(int down_c, int pause_c, int stop_c);
+void hub_llm_get_guard(int *down_c, int *pause_c, int *stop_c);
 /** sha256(GGUF 머리 = 텐서 데이터 앞까지) · sha256(데이터 표본 64 × 64 KiB) — 16진 64자, 없으면 "-" */
 const char *hub_llm_model_hash(void);
 const char *hub_llm_model_smp(void);
