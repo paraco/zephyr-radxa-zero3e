@@ -50,7 +50,11 @@ def main():
             os.read(fd, 65536)
         except BlockingIOError:
             pass
-        os.write(fd, cmd.encode())
+        # 64 B 씩 끊어 보낸다 — 보드 셸의 수신 버퍼가 넘치지 않게 (펌웨어도 4 KiB 로 키웠다)
+        data = cmd.encode()
+        for k in range(0, len(data), 64):
+            os.write(fd, data[k:k + 64])
+            time.sleep(0.005)
         buf = b''
         out = b''
         deadline = time.time() + a.timeout

@@ -23,6 +23,7 @@
 #include <cinttypes>
 #include <cstdio>
 #include <cstring>
+#include <cstdarg>
 
 #include "hub.h"
 #include <moru_led.h>
@@ -84,12 +85,31 @@ static size_t heap_used_kib(void)
 /* llama·ggml 로그는 셸 CDC 를 어지럽히지 않게 경고 이상만 LOG 로 (uart2) */
 static void log_cb(enum ggml_log_level lv, const char *text, void *)
 {
-	if (lv >= GGML_LOG_LEVEL_WARN) {
+	if (lv >= GGML_LOG_LEVEL_WARN && strlen(text) > 2) {	/* 진행 점 '.' 은 버린다 */
 		LOG_WRN("%s", text);
 	}
 }
 
-#define OUT(...) shell_fprintf(cur_sh, SHELL_NORMAL, __VA_ARGS__)
+/* ⚠ 한 줄을 **다 만든 뒤 한 번에** 낸다. 다른 스레드에서 shell_fprintf 를
+ *   부를 때마다 셸이 프롬프트를 다시 그려, 조각마다 내면 줄 가운데에
+ *   'Moru > ' 가 끼었다 (2026-11-08 실기). */
+static char line[8192];
+static size_t ll;
+static void lput(const char *fmt, ...)
+{
+	va_list ap;
+	va_start(ap, fmt);
+	const int k = vsnprintf(line + ll, sizeof line - ll, fmt, ap);
+	va_end(ap);
+	if (k > 0) { ll += (size_t)k; if (ll >= sizeof line) { ll = sizeof line - 1; } }
+}
+static void lend(void)
+{
+	shell_fprintf(cur_sh, SHELL_NORMAL, "%s\n", line);
+	ll = 0;
+	line[0] = 0;
+}
+#define OUT(...) do { lput(__VA_ARGS__); lend(); } while (0)
 
 static void run_one(void)
 {
@@ -103,35 +123,35 @@ static void run_one(void)
 		n = llama_tokenize(vocab, r.text, r.text_len, toks, HUB_MAX_PROMPT_IDS,
 				   false, r.special);
 		if (n < 0) {
-			OUT("HUBLLM/1 err id=%u code=prompt_too_long msg=%d_tokens\n", r.id, -n);
+			OUT("HUBLLM/1 err id=%u code=prompt_too_long msg=%d_tokens", r.id, -n);
 			return;
 		}
 	}
 	if (n == 0) {
-		OUT("HUBLLM/1 err id=%u code=empty msg=no_tokens\n", r.id);
+		OUT("HUBLLM/1 err id=%u code=empty msg=no_tokens", r.id);
 		return;
 	}
 	const int nv = llama_vocab_n_tokens(vocab);
 	for (int i = 0; i < n; i++) {
 		if (toks[i] < 0 || toks[i] >= nv) {
-			OUT("HUBLLM/1 err id=%u code=bad_token msg=%d\n", r.id, (int)toks[i]);
+			OUT("HUBLLM/1 err id=%u code=bad_token msg=%d", r.id, (int)toks[i]);
 			return;
 		}
 	}
 	if (n + r.max_gen > n_ctx_now) {
-		OUT("HUBLLM/1 err id=%u code=ctx_full msg=%d+%d>%d\n", r.id, n, r.max_gen, n_ctx_now);
+		OUT("HUBLLM/1 err id=%u code=ctx_full msg=%d+%d>%d", r.id, n, r.max_gen, n_ctx_now);
 		return;
 	}
 
 	/* 보드가 실제로 넣는 id 열을 되돌린다 — 호스트가 입력을 맞춰 볼 수 있게 */
-	OUT("HUBLLM/1 prompt id=%u n=%d ids=", r.id, n);
-	for (int i = 0; i < n; i++) { OUT(i ? ",%d" : "%d", (int)toks[i]); }
-	OUT("\n");
+	lput("HUBLLM/1 prompt id=%u n=%d ids=", r.id, n);
+	for (int i = 0; i < n; i++) { lput(i ? ",%d" : "%d", (int)toks[i]); }
+	lend();
 
 	llama_memory_clear(llama_get_memory(ctx), true);	/* 첫 판: 단발 */
 	const int64_t t0 = k_uptime_get();
 	if (llama_decode(ctx, llama_batch_get_one(toks, n)) != 0) {
-		OUT("HUBLLM/1 err id=%u code=decode msg=prefill\n", r.id);
+		OUT("HUBLLM/1 err id=%u code=decode msg=prefill", r.id);
 		return;
 	}
 	const int64_t t_pp = k_uptime_get() - t0;
@@ -153,7 +173,7 @@ static void run_one(void)
 		size_t bl = 0;
 		(void)base64_encode(b64, sizeof b64 - 1, &bl, (const uint8_t *)piece, pn > 0 ? pn : 0);
 		b64[bl] = 0;
-		OUT("HUBLLM/1 tok id=%u i=%d tid=%d t=%" PRId64 " %s\n", r.id, n_gen, (int)tok,
+		OUT("HUBLLM/1 tok id=%u i=%d tid=%d t=%" PRId64 " %s", r.id, n_gen, (int)tok,
 		    k_uptime_get() - t0, (const char *)b64);
 		n_gen++;
 
@@ -163,7 +183,7 @@ static void run_one(void)
 
 		const int64_t s = k_uptime_get();
 		if (llama_decode(ctx, llama_batch_get_one(&tok, 1)) != 0) {
-			OUT("HUBLLM/1 err id=%u code=decode msg=gen_%d\n", r.id, n_gen);
+			OUT("HUBLLM/1 err id=%u code=decode msg=gen_%d", r.id, n_gen);
 			return;
 		}
 		t_tg += k_uptime_get() - s;
@@ -172,7 +192,7 @@ static void run_one(void)
 	const double pp_tps = t_pp ? (double)n * 1000.0 / (double)t_pp : 0.0;
 	const double tg_tps = (n_gen > 1 && t_tg) ? (double)(n_gen - 1) * 1000.0 / (double)t_tg : 0.0;
 	OUT("HUBLLM/1 done id=%u n_prompt=%d n_gen=%d ttft_ms=%" PRId64 " pp_tps=%.2f tg_tps=%.2f "
-	    "n_ctx=%d ctx_kib=%d heap_kib=%u threads=%d stop=%s\n",
+	    "n_ctx=%d ctx_kib=%d heap_kib=%u threads=%d stop=%s",
 	    r.id, n, n_gen, ttft, pp_tps, tg_tps, n_ctx_now, ctx_kib,
 	    (unsigned)heap_used_kib(), HUB_THREADS, stop);
 }
