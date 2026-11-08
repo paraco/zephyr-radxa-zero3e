@@ -1,0 +1,26 @@
+/*
+ * llm_heap — repack 가중치 등 큰 LLM 버퍼용 DRAM 구역 (후보, L9c 로 검증).
+ *
+ * 0x10000000 + 768 MiB = 0x10000000 ~ 0x40000000.
+ *   · U-Boot 가 넘기는 라이브 DT memory 는 0x00200000 ~ 0x80000000 (앞 2 MiB 는 TF-A).
+ *   · U-Boot 스크립트·환경 적재 주소(0x00c00000 근처 · 0x0a100000 등)를 피해 0x10000000 부터.
+ *   · Zephyr sram0 (0x40000000~) 바로 아래에서 끝난다.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+#include <zephyr/dt-bindings/memory-attr/memory-attr-arm64.h>
+
+/ {
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		llm_heap: memory@10000000 {
+			compatible = "zephyr,memory-region";
+			reg = <0x0 0x10000000 0x0 0x30000000>;	/* 768 MiB */
+			zephyr,memory-region = "LLM_HEAP";
+			zephyr,memory-attr = <DT_MEM_ARM64_MMU_NORMAL>;
+		};
+	};
+};
