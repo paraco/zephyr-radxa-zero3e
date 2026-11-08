@@ -5,6 +5,10 @@
     python3 tools/hub_chat.py --temp 0.7 --topk 20 --topp 0.8 --pres 1.5 --seed 7 "질문"
     python3 tools/hub_chat.py --verify "질문"           # 호스트 greedy 와 토큰 열 대조
     python3 tools/hub_chat.py --chat                    # 대화 (KV 이어가기, 빈 줄로 끝)
+    python3 tools/hub_chat.py --ref tools/refs/daeheungsa.txt "대흥사는 어디에 있나?"
+    python3 tools/hub_chat.py --system "한국어로만 짧게 답한다." "질문"
+        참고 자료를 주면 system 차례에 "자료에 있는 내용만, 없으면 '자료에 없습니다'" 지시와 함께
+        넣는다. 0.8B 는 지식이 거의 없어(환각) 사실은 자료로 넣어 주는 쓰임새가 맞다.
     python3 tools/hub_chat.py --raw "<|im_start|>user\\nhi<|im_end|>\\n"
 
 기본은 Qwen 채팅 틀(non-thinking)을 씌운다 (--think 면 빈 생각 블록을 빼서 모델이 정하게 한다):
@@ -33,6 +37,31 @@ from ota_test import open_raw  # noqa: E402
 
 MODEL = os.path.expanduser('~/Projects/PiZZa/models/Qwen3.5-0.8B-Q4_K_M.gguf')
 HOST_REF = '/tmp/claude-501/hub_host_ref'	# tools/hub_host_ref.cpp 를 빌드한 것
+
+
+DEFAULT_SYSTEM_REF = ('너는 아래 참고 자료에 적힌 내용만 사용해 한국어로 짧게 답한다. '
+                      '자료에 없는 내용은 지어내지 말고 "자료에 없습니다"라고 답한다.')
+
+
+def system_block(a):
+    """--system / --ref / --ref-text 로 Qwen 틀의 system 차례를 만든다. 없으면 빈 문자열."""
+    refs = []
+    for path in a.ref or []:
+        with open(path, encoding='utf-8') as f:
+            refs.append(f.read().strip())
+    if a.ref_text:
+        refs.append(a.ref_text.strip())
+    sysmsg = a.system if a.system is not None else (DEFAULT_SYSTEM_REF if refs else '')
+    if refs:
+        sysmsg = (sysmsg + '\n\n' if sysmsg else '') + '참고 자료:\n' + '\n\n'.join(refs)
+    if not sysmsg:
+        return ''
+    # prefill 이 약 7 토큰/초라 길면 첫 토큰이 늦다 — 대략 3 바이트 ≈ 1 토큰(한글)으로 어림
+    est = len(sysmsg.encode()) // 3
+    if est > 300:
+        print(f'[참고: system 부분이 약 {est} 토큰 — 첫 토큰까지 약 {est // 7} 초 더 걸린다]',
+              file=sys.stderr)
+    return f'<|im_start|>system\n{sysmsg}<|im_end|>\n'
 
 
 def nothink(a):
@@ -148,6 +177,9 @@ def main():
     ap.add_argument('--last-n', dest='last_n', type=int, default=64)
     ap.add_argument('--think', action='store_true',
                     help='생각 모드 허용. 기본은 Qwen 의 non-thinking 틀처럼 빈 <think></think> 를 미리 넣는다')
+    ap.add_argument('--system', default=None, help='시스템 지시 (참고 자료가 있으면 기본 지시를 쓴다)')
+    ap.add_argument('--ref', action='append', help='참고 자료 파일 (여러 번 줄 수 있다)')
+    ap.add_argument('--ref-text', dest='ref_text', default=None, help='참고 자료 글')
     ap.add_argument('--raw', action='store_true')
     ap.add_argument('--chat', action='store_true')
     ap.add_argument('--verify', action='store_true')
@@ -175,7 +207,7 @@ def main():
                 if not q:
                     break
                 # 앞 답이 <|im_end|>(eos) 로 끝나지 않았으면(max·abort) 여기서 닫는다
-                head = '' if first else (
+                head = system_block(a) if first else (
                     '\n' if getattr(gen, 'last_stop', '') == 'eos' else '<|im_end|>\n')
                 text = f'{head}<|im_start|>user\n{q}<|im_end|>\n<|im_start|>assistant\n{nothink(a)}'
                 ok, _, _ = gen(fd, text, a, rid, keep=True)
@@ -187,7 +219,8 @@ def main():
         if not a.question:
             ap.error('질문이 필요하다 (또는 --chat)')
         text = (a.question.encode().decode('unicode_escape').encode('latin-1').decode()
-                if a.raw else f'<|im_start|>user\n{a.question}<|im_end|>\n<|im_start|>assistant\n{nothink(a)}')
+                if a.raw else (f'{system_block(a)}<|im_start|>user\n{a.question}<|im_end|>\n'
+                               f'<|im_start|>assistant\n{nothink(a)}'))
         ok, pids, tids = gen(fd, text, a, rid, keep=False)
         if ok and a.verify:
             if a.temp > 0 or a.pres or a.freq or a.rep != 1.0:
