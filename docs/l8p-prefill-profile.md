@@ -43,3 +43,24 @@
 ## 덤
 - `<err> os: tid 0x404db930 is in use!` — 문맥을 만들고 지우기를 되풀이할 때 ggml 스레드 풀이 낸다.
   결과에는 영향이 없어 보이지만 hub ctx 로 문맥을 다시 만들 때도 날 수 있다. 미조사.
+
+## 메모리 배치 조사 (2026-11-08, apps/llm_l9c)
+
+| 항목 | 값 | 근거 |
+|---|---|---|
+| DRAM | LPDDR4 2 GB, 최종 1056 MHz | U-Boot 로그 DDR 초기화 |
+| 쓸 수 있는 구간 | 0x00200000 ~ 0x80000000 | 라이브 DT memory 노드 (앞 2 MiB TF-A) |
+| OP-TEE | 없음 | BL31: "No OPTEE provided" |
+| 지금 쓰는 곳 | Zephyr 0x40000000+256 MiB · OTA 0x50000000 · 중계 0x51000000 · 모델 0x58000000+512 MiB | boot.cmd · overlay |
+| repack 대상 | q4_K 161 + q5_K 99 + q6_K 36 = **약 296 MiB** (token_embd q6_K 199 MiB 는 출력층과 묶여 제외) | GGUF 합산 |
+
+**후보 llm_heap = 0x10000000 + 768 MiB — 실기 검증 통과**
+- 64 MiB 덩이 12 개 전부: 주소 패턴 쓰기 → 캐시 비우기 → 읽기 대조, **틀린 64비트 0 / 100,663,296**.
+  fault 없음 (보안 구역 아님).
+- 한 코어 대역폭 (256 MiB): 쓰기 4,213 MB/s · 읽기 3,014 MB/s · 복사 1,860 MB/s · 블롭 구역 읽기 3,012 MB/s.
+  → 생성 때 가중치 약 470 MB/토큰을 4 코어로 읽는다면 메모리만으로는 수십 ms 대 — 지금 274 ms/토큰은
+  메모리보다 **계산**에 묶여 있다는 L8p 해석과 맞다.
+- 원래 로그: log-l9c-2026-11-08.txt · overlay: apps/llm_common/llm_heap.overlay
+
+**다음**: llm_heap 에 sys_heap 을 만들고 큰 posix_memalign 만 그쪽으로 (링커 --wrap), use_extra_bufts=true ·
+GGML_CPU_REPACK 켠 측정판으로 prefill·생성 속도를 다시 잰다.
