@@ -7,8 +7,8 @@
     python3 tools/hub_chat.py --chat                    # 대화 (KV 이어가기, 빈 줄로 끝)
     python3 tools/hub_chat.py --raw "<|im_start|>user\\nhi<|im_end|>\\n"
 
-기본은 Qwen 채팅 틀을 씌운다:
-    <|im_start|>user\\n{질문}<|im_end|>\\n<|im_start|>assistant\\n
+기본은 Qwen 채팅 틀(non-thinking)을 씌운다 (--think 면 빈 생각 블록을 빼서 모델이 정하게 한다):
+    <|im_start|>user\\n{질문}<|im_end|>\\n<|im_start|>assistant\\n<think>\\n\\n</think>\\n\\n
 --chat 의 둘째 질문부터는 보드 KV 에 이어 붙일 **새 부분만** 보낸다
 (보드는 keep=1 이면 마지막 생성 토큰 <|im_end|> 까지 KV 에 넣어 둔다):
     \\n<|im_start|>user\\n{질문}<|im_end|>\\n<|im_start|>assistant\\n
@@ -32,6 +32,11 @@ from ota_test import open_raw  # noqa: E402
 
 MODEL = os.path.expanduser('~/Projects/PiZZa/models/Qwen3.5-0.8B-Q4_K_M.gguf')
 HOST_REF = '/tmp/claude-501/hub_host_ref'	# tools/hub_host_ref.cpp 를 빌드한 것
+
+
+def nothink(a):
+    # Qwen3.5 틀의 enable_thinking=false 와 같은 꼴: 답 앞에 빈 생각 블록
+    return '' if a.think else '<think>\n\n</think>\n\n'
 
 
 def send(fd, line):
@@ -123,6 +128,8 @@ def main():
     ap.add_argument('--freq', type=float, default=0.0)
     ap.add_argument('--rep', type=float, default=1.0)
     ap.add_argument('--last-n', dest='last_n', type=int, default=64)
+    ap.add_argument('--think', action='store_true',
+                    help='생각 모드 허용. 기본은 Qwen 의 non-thinking 틀처럼 빈 <think></think> 를 미리 넣는다')
     ap.add_argument('--raw', action='store_true')
     ap.add_argument('--chat', action='store_true')
     ap.add_argument('--verify', action='store_true')
@@ -152,7 +159,7 @@ def main():
                 # 앞 답이 <|im_end|>(eos) 로 끝나지 않았으면(max·abort) 여기서 닫는다
                 head = '' if first else (
                     '\n' if getattr(gen, 'last_stop', '') == 'eos' else '<|im_end|>\n')
-                text = f'{head}<|im_start|>user\n{q}<|im_end|>\n<|im_start|>assistant\n'
+                text = f'{head}<|im_start|>user\n{q}<|im_end|>\n<|im_start|>assistant\n{nothink(a)}'
                 ok, _, _ = gen(fd, text, a, rid, keep=True)
                 first = False
                 rid += 1
@@ -162,7 +169,7 @@ def main():
         if not a.question:
             ap.error('질문이 필요하다 (또는 --chat)')
         text = (a.question.encode().decode('unicode_escape').encode('latin-1').decode()
-                if a.raw else f'<|im_start|>user\n{a.question}<|im_end|>\n<|im_start|>assistant\n')
+                if a.raw else f'<|im_start|>user\n{a.question}<|im_end|>\n<|im_start|>assistant\n{nothink(a)}')
         ok, pids, tids = gen(fd, text, a, rid, keep=False)
         if ok and a.verify:
             if a.temp > 0 or a.pres or a.freq or a.rep != 1.0:
