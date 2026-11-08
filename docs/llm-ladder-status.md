@@ -1,7 +1,82 @@
 # Zephyr Hub LLM — 사다리 현황 (한 장 요약)
 
-2026-11-07 기준. 자세한 것은 각 앱의 README 와
-[llm-hub-test-plan.md](llm-hub-test-plan.md) 에 있다.
+**2026-11-08 기준.** 맨 위 "지금 상태" 가 정본이고, 그 아래는 날짜순 기록이다(지난 판단이
+바뀐 곳에는 표시를 달았다). 자세한 것은 각 앱의 README 와 [llm-hub-test-plan.md](llm-hub-test-plan.md).
+
+## 지금 상태 (2026-11-08)
+
+**보드가 질문을 받아 답한다.** `apps/hubllm` — USB CDC 셸(`hub gen`) → 토크나이저 → 배치
+prefill(repack) → 샘플러 → 토큰을 흘려보내고 지표 한 줄. Qwen3.5-0.8B Q4_K_M, 1104 MHz, 4 코어.
+
+### 사다리
+
+| 칸 | 상태 | 증거 |
+|---|---|---|
+| L0~L5b | ✅ QEMU·실기 | 합성 입력·가중치로 ggml 계산이 호스트와 같다 (아래 기준선) |
+| L6 순전파 | ✅ 실기 | L6c 12/12 토큰 · 로짓 다섯 조합 비트 동일 · L6d(1416 MHz) 12/12 |
+| L7a 토크나이저 | ✅ QEMU·실기 | 문장 12 개 id 열·되돌림 호스트와 일치 |
+| L7b 배치 prefill | ✅ 실기 | 1등 + 이어서 8/8 호스트와 일치 · 배치 = 하나씩 1등 같음 |
+| L7c 샘플러 | ✅ 실기 (hubllm) | greedy = llama_sampler_init_greedy · 같은 시드 확률 샘플링 재현 · penalties |
+| L7d 대화 | ✅ 실기 (hubllm) | keep=1 로 KV 이어가기 (n_past 정확) · greedy 호스트 대조는 동점 근처(1·2등 차 0.056)까지 같음 |
+| L8 성능 | ✅ 실측 | 아래 "성능" — UART 폭주·4 스레드·-O3·클럭·repack |
+| L9 클럭·온도 | 🟡 | 1416 MHz 는 장시간 부하 약 10 분에 정지(과열) → 기본 1104. 온도 읽기·과열 보호 실기 확인 |
+
+### 성능 (토큰 생성, 같은 12 토큰 시험 · 그 뒤는 hubllm)
+
+| 단계 | 생성 ms/토큰 | 배수 | 근거 |
+|---|---|---|---|
+| 처음 (1 스레드, UART 인터럽트 폭주) | 23,600 | — | l8-why-slow.md |
+| UART 폭주 고침 | 1,423 | 16.6× | dw_uart_busy.c · ladder.conf |
+| + 4 스레드 (SMP) | 421 | 3.38× | L6c |
+| + ggml `-O3` | 358 | 1.18× | L6c |
+| + 클럭 816 → 1104 MHz (boot.cmd) | 273 | 1.31× · 누적 86× | clock-raise-plan.md |
+| + repack (q4_K/q5_K/q6_K_8x4) | **249** | 1.10× · 누적 95× | L8q · hubllm |
+| (1416 MHz · L6d — 장시간 불안정, 쓰지 않음) | (222) | | |
+
+**프롬프트(배치) 처리**: 7.4 → **14.6 토큰/초** (repack, L8p→L8q). 참고 자료 질문 216 토큰의 첫 토큰
+28.9 → **14.8 s**. 원인 분석은 [l8p-prefill-profile.md](l8p-prefill-profile.md).
+
+### hubllm 이 갖춘 것
+
+| 기능 | 정본 |
+|---|---|
+| 규약 HUBLLM/1 (gen · tok · done · err · ctx · clk · temp · guard · tshut · reset) | apps/hubllm/src/hub.h |
+| FW_INFO (deviceid · role=hub · build · model_hash · model_smp · boot_slot · temp) | hub_shell.c |
+| 모델 해시 F2 — 머리 sha256 + 데이터 표본 sha256, 호스트 tools/gguf_hash.c 와 같은 값 | hub_llm.cpp model_scan |
+| 샘플러 · penalties · 대화 이어가기 · 문맥 길이 바꾸기(1024 기본, 4096 까지 확인) | hub.h |
+| 과열 보호 — 소프트웨어(80/85/90 °C) + 하드웨어 셧다운(CRU, 95 °C, 실기 리셋 확인) | soc_init/rk3566_tsadc.c · clock-raise-plan.md |
+| repack + llm_heap(0x10000000 + 768 MiB, 실기 쓰기·읽기 검증) | apps/llm_common/llm_bigheap.c |
+| 지속 ggml 스레드풀 (SMP 스택 회수 경쟁·누수 제거) | hub_llm.cpp |
+| 부팅 슬롯 F6 (try 확인 · main 은 영구 적용 뒤) | soc_init/boot_slot.c · boot.cmd |
+| OTA 수신 (hubllm → hubllm 전원 재투입 없이) · LED 상태 | apps/moru 에서 물려받음 |
+| 호스트 도구 — hub_chat.py(--verify · --chat · --ref) · hub_soak.py · hub_host_ref.cpp | tools/ |
+
+### 열린 것
+
+| 무엇 | 왜 열려 있나 |
+|---|---|
+| 방열 → 장시간 시험 · 1416 MHz 재도전 | 사람 손 (1104 에서도 생성 한 번에 약 +5 °C) |
+| hubllm 카드 영구 적용 (지금은 apply try 로만) | 사람 결정 |
+| 출력층 q6_K(생성 약 102 ms/토큰) → q8_0 재양자화 | 원본 F16 내려받기 승인 · model_hash·정답지 바뀜 |
+| DeltaNet 연산 NEON (생성 약 10 % · 배치 14 %) | 상류 코드 수정 |
+| repack 사본 495 MiB 중 출력층 199 MiB | 로더가 CPU override 에서도 repack 을 고른다 (llama-model-loader.cpp:1253) |
+| 0.8B 사실성 — 참고 자료로 크게 나아지나 잘 아는 상식은 지시를 넘는다 | 모델 한계 |
+| 첫 전원에 가끔 안 뜬다 (2026-11-08 세 번) | 원인 미조사 — 다음에 LED 단계로 가린다 |
+| 업스트림 보고 (DW UART busy-detect · POSIX 스택 회수 경쟁) | 초안 작성·게시 승인 |
+
+### 문서 지도
+
+| 문서 | 내용 |
+|---|---|
+| [llm-hub-test-plan.md](llm-hub-test-plan.md) | 사다리 설계 · 판정 기준 |
+| [l6-decisions.md](l6-decisions.md) · [l6b-golden-plan.md](l6b-golden-plan.md) · [l6b-sensitivity.md](l6b-sensitivity.md) | L6 결정 · 골든값 · 1 ulp 민감도 |
+| [l8-why-slow.md](l8-why-slow.md) | 23.6 s → 273 ms (UART · SMP · -O3) |
+| [clock-raise-plan.md](clock-raise-plan.md) | 클럭·전압(L9a·L9b) · 1416 장시간 실패 · 온도 · 과열 보호 |
+| [l8p-prefill-profile.md](l8p-prefill-profile.md) | prefill 연산별 실측 · 메모리 배치 · repack |
+| [upstream-report.md](upstream-report.md) | 상류 보고 초안 |
+| apps/hubllm/README.md | hubllm 실기 기록 (질문·참고 자료·repack·F6) |
+
+---
 
 ## 기준선 — 2026-11-07 전체 통과
 
@@ -81,12 +156,12 @@ L5a·L5b 의 **CRC·불일치 개수·최대 상대오차·전체 요약이 하�
 | **L5a** Gated DeltaNet | ✅ QEMU | 순환 상태 262,144개가 표본 1개 빼고 비트 일치 |
 | **L5b** Gated Attention | ✅ QEMU | GQA 4:1 · 부분 mRoPE 64/256 확인 |
 | **L6** 전진 순전파 | ✅ 실기 | L6c 12/12 토큰 일치 (1104 MHz 273 ms · 1416 MHz 222 ms/토큰) |
-| **L7** 생성 | 🟡 | **L7a 토크나이저 ✅ QEMU·실기 12/12** (2026-11-08) — 문장 12개 id 열·되돌림 호스트와 일치. **L7b prefill ✅ 실기** (배치 64: 1등·이어서 8/8 일치, 배치=하나씩 1등 같음. 단 배치 prefill 7 토큰/초로 하나씩보다 2배만 빠르다 — 문맥 힙 +108 MiB). L7c~d(샘플러·대화) 남음 |
-| **L8** 성능 | ⛔ | **하드웨어 전용** — QEMU 로 못 잰다 |
+| **L7** 생성 | ✅ 실기 | L7a 토크나이저 12/12 · L7b prefill 8/8 · L7c·L7d 는 hubllm 으로 확인 (맨 위 "지금 상태") |
+| **L8** 성능 | ✅ 실측 | 273 → 249 ms/토큰(repack) · prefill 7.4 → 14.6 토큰/초 (맨 위 "성능") |
 
 **L0~L5b 는 전부 합성 입력·합성 가중치다.** 가린 것은
 **"ggml 이 호스트와 똑같이 계산하는가"** 이고,
-**"llama.cpp 의 `qwen35` 경로가 옳은가" 는 아직 못 가렸다.**
+"llama.cpp 의 `qwen35` 경로가 옳은가" 는 **L6c·L7 에서 가렸다** (2026-11-08 갱신 — 그 전에는 "아직 못 가렸다").
 
 ## 가장 큰 결과 — B안이 성립한다
 
@@ -212,7 +287,12 @@ DeltaNet (conv_input-N): 0 1 2  4 5 6  8 9 10  12 13 14  16 17 18  20 21 22  →
 
 ---
 
-## ⚠ L6 전에 결정해야 하는 것 둘 (reviewer 지적, 아직 안 고쳤다)
+## ⚠ L6 전에 결정해야 하는 것 둘 (reviewer 지적) — ✅ 2026-11-08 둘 다 닫힘
+
+> **닫힌 뒤 상태:** ① repack 은 L6·L7(정확성)에서 끄고 L8q·hubllm(성능)에서 켰다 —
+> 정답(L7b 'chat' 1등·이어서 8/8)이 그대로이고 prefill 1.90 배. 가중치 사본은 llm_heap 으로.
+> ② 백엔드 레지스트리는 apps/llm_common/ggml_backend_reg_zephyr.cpp 로 대신했다(L6 에서 링크됨).
+> 아래는 당시 기록이다.
 
 둘 다 **지금 틀린 것은 아니지만** L6 에서 드러난다. 설계 판단이 필요해
 남겨 둔다.
