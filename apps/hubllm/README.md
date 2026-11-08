@@ -81,8 +81,16 @@ hub_chat.py 는 기본으로 Qwen non-thinking 틀처럼 `<think>\n\n</think>\n\
 ## 부팅 슬롯 (F6, 6873d29 · 새 boot.scr 19,815 B 를 카드에 복사한 뒤 실기)
 
 - apply try 로 뜬 hubllm: `hub info` → "부팅 슬롯 try" · FW_INFO `boot_slot=try` ✓
-- main(카드의 zephyr.bin) 경로는 아직 못 봤다 — 카드의 moru 가 슬롯 기능 전 판(a265d15)이다.
-  hubllm 이나 새 moru 를 영구 적용하면 확인된다.
+- main(카드의 zephyr.bin): **hubllm 영구 적용(2026-11-08 22시, build c6b1cc157c7e) 뒤 boot_slot=main ✓**
+
+## 카드에 영구 적용 (2026-11-08)
+
+- `moru ota apply` 로 hubllm(c6b1cc157c7e, 4,838,352 B, md5 c3a6cad4…d53a)을 카드의 zephyr.bin 으로.
+  이전 moru(a265d15)는 **zephyr.bin.old** 로 백업됐다.
+- 이제 전원만 넣으면 hubllm 이 뜬다 (부팅 약 50 s + LLM 적재 8.5 s). OTA 수신·apply try 도 그대로 된다.
+- **되돌리기**: hubllm 이 부팅하지 못하면 카드를 Mac 에 꽂고 zephyr.bin.old 를 zephyr.bin 으로 되돌린다:
+  `sudo sh -c 'mcopy -i /dev/rdiskNs2 ::/zephyr.bin.old /tmp/zb && mcopy -i /dev/rdiskNs2 -o /tmp/zb ::/zephyr.bin'`
+  (N 은 diskutil list 로). 부팅은 하는데 이상하면 OTA 로 moru 를 다시 apply 해도 된다.
 
 ## 아직 없는 것
 - boot_slot (boot.cmd 수정 = 카드 작업 필요). 온도 읽기(tsadc 드라이버 없음).
