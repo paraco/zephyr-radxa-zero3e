@@ -30,7 +30,8 @@ prefill(repack) → 샘플러 → 토큰을 흘려보내고 지표 한 줄. Qwen
 | + 4 스레드 (SMP) | 421 | 3.38× | L6c |
 | + ggml `-O3` | 358 | 1.18× | L6c |
 | + 클럭 816 → 1104 MHz (boot.cmd) | 273 | 1.31× · 누적 86× | clock-raise-plan.md |
-| + repack (q4_K/q5_K/q6_K_8x4) | **249** | 1.10× · 누적 95× | L8q · hubllm |
+| + repack (q4_K/q5_K/q6_K_8x4) | 249 | 1.10× · 누적 95× | L8q · hubllm |
+| + 출력층 q6_K → q8_0 (블롭 창 576 MiB) | **235** | 1.06× · 누적 100× | l8p-prefill-profile.md |
 | (1416 MHz · L6d — 장시간 불안정, 쓰지 않음) | (222) | | |
 
 **프롬프트(배치) 처리**: 7.4 → **14.6 토큰/초** (repack, L8p→L8q). 참고 자료 질문 216 토큰의 첫 토큰
@@ -57,7 +58,6 @@ prefill(repack) → 샘플러 → 토큰을 흘려보내고 지표 한 줄. Qwen
 |---|---|
 | 방열 → 장시간 시험 · 1416 MHz 재도전 | 사람 손 (1104 에서도 생성 한 번에 약 +5 °C) |
 | hubllm 카드 영구 적용 (지금은 apply try 로만) | 사람 결정 |
-| 출력층 q6_K(생성 약 102 ms/토큰) → q8_0 재양자화 | 원본 F16 내려받기 승인 · model_hash·정답지 바뀜 |
 | DeltaNet 연산 NEON (생성 약 10 % · 배치 14 %) | 상류 코드 수정 |
 | repack 사본 495 MiB 중 출력층 199 MiB | 로더가 CPU override 에서도 repack 을 고른다 (llama-model-loader.cpp:1253) |
 | 0.8B 사실성 — 참고 자료로 크게 나아지나 잘 아는 상식은 지시를 넘는다 | 모델 한계 |
