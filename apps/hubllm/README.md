@@ -92,6 +92,25 @@ hub_chat.py 는 기본으로 Qwen non-thinking 틀처럼 `<think>\n\n</think>\n\
   `sudo sh -c 'mcopy -i /dev/rdiskNs2 ::/zephyr.bin.old /tmp/zb && mcopy -i /dev/rdiskNs2 -o /tmp/zb ::/zephyr.bin'`
   (N 은 diskutil list 로). 부팅은 하는데 이상하면 OTA 로 moru 를 다시 apply 해도 된다.
 
+## SD 카드 — 모델 고르기·직접 읽기 (2026-11-09)
+
+| 명령 | 하는 일 |
+|---|---|
+| `hub model` | 지금 모델 파일 · 해시 · 로그 번호 |
+| `hub model <파일> [save]` | 재부팅해서 U-Boot 가 `models/<파일>` 을 올린다 (save = hub.conf 기본값도 바꿈) |
+| `hub load <파일>` | **재부팅 없이** Zephyr 가 SD 에서 `models/<파일>` 을 읽어 다시 적재한다. `hub abort` 로 중단 |
+| `sd ls [<디렉터리>]` | BLOB 파티션 목록 (기본 models) |
+| `sd cmp [<MiB>]` | 지금 모델을 SD 에서 읽어 RAM 과 바이트 비교 + 속도 |
+
+`hub load` 실기 (apply try, 1104 MHz):
+- `nothere.gguf` → `err code=load_open msg=-2_…` · 지금 모델은 그대로.
+- q8out → q4km: 507 MiB 읽기 58.7 s (8.66 MB/s, PIO · 25 MHz) + 적재 8.5 s. 해시 a0d2c7b7… = 1단계 실측과 같다.
+  내리면 llm_heap 616 → 0 MiB 로 다 돌아온다. 생성 정상 (tg 4.01 tok/s).
+- 읽는 중 `hub abort` → 모델 없음(state noblob, `hub gen` 은 not_ready). 그 상태에서 `hub load` 로 회복된다.
+- q4km → q8out: 566 MiB 읽기 65.4 s + 적재 8.8 s, 해시 27d9b2cd… · llm_heap 616 MiB · tg 4.25 tok/s (부팅 적재와 같다).
+- 바꾼 모델은 이번 부팅에만 쓴다. 다음 부팅 기본값은 `hub model <파일> save`.
+- 읽는 동안 `sd ls`·`sd cmp` 는 `err code=busy` (FatFs 를 한 번에 하나만 쓴다).
+
 ## 아직 없는 것
 - boot_slot (boot.cmd 수정 = 카드 작업 필요). 온도 읽기(tsadc 드라이버 없음).
 - 0.8B 모델이라 답의 사실성은 낮다 — 첫 답(저압 활선 확인)은 기술적으로 틀렸다.

@@ -196,6 +196,26 @@ static int cmd_hub_model(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+/* hub load <파일> — 2단계: Zephyr 가 SD 에서 직접 읽어 재부팅 없이 바꾼다 (hub_fs.c · hub_llm.cpp) */
+static int cmd_hub_load(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc);
+	if (hub_relay_name_ok(argv[1])) {
+		shell_print(sh, "HUBLLM/1 err id=0 code=bad_arg msg=model_file_[A-Za-z0-9._-]_max60");
+		return -EINVAL;
+	}
+	memset(&req, 0, sizeof req);
+	req.kind = HUB_LOAD;
+	strcpy(req.text, argv[1]);	/* 이름 규칙상 60 자 이하 */
+	req.text_len = (int)strlen(argv[1]);
+	const int rc = hub_llm_submit(sh, &req);
+	if (rc) {
+		shell_print(sh, "HUBLLM/1 err id=0 code=%s msg=%s", rc == -EBUSY ? "busy" : "not_ready",
+			    hub_llm_state());
+	}
+	return rc;
+}
+
 static int cmd_hub_reboot(const struct shell *sh, size_t argc, char **argv)
 {
 	ARG_UNUSED(argc); ARG_UNUSED(argv);
@@ -269,6 +289,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_hub,
 	SHELL_CMD_ARG(ctx, NULL, "ctx n=<n> — 문맥 다시 만들기", cmd_hub_ctx, 2, 0),
 	SHELL_CMD_ARG(clk, NULL, "clk 1416|1104 — 코어 클럭", cmd_hub_clk, 2, 0),
 	SHELL_CMD_ARG(model, NULL, "model [<파일> [save]] — 지금 모델 / 다음 부팅 모델(재부팅)", cmd_hub_model, 1, 2),
+	SHELL_CMD_ARG(load, NULL, "load <파일> — SD models/<파일> 을 재부팅 없이 적재 (hub abort 로 중단)", cmd_hub_load, 2, 0),
 	SHELL_CMD(reboot, NULL, "재부팅 — 쌓인 로그를 U-Boot 가 카드에 쓴다", cmd_hub_reboot),
 	SHELL_CMD(log, NULL, "로그 크기", cmd_hub_log),
 	SHELL_CMD(temp, NULL, "칩 온도 (TSADC) + 셧다운 문턱 + 부트로더가 남긴 설정", cmd_hub_temp),

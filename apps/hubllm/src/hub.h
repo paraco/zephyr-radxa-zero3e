@@ -29,6 +29,9 @@
  *                        토큰마다 CPU 온도를 본다. ≥ down 이고 1416 이면 1104 로 내린다.
  *                        ≥ pause 면 (pause−5) 아래로 식을 때까지 토큰 사이를 쉰다.
  *                        ≥ stop 이면 생성을 멈춘다 (stop=hot). 1416 올림은 ≥ down−5 면 거절.
+ *   hub load <파일>      SD 의 models/<파일> 을 재부팅 없이 모델 창에 읽어 다시 적재한다.
+ *                        → HUBLLM/1 load_progress … · HUBLLM/1 load file= bytes= read_ms= mbps= load_ms= hash=
+ *                        읽기 중 실패·중단이면 모델이 없어진다(state noblob) — hub load 로 다시.
  *   hub abort
  *   hub info [--kv]
  *
@@ -49,7 +52,7 @@ struct shell;
 #define HUB_MAX_PROMPT_BYTES 3072
 #define HUB_MAX_PROMPT_IDS   1024
 
-enum hub_kind { HUB_GEN = 0, HUB_RESET, HUB_CTX, HUB_CLK };
+enum hub_kind { HUB_GEN = 0, HUB_RESET, HUB_CTX, HUB_CLK, HUB_LOAD };	/* LOAD: text = 파일 이름 */
 
 struct hub_req {
 	int kind;
@@ -70,7 +73,7 @@ struct hub_req {
 	char text[HUB_MAX_PROMPT_BYTES];
 };
 
-/** 0 = 받음. -EBUSY = 생성 중 · -EAGAIN = 모델 준비 전. */
+/** 0 = 받음. -EBUSY = 생성·적재 중 · -EAGAIN = 모델 준비 전 (HUB_LOAD 는 모델이 없어도 받는다). */
 int hub_llm_submit(const struct shell *sh, const struct hub_req *r);
 void hub_llm_abort(void);
 /** 상태 한 줄 이름: "loading" "ready" "busy" "noblob" "error" */
@@ -84,6 +87,12 @@ void hub_llm_get_guard(int *down_c, int *pause_c, int *stop_c);
 /** sha256(GGUF 머리 = 텐서 데이터 앞까지) · sha256(데이터 표본 64 × 64 KiB) — 16진 64자, 없으면 "-" */
 const char *hub_llm_model_hash(void);
 const char *hub_llm_model_smp(void);
+
+/* hub_fs.c — SD BLOB 파티션의 models/<name>. 처음 부를 때 조용히 마운트한다. */
+int hub_fs_model_size(const char *name, size_t *size);
+/** dst 로 통째 읽는다. prog(done, total) 가 0 아닌 값을 주면 멈춘다(-ECANCELED). */
+int hub_fs_read_model(const char *name, void *dst, size_t max, size_t *got,
+		      int (*prog)(size_t done, size_t total));
 
 #ifdef __cplusplus
 }

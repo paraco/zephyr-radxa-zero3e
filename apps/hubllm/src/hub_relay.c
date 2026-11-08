@@ -95,7 +95,7 @@ void hub_log(const char *line)
 	k_spin_unlock(&lk, k);
 }
 
-int hub_relay_request_model(const char *file, bool save)
+int hub_relay_name_ok(const char *file)
 {
 	const size_t n = strlen(file);
 	if (n == 0 || n > 60) { return -EINVAL; }
@@ -106,6 +106,18 @@ int hub_relay_request_model(const char *file, bool save)
 			return -EINVAL;	/* 경로·공백 금지 — U-Boot 명령에 그대로 들어간다 */
 		}
 	}
+	return 0;
+}
+
+void hub_relay_set_loaded(const char *file)
+{
+	strncpy(loaded, file, sizeof loaded - 1);
+	loaded[sizeof loaded - 1] = 0;
+}
+
+int hub_relay_request_model(const char *file, bool save)
+{
+	if (hub_relay_name_ok(file)) { return -EINVAL; }
 	char *e = (char *)(R + OFF_ENV);
 	memset(e, 0, 0x100);
 	strcpy(e, "hub_req=");

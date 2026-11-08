@@ -12,6 +12,10 @@ const char *hub_relay_logseq(void);
 /** 로그 한 줄 덧붙이기 (끝에 \n 을 붙인다). 다 차면 버리고 잘림 표시를 한 번 남긴다. */
 void hub_log(const char *line);
 size_t hub_log_len(void);
+/** 모델 파일 이름 규칙: 1..60 자, [A-Za-z0-9._-] 만 (경로·공백 금지). 0 / -EINVAL */
+int hub_relay_name_ok(const char *file);
+/** hub load 가 모델을 바꾼 뒤 이름을 고친다 (U-Boot 가 넘긴 값 대신) */
+void hub_relay_set_loaded(const char *file);
 /** 다음 부팅에 올릴 모델을 적는다. save 면 hub.conf 의 기본값도 바꾼다. 0 / -EINVAL */
 int hub_relay_request_model(const char *file, bool save);
 /** PSCI SYSTEM_RESET — 로그는 다음 부팅에 U-Boot 가 카드에 쓴다 */

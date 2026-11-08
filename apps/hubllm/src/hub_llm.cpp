@@ -61,6 +61,8 @@ static K_SEM_DEFINE(req_sem, 0, 1);
 
 static llama_model *model;
 static llama_context *ctx;
+static FILE *model_fp;		/* fmemopen — llama 는 받은 FILE 을 닫지 않는다(llama-mmap owns_fp=false) */
+static volatile bool serving;	/* serve() 에 들어갔다 */
 /* 지속 스레드풀 — ggml 은 기본으로 계산마다 워커 3 개를 만들고 거두는데, Zephyr POSIX 의
  * 회수가 SMP 에서 아직 안 죽은 스레드의 스택을 못 풀어 128 KiB 씩 잃는다
  * ('<err> os: tid … is in use!' — kernel/dynamic.c). 스레드를 한 번만 만들어 경쟁을 없앤다. */
@@ -89,7 +91,11 @@ extern "C" int hub_llm_n_past(void) { return state == ST_BUSY ? -1 : n_past_now(
 extern "C" int hub_llm_submit(const struct shell *sh, const struct hub_req *r)
 {
 	if (state == ST_BUSY) { return -EBUSY; }
-	if (state != ST_READY) { return -EAGAIN; }
+	/* hub load 는 모델이 없어도(noblob·error) 받는다 — 단 LLM 스레드가 요청을 기다릴 때만 */
+	if (!(state == ST_READY || (r->kind == HUB_LOAD && serving &&
+				    (state == ST_NOBLOB || state == ST_ERROR)))) {
+		return state == ST_LOADING ? -EBUSY : -EAGAIN;
+	}
 	cur = *r;
 	cur_sh = sh;
 	atomic_set(&abort_flag, 0);
@@ -356,26 +362,22 @@ static bool model_scan(void)
 	return true;
 }
 
-static void hub_thread(void *, void *, void *)
+/* 모델 창(BLOB_ADDR)의 GGUF 를 적재하고 문맥을 만든다. 실패하면 state 를 noblob/error 로 둔다. */
+static bool load_blob(void)
 {
-	llama_log_set(log_cb, nullptr);
-
 	moru_led_set(MORU_LED_BLOB);
 	if (*(const uint32_t *)BLOB_ADDR != 0x46554747u) {
 		LOG_WRN("블롭이 GGUF 가 아니다 (0x%08x) — LLM 없이 셸만", *(const uint32_t *)BLOB_ADDR);
 		state = ST_NOBLOB;
-		moru_led_set(MORU_LED_READY);
-		return;
+		return false;
 	}
-	llama_backend_init();
 	const int64_t t0 = k_uptime_get();
 	if (!model_scan()) {
 		LOG_ERR("GGUF 머리를 읽지 못했다");
 		state = ST_ERROR;
-		moru_led_set(MORU_LED_FAIL);
-		return;
+		return false;
 	}
-	FILE *f = fmemopen((void *)BLOB_ADDR, model_bytes, "rb");
+	model_fp = fmemopen((void *)BLOB_ADDR, model_bytes, "rb");
 	llama_model_params mp = llama_model_default_params();
 	mp.n_gpu_layers    = 0;
 	mp.load_mode       = LLAMA_LOAD_MODE_MMAP;
@@ -384,33 +386,113 @@ static void hub_thread(void *, void *, void *)
 	/* ⚠ 출력층(token_embd 를 함께 씀, q6_K 199 MiB)도 repack 된다 — CPU_REPACK 495.5 MiB =
 	 *   대상 296 + 출력층 199. tensor_buft_overrides 로 CPU 를 지정해도 로더가 CPU 의 추가
 	 *   버퍼(repack)를 다시 고른다(llama-model-loader.cpp:1253) — 빼려면 상류를 고쳐야 해 그대로 둔다. */
-	model = f ? llama_model_load_from_file_ptr(f, mp) : nullptr;
+	model = model_fp ? llama_model_load_from_file_ptr(model_fp, mp) : nullptr;
 	if (model == nullptr) {
 		LOG_ERR("모델 적재 실패");
 		state = ST_ERROR;
-		moru_led_set(MORU_LED_FAIL);
-		return;
+		return false;
 	}
 	vocab = llama_model_get_vocab(model);
 
 	if (!make_ctx(0)) {
 		LOG_ERR("문맥 생성 실패");
 		state = ST_ERROR;
-		moru_led_set(MORU_LED_FAIL);
-		return;
+		return false;
 	}
 	load_ms = (int)(k_uptime_get() - t0);
 	LOG_INF("LLM 준비: 적재 %d ms · n_ctx %d · 문맥 %d KiB · 힙 %u KiB · llm_heap %u MiB", load_ms,
 		n_ctx_now, ctx_kib, (unsigned)heap_used_kib(), (unsigned)(llm_bigheap_used() >> 20));
-	{
+	return true;
+}
+
+/* 문맥·모델을 내려 llm_heap(repack 사본)과 모델 창을 비운다 */
+static void unload(void)
+{
+	if (ctx) { llama_detach_threadpool(ctx); llama_free(ctx); ctx = nullptr; }
+	if (model) { llama_model_free(model); model = nullptr; }
+	if (model_fp) { fclose(model_fp); model_fp = nullptr; }
+	vocab = nullptr;
+	n_ctx_now = 0;
+	ctx_kib = 0;
+	model_bytes = 0;
+	strcpy(model_hash, "-");
+	strcpy(model_smp, "-");
+}
+
+static int64_t rd_t0, rd_last;
+static int read_prog(size_t done, size_t total)
+{
+	const int64_t now = k_uptime_get();
+	if (now - rd_last >= 5000 || done == total) {	/* 5 초마다 한 줄 */
+		rd_last = now;
+		const int64_t ms = now - rd_t0;
+		OUT("HUBLLM/1 load_progress mib=%u of=%u ms=%lld mbps=%.2f", (unsigned)(done >> 20),
+		    (unsigned)(total >> 20), (long long)ms,
+		    ms ? (double)done / 1048576.0 * 1000.0 / (double)ms : 0.0);
+	}
+	return atomic_get(&abort_flag) ? 1 : 0;
+}
+
+/* hub load <파일> — SD models/<파일> 을 모델 창에 읽어 다시 적재한다 (재부팅 없이) */
+static void do_load(const char *name)
+{
+	size_t total = 0;
+	int rc = hub_fs_model_size(name, &total);
+	if (rc == 0 && total > BLOB_WIN) { rc = -EFBIG; }
+	if (rc) {	/* 지금 모델은 그대로 둔다 */
+		OUT("HUBLLM/1 err id=0 code=load_open msg=%d_%s", rc, name);
+		return;
+	}
+	const size_t heap_before = llm_bigheap_used() >> 20;
+	unload();
+	hub_relay_set_loaded("-");
+	state = ST_LOADING;
+	moru_led_set(MORU_LED_BLOB);
+	/* 읽는 도중 끊겨도 옛 모델로 오인하지 않게 매직부터 지운다 */
+	*(volatile uint32_t *)BLOB_ADDR = 0;
+	OUT("HUBLLM/1 load_start file=%s bytes=%zu llm_heap_mib=%u->%u", name, total,
+	    (unsigned)heap_before, (unsigned)(llm_bigheap_used() >> 20));
+	size_t got = 0;
+	rd_t0 = rd_last = k_uptime_get();
+	rc = hub_fs_read_model(name, (void *)BLOB_ADDR, BLOB_WIN, &got, read_prog);
+	const int64_t read_ms = k_uptime_get() - rd_t0;
+	if (rc) {
+		*(volatile uint32_t *)BLOB_ADDR = 0;
+		state = ST_NOBLOB;
+		OUT("HUBLLM/1 err id=0 code=%s msg=%d_got_%zu", rc == -ECANCELED ? "load_abort" : "load_read",
+		    rc, got);
+		return;
+	}
+	hub_relay_set_loaded(name);
+	const bool ok = load_blob();
+	char b[320];
+	snprintf(b, sizeof b, "HUBLLM/1 load file=%s bytes=%zu read_ms=%lld mbps=%.2f ok=%d load_ms=%d "
+		 "hash=%s n_ctx=%d heap_kib=%u llm_heap_mib=%u", name, got, (long long)read_ms,
+		 read_ms ? (double)got / 1048576.0 * 1000.0 / (double)read_ms : 0.0, ok ? 1 : 0,
+		 ok ? load_ms : -1, model_hash, n_ctx_now, (unsigned)heap_used_kib(),
+		 (unsigned)(llm_bigheap_used() >> 20));
+	OUT("%s", b);
+	char lb[352];
+	snprintf(lb, sizeof lb, "t=%lld %s", (long long)k_uptime_get(), b);
+	hub_log(lb);
+}
+
+static void hub_thread(void *, void *, void *)
+{
+	llama_log_set(log_cb, nullptr);
+	llama_backend_init();
+	if (load_blob()) {
 		char b[256];
 		snprintf(b, sizeof b, "t=%lld HUBLLM/1 boot model_file=%s model_hash=%s load_ms=%d n_ctx=%d "
 			 "heap_kib=%u logseq=%s", (long long)k_uptime_get(), hub_relay_loaded(), model_hash,
 			 load_ms, n_ctx_now, (unsigned)heap_used_kib(), hub_relay_logseq());
 		hub_log(b);
+		state = ST_READY;
+		moru_led_set(MORU_LED_READY);
+	} else {
+		/* 셸은 살아 있다 — hub load 로 SD 에서 다시 올릴 수 있다 */
+		moru_led_set(state == ST_NOBLOB ? MORU_LED_READY : MORU_LED_FAIL);
 	}
-	state = ST_READY;
-	moru_led_set(MORU_LED_READY);
 	serve();
 }
 
@@ -453,6 +535,7 @@ static bool make_ctx(int want)
 
 static void serve(void)
 {
+	serving = true;
 	for (;;) {
 		k_sem_take(&req_sem, K_FOREVER);
 		moru_led_set(MORU_LED_INFER);
@@ -477,18 +560,23 @@ static void serve(void)
 			if (!make_ctx(cur.ctx_n)) {
 				OUT("HUBLLM/1 err id=0 code=ctx_alloc msg=%d", cur.ctx_n);
 				if (!make_ctx(old) && !make_ctx(0)) {
-					state = ST_ERROR;
-					moru_led_set(MORU_LED_FAIL);
-					return;
+					OUT("HUBLLM/1 err id=0 code=ctx_lost msg=hub_load_to_recover");
 				}
 			}
 			OUT("HUBLLM/1 ctx n_ctx=%d ctx_kib=%d heap_kib=%u", n_ctx_now, ctx_kib,
 			    (unsigned)heap_used_kib());
+		} else if (cur.kind == HUB_LOAD) {
+			do_load(cur.text);
 		} else {
 			run_one();
 		}
-		moru_led_set(MORU_LED_READY);
-		state = ST_READY;
+		if (model && ctx) {
+			state = ST_READY;
+			moru_led_set(MORU_LED_READY);
+		} else {
+			if (state != ST_NOBLOB) { state = ST_ERROR; }
+			moru_led_set(state == ST_NOBLOB ? MORU_LED_READY : MORU_LED_FAIL);
+		}
 	}
 }
 
