@@ -36,6 +36,7 @@
 #include <zephyr/arch/arm64/lib_helpers.h>
 
 #include "moru.h"
+#include <moru_led.h>
 
 static void f_puts(const struct device *d, const char *s)
 {
@@ -76,7 +77,8 @@ void k_sys_fatal_error_handler(unsigned int reason, const struct arch_esf *esf)
 
 	if (!device_is_ready(d)) {
 		/* uart2 조차 아직이면 할 수 있는 것이 없다 */
-		k_fatal_halt(reason);
+		ARG_UNUSED(reason);
+		moru_led_fatal();	/* LED 0.2 초 점멸로 멈춘다 */
 	}
 
 	f_puts(d, "\n=== MORU FATAL ===\n");
@@ -115,7 +117,7 @@ void k_sys_fatal_error_handler(unsigned int reason, const struct arch_esf *esf)
 	}
 	f_puts(d, "=== 멈춘다 ===\n");
 
-	k_fatal_halt(reason);
+	moru_led_fatal();	/* LED 0.2 초 점멸로 멈춘다 (돌아오지 않는다) */
 }
 
 /*

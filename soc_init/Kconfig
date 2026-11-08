@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: Apache-2.0
+config MORU_LED
+	bool "보드 LED 로 진행 상태 표시 (soc_init/moru_led.c)"
+	depends on BOARD_RADXA_ZERO_3E
+	default y
+	help
+	  GPIO0_A0 LED 를 상태별 패턴으로 깜박인다. 표는 include/moru_led.h.
+	  LED 를 직접 다루는 진단 앱(ledblink·usbled·usbuart)은 n 으로 둔다.
+
+config MORU_LED_FATAL_HANDLER
+	bool "치명 오류 시 LED 0.2 초 점멸 (k_sys_fatal_error_handler 제공)"
+	depends on MORU_LED
+	default y
+	help
+	  앱이 자기 k_sys_fatal_error_handler 를 두면 n 으로 하고 그 끝에서
+	  moru_led_fatal() 을 부른다 (apps/moru 가 그렇다).

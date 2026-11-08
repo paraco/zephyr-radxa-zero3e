@@ -62,6 +62,8 @@ static void heap(const char *when)
 #include "clk1416.h"
 #endif
 
+#include <moru_led.h>
+
 int main(void)
 {
 	printk("=== L6c: 여러 토큰 (KV 캐시 · DeltaNet 상태) ===\n");
@@ -74,6 +76,7 @@ int main(void)
 	       L6C_FIRST_TOKEN, L6C_N_GEN);
 	printk("  기준: **토큰 id 열 전부 일치** (1 ulp 교란에도 16개까지 견딘다)\n");
 
+	moru_led_set(MORU_LED_BLOB);	/* 블롭 점검·모델 적재·문맥 생성 */
 	printk("  [1] 블롭 점검 ... ");
 	{
 		const uint8_t *p = (const uint8_t *)BLOB_ADDR;
@@ -150,6 +153,7 @@ int main(void)
 		const llama_vocab *vocab = llama_model_get_vocab(model);
 		const int n_vocab = llama_vocab_n_tokens(vocab);
 
+		moru_led_set(MORU_LED_INFER);
 		printk("  [4] 토큰 %d개 이어서 생성 (실기는 토큰당 20초대)\n", L6C_N_GEN);
 		llama_token t = L6C_FIRST_TOKEN;
 		int matched = 0;
@@ -231,8 +235,10 @@ int main(void)
 done:
 	if (fails == 0) {
 		printk("=== L6c PASS (실패 0) ===\n");
+		moru_led_set(MORU_LED_READY);
 	} else {
 		printk("=== L6c FAIL (실패 %d) ===\n", fails);
+		moru_led_set(MORU_LED_FAIL);
 	}
 #ifdef LLM_CLK1416
 	clk1416_report();

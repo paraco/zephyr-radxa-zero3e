@@ -91,6 +91,13 @@ setenv ota_magic_try 0x4d4f5452
 echo ""
 echo "=== PiZZa Zephyr loader ==="
 
+# ── LED: U-Boot 단계에서 가장 먼저 **계속 켜짐** (soc_init/moru_led.c 의 표 참고) ──
+# GPIO0_A0 = 출력(DDR_L 0xfdd60008) · 1(DR_L 0xfdd60000). 위 16 비트는 쓰기 허가.
+# U-Boot 의 fatload 는 동기라 블롭을 읽는 30~50 초 동안 깜박일 수 없다 —
+# 그래서 이 단계는 '켜짐 고정' 이다. Zephyr 가 이어 받아 READY(2 초 점멸)로 바꾼다.
+mw.l 0xfdd60008 0x00010001 1
+mw.l 0xfdd60000 0x00010001 1
+
 if itest.l *${ota_addr} -eq ${ota_magic}; then
 	echo "=== OTA image in RAM at ${ota_addr} ==="
 

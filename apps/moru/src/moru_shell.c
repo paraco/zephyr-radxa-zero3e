@@ -20,6 +20,7 @@
 #include <zephyr/arch/arm64/lib_helpers.h>
 #include <zephyr/arch/arm64/arm-smccc.h>
 #include <zephyr/drivers/pm_cpu_ops/psci.h>
+#include <moru_led.h>
 #include <zephyr/logging/log_ctrl.h>
 #include <zephyr/sys/util.h>
 #include <stdlib.h>
@@ -778,6 +779,7 @@ static int cmd_moru_ota_begin(const struct shell *sh, size_t argc, char **argv)
 	shell_print(sh, "수신 시작 — %lu 바이트, 기대 CRC32 0x%08lx", size, crc);
 	shell_print(sh, "호스트에서 두 번째 CDC 포트로 부어 넣는다:");
 	shell_print(sh, "  cat zephyr.bin > /dev/cu.usbmodemXXXXXX3");
+	moru_led_set(MORU_LED_OTA);	/* 0.2 초 ×5 → 2 초 — verify·abort 에서 READY 로 */
 	shell_print(sh, "진행은 'moru ota status', 끝나면 'moru ota verify'.");
 	return 0;
 }
@@ -839,6 +841,7 @@ static int cmd_moru_ota_verify(const struct shell *sh, size_t argc, char **argv)
 	shell_print(sh, "CRC32 계산 0x%08x / 기대 0x%08x", calc, moru_ota.crc);
 	if (calc != moru_ota.crc) {
 		shell_error(sh, "❌ 어긋난다 — 다시 받는다 (begin).");
+		moru_led_set(MORU_LED_READY);
 		return -EIO;
 	}
 
@@ -857,6 +860,7 @@ static int cmd_moru_ota_verify(const struct shell *sh, size_t argc, char **argv)
 
 	shell_print(sh, "✅ 일치한다. 헤더(크기·CRC)를 쓰고 캐시를 밀어냈다.");
 	shell_print(sh, "   이제 'moru ota apply' 로 적용할 수 있다.");
+	moru_led_set(MORU_LED_READY);
 	return 0;
 }
 
@@ -958,6 +962,7 @@ static int cmd_moru_ota_abort(const struct shell *sh, size_t argc, char **argv)
 		sys_write32(0U, moru_ota.base + MORU_OTA_OFF_MAGIC);
 	}
 	shell_print(sh, "취소했다. 매직도 지웠다.");
+	moru_led_set(MORU_LED_READY);
 	return 0;
 }
 
