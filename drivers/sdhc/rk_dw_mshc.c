@@ -67,6 +67,7 @@ LOG_MODULE_REGISTER(rk_dw_mshc, CONFIG_SDHC_LOG_LEVEL);
 #define INT_FRUN  BIT(11)
 #define INT_HLE   BIT(12)
 #define INT_SBE   BIT(13)
+#define INT_ACD   BIT(14)	/* 자동 CMD12 완료 */
 #define INT_EBE   BIT(15)
 #define DATA_ERR  (INT_EBE | INT_SBE | INT_HLE | INT_FRUN | INT_DCRC)
 #define DATA_TOUT (INT_HTO | INT_DRTO)
@@ -83,6 +84,7 @@ LOG_MODULE_REGISTER(rk_dw_mshc, CONFIG_SDHC_LOG_LEVEL);
 #define CMD_CHECK_CRC    BIT(8)
 #define CMD_DATA_EXP     BIT(9)
 #define CMD_RW           BIT(10)
+#define CMD_SEND_STOP    BIT(12)	/* 데이터 끝에 CMD12 를 자동으로 (send_auto_stop) */
 #define CMD_PRV_DAT_WAIT BIT(13)
 #define CMD_ABORT_STOP   BIT(14)
 #define CMD_SEND_INIT    BIT(15)	/* 첫 명령 앞 80 클럭 (Linux SDMMC_CMD_INIT) */
@@ -230,9 +232,11 @@ static int xfer_data(const struct device *dev, struct sdhc_data *data, bool writ
 	const int64_t end = k_uptime_get() + (data->timeout_ms > 0 ? data->timeout_ms : 2000) +
 			    (int64_t)data->blocks * 10;
 	uint32_t m;
+	bool dto = false;	/* ⚠ RXDR 과 함께 지운 DTO 를 잃지 않게 기억한다 (U-Boot 는 지우기 전 mask 로 판정) */
 
 	for (;;) {
 		m = rd(dev, RINTSTS);
+		dto |= (m & INT_DTO) != 0;
 		if (m & (DATA_ERR | DATA_TOUT)) {
 			wr(dev, RINTSTS, m);
 			LOG_ERR("데이터 오류 RINTSTS 0x%08x", m);
@@ -253,8 +257,9 @@ static int xfer_data(const struct device *dev, struct sdhc_data *data, bool writ
 			words -= n;
 			wr(dev, RINTSTS, INT_TXDR);
 		}
-		if ((m & INT_DTO) && words == 0) {
-			wr(dev, RINTSTS, m);
+		if (dto && words == 0) {
+			/* ⚠ ACD(자동 CMD12 완료)는 남긴다 — 호출자가 기다린다 */
+			wr(dev, RINTSTS, m & ~INT_ACD);
 			data->bytes_xfered = data->block_size * data->blocks;
 			return 0;
 		}
@@ -280,11 +285,15 @@ static int dwm_request(const struct device *dev, struct sdhc_command *cmd, struc
 	for (int i = 0; i < 500000 && (rd(dev, STATUS) & ST_BUSY); i++) { k_busy_wait(1); }
 	wr(dev, RINTSTS, 0xffffffff);
 
+	/* ⚠ Zephyr SD 스택은 CMD18·CMD25 뒤 CMD12 를 호스트가 알아서 보내길 기대한다
+	 *   (subsys/sd/sd_ops.c card_read 주석) — 자동 정지를 켠다 */
+	const bool multi = data && (cmd->opcode == SD_READ_MULTIPLE_BLOCK ||
+				    cmd->opcode == SD_WRITE_MULTIPLE_BLOCK);
 	if (data) {
 		wr(dev, BLKSIZ, data->block_size);
 		wr(dev, BYTCNT, data->block_size * data->blocks);
 		(void)wait_reset(dev, CTRL_FIFO_RESET);
-		flags |= CMD_DATA_EXP | (write ? CMD_RW : 0);
+		flags |= CMD_DATA_EXP | (write ? CMD_RW : 0) | (multi ? CMD_SEND_STOP : 0);
 	}
 	wr(dev, CMDARG, cmd->arg);
 
@@ -334,11 +343,23 @@ static int dwm_request(const struct device *dev, struct sdhc_command *cmd, struc
 	}
 	if (data) {
 		ret = xfer_data(dev, data, write);
+		if (!ret && multi) {	/* 자동 CMD12 가 끝날 때까지 */
+			const int64_t e2 = k_uptime_get() + 1000;
+			while (!(rd(dev, RINTSTS) & INT_ACD)) {
+				if (k_uptime_get() > e2) { LOG_ERR("자동 CMD12 완료가 오지 않는다"); ret = -ETIMEDOUT; break; }
+			}
+			wr(dev, RINTSTS, INT_ACD);
+		}
 	}
 	if (rt == SD_RSP_TYPE_R1b || rt == SD_RSP_TYPE_R5b) {
 		for (int i = 0; i < 500000 && (rd(dev, STATUS) & ST_BUSY); i++) { k_busy_wait(1); }
 	}
 out:
+	if (ret && !(cmd->opcode == 8 || cmd->opcode == 55 || cmd->opcode == 5 || cmd->opcode == 52)) {
+		/* CMD8·CMD55·SDIO 의 응답 없음은 카드 종류 판별 중 정상이다 */
+		LOG_ERR("CMD%u 실패 %d · RINTSTS 0x%08x · STATUS 0x%08x · flags 0x%08x", cmd->opcode, ret,
+			m, rd(dev, STATUS), flags);
+	}
 	if (ret) {
 		wr(dev, RINTSTS, 0xffffffff);
 		if (data) { (void)wait_reset(dev, CTRL_FIFO_RESET); }
