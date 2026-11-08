@@ -119,6 +119,16 @@ static int cmd_hub_ctx(const struct shell *sh, size_t argc, char **argv)
 	return submit_simple(sh, HUB_CTX, n);
 }
 
+static int cmd_hub_clk(const struct shell *sh, size_t argc, char **argv)
+{
+	const int mhz = argc > 1 ? atoi(argv[1]) : 0;
+	if (mhz != 1416 && mhz != 1104) {
+		shell_print(sh, "HUBLLM/1 err id=0 code=bad_arg msg=clk_1416_or_1104");
+		return -EINVAL;
+	}
+	return submit_simple(sh, HUB_CLK, mhz);
+}
+
 static int cmd_hub_abort(const struct shell *sh, size_t argc, char **argv)
 {
 	ARG_UNUSED(argc); ARG_UNUSED(argv);
@@ -167,6 +177,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_hub,
 		      cmd_hub_gen, 2, 15),
 	SHELL_CMD(reset, NULL, "KV(대화) 비우기", cmd_hub_reset),
 	SHELL_CMD_ARG(ctx, NULL, "ctx n=<n> — 문맥 다시 만들기", cmd_hub_ctx, 2, 0),
+	SHELL_CMD_ARG(clk, NULL, "clk 1416|1104 — 코어 클럭", cmd_hub_clk, 2, 0),
 	SHELL_CMD(abort, NULL, "생성 중단 (토큰 사이에서)", cmd_hub_abort),
 	SHELL_CMD_ARG(info, NULL, "상태 · --kv 는 FW_INFO 한 줄", cmd_hub_info, 1, 1),
 	SHELL_SUBCMD_SET_END);

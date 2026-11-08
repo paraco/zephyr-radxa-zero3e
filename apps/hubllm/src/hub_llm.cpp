@@ -28,6 +28,7 @@
 #include <cstdarg>
 
 #include "hub.h"
+#include "clk1416.h"
 #include <moru_led.h>
 
 LOG_MODULE_REGISTER(hub_llm, LOG_LEVEL_INF);
@@ -235,10 +236,11 @@ static void run_one(void)
 	const double pp_tps = t_pp ? (double)n * 1000.0 / (double)t_pp : 0.0;
 	const double tg_tps = (n_gen > 1 && t_tg) ? (double)(n_gen - 1) * 1000.0 / (double)t_tg : 0.0;
 	OUT("HUBLLM/1 done id=%u n_prompt=%d n_gen=%d ttft_ms=%" PRId64 " pp_tps=%.2f tg_tps=%.2f "
-	    "n_ctx=%d ctx_kib=%d heap_kib=%u threads=%d n_past=%d keep=%d temp=%.2f pres=%.2f stop=%s",
+	    "n_ctx=%d ctx_kib=%d heap_kib=%u threads=%d n_past=%d keep=%d temp=%.2f pres=%.2f rep=%.2f clk=%d guard_fail=%u stop=%s",
 	    r.id, n, n_gen, ttft, pp_tps, tg_tps, n_ctx_now, ctx_kib,
 	    (unsigned)heap_used_kib(), HUB_THREADS, n_past_now(), r.keep ? 1 : 0,
-	    (double)r.temp, (double)r.pres, stop);
+	    (double)r.temp, (double)r.pres, (double)r.rep,
+	    clk1416_is_1416() ? 1416 : 1104, clk1416_guard_fail(), stop);
 }
 
 static bool make_ctx(int want);
@@ -375,6 +377,15 @@ static void serve(void)
 		if (cur.kind == HUB_RESET) {
 			llama_memory_clear(llama_get_memory(ctx), true);
 			OUT("HUBLLM/1 reset n_past=0");
+		} else if (cur.kind == HUB_CLK) {
+			if (cur.ctx_n == 1416 && !clk1416_is_1416()) {
+				(void)clk1416_raise();	/* 실패하면 1104 그대로 (이유는 printk) */
+			} else if (cur.ctx_n == 1104) {
+				clk1416_back_to_1104("hub clk 1104");
+			}
+			OUT("HUBLLM/1 clk mhz=%u state=%d guard_reads=%u guard_fail=%u",
+			    clk1416_cpu_mhz(), clk1416_is_1416() ? 1416 : 1104,
+			    clk1416_guard_reads(), clk1416_guard_fail());
 		} else if (cur.kind == HUB_CTX) {
 			const int old = n_ctx_now;
 			if (!make_ctx(cur.ctx_n)) {

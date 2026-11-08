@@ -397,11 +397,21 @@ int clk1416_raise(void)
 		clk1416_back_to_1104("실측이 1380~1450 밖");
 		return -ERANGE;
 	}
+	/* 다시 올릴 때: 앞 감시 스레드가 아직 끝나지 않았으면(최대 500 ms) 기다린다 —
+	 * 살아 있는 스레드 구조체에 k_thread_create 를 하면 안 된다 */
+	static bool guard_started;
+	if (guard_started) { (void)k_thread_join(&guard_thread, K_SECONDS(2)); }
+	guard_started = true;
 	k_thread_create(&guard_thread, guard_stack, GUARD_STACK, guard_fn,
 			NULL, NULL, NULL, K_PRIO_COOP(1), 0, K_NO_WAIT);
 	k_thread_name_set(&guard_thread, "clk_guard");
 	return 0;
 }
+
+int clk1416_is_1416(void) { return clk_state == 1; }
+unsigned clk1416_guard_reads(void) { return guard_reads; }
+unsigned clk1416_guard_fail(void) { return guard_fail; }
+unsigned clk1416_cpu_mhz(void) { return (unsigned)cpu_mhz(); }
 
 void clk1416_report(void)
 {

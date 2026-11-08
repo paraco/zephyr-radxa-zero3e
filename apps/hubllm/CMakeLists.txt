@@ -74,5 +74,6 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/llm_ggml.cmake)
 include(${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/llm_llama.cmake)
 llm_add_ggml()
 llm_add_llama(L6B)
-target_sources(app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../llm_common/ggml_port.c)
+target_sources(app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../llm_common/ggml_port.c
+                           ${CMAKE_CURRENT_SOURCE_DIR}/../llm_common/clk1416.c)
 llm_ggml_flags(${CMAKE_CURRENT_SOURCE_DIR}/src/hub_llm.cpp)

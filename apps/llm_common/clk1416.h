@@ -9,6 +9,11 @@ int clk1416_raise(void);
 void clk1416_back_to_1104(const char *why);
 /** 지금 상태·실측·감시 횟수를 한 줄로 찍는다. */
 void clk1416_report(void);
+int clk1416_is_1416(void);
+unsigned clk1416_guard_reads(void);
+unsigned clk1416_guard_fail(void);
+/** PMU 로 잰 지금 코어 클럭 (MHz, 20 ms 측정) */
+unsigned clk1416_cpu_mhz(void);
 #ifdef __cplusplus
 }
 #endif

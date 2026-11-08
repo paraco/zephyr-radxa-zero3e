@@ -20,6 +20,10 @@
  *       keep 이면 마지막 생성 토큰도 KV 에 넣어 둔다 — 다음 프롬프트는 그 뒤부터.
  *   hub reset            KV 를 비운다
  *   hub ctx n=<n>        문맥을 n_ctx 로 다시 만든다 (KV 도 비워진다)
+ *   hub clk 1416|1104    코어 클럭 (clk1416.c — L9b·L6d 에서 실기 검증한 경로)
+ *                        1416 은 vdd_cpu 1.025 V 를 먼저 쓰고, 감시 스레드가 0.5 s 마다
+ *                        VSEL 을 읽어 어긋나면 즉시 1104 로 내린다.
+ *                        → HUBLLM/1 clk mhz=<실측> state=<1416|1104> guard_reads= guard_fail=
  *   hub abort
  *   hub info [--kv]
  *
@@ -40,7 +44,7 @@ struct shell;
 #define HUB_MAX_PROMPT_BYTES 3072
 #define HUB_MAX_PROMPT_IDS   1024
 
-enum hub_kind { HUB_GEN = 0, HUB_RESET, HUB_CTX };
+enum hub_kind { HUB_GEN = 0, HUB_RESET, HUB_CTX, HUB_CLK };
 
 struct hub_req {
 	int kind;
