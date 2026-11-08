@@ -141,7 +141,11 @@ hub_chat.py 는 기본으로 Qwen non-thinking 틀처럼 `<think>\n\n</think>\n\
 - `hub load` 는 FAT32 묶음 연결을 직접 따라가 연속 구간을 최대 1 MiB 씩 읽는다(mode=chain, 실패하면 fatfs):
   q4km 507 MiB 58.7 → **39.8 s** (12.75 MB/s) · q8out 566 MiB 65.4 → **44.4 s**. 해시 같음 ·
   `sd cmp 600`(FatFs 경로로 전체 비교) bad 0 · 생성 정상.
-- 더 빠르게 하려면 IDMAC(컨트롤러 DMA)이 필요하다.
+- **IDMAC(컨트롤러 DMA, 2026-11-09)**: 디스크립터 링 64 칸 × 4 KiB(칸마다 캐시 줄 하나), 링보다 큰 전송은
+  끝난 칸을 다시 채워 돌린다. 64 B 정렬이 안 된 버퍼(FatFs 창 등)는 PIO. `sd dma [rd|wr on|off]` 로 보고 바꾼다.
+  - `sd raw 16` 12.6 → **22.3 MB/s** · `hub load` q4km 507 MiB 39.8 → **22.3 s** (22.8 MB/s), 해시 같음.
+  - DMA 로 올린 모델을 PIO 로 전체 다시 읽어 비교(`sd dma rd off` + `sd cmp 600`) bad 0 · 링이 빈 적(n_du) 0.
+  - 쓰기: `sd wtest 16` 을 DMA 로 쓰고 PIO·DMA 로 다시 읽어 bad 0. 속도는 그대로(3.2~3.6 MB/s) — 카드 기록 대기가 대부분.
 
 ## 아직 없는 것
 - boot_slot (boot.cmd 수정 = 카드 작업 필요). 온도 읽기(tsadc 드라이버 없음).

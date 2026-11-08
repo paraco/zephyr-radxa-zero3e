@@ -16,6 +16,7 @@
 #include <zephyr/fs/fs.h>
 #include <zephyr/devicetree.h>
 #include <ff.h>
+#include <rk_dw_mshc.h>
 #include <zephyr/sys/byteorder.h>
 #include <zephyr/storage/disk_access.h>
 #include <zephyr/sys/sys_io.h>
@@ -442,6 +443,27 @@ static int cmd_sd_raw(const struct shell *sh, size_t argc, char **argv)
 	return rc;
 }
 
+/* sd dma [rd|wr on|off] — SD 컨트롤러 DMA(IDMAC) 상태·켜고 끄기 */
+static int cmd_sd_dma(const struct shell *sh, size_t argc, char **argv)
+{
+	if (argc == 3) {
+		const bool on = !strcmp(argv[2], "on");
+		if (!on && strcmp(argv[2], "off")) { goto bad; }
+		if (!strcmp(argv[1], "rd")) { rk_dw_mshc_dma_rd = on; }
+		else if (!strcmp(argv[1], "wr")) { rk_dw_mshc_dma_wr = on; }
+		else { goto bad; }
+	} else if (argc != 1) {
+		goto bad;
+	}
+	shell_print(sh, "HUBLLM/1 sddma rd=%d wr=%d n_dma=%u n_pio=%u n_unaligned=%u n_du=%u",
+		    rk_dw_mshc_dma_rd ? 1 : 0, rk_dw_mshc_dma_wr ? 1 : 0, rk_dw_mshc_n_dma, rk_dw_mshc_n_pio,
+		    rk_dw_mshc_n_unaligned, rk_dw_mshc_n_du);
+	return 0;
+bad:
+	shell_print(sh, "HUBLLM/1 err id=0 code=bad_arg msg=sd_dma_[rd|wr]_[on|off]");
+	return -EINVAL;
+}
+
 static int cmd_sd_log(const struct shell *sh, size_t argc, char **argv)
 {
 	if (argc > 1) {
@@ -576,6 +598,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_sd,
 	SHELL_CMD_ARG(cat, NULL, "cat <경로> [바이트] — 파일 끝 쪽 보기 (예: logs/hub-9.txt)", cmd_sd_cat, 2, 1),
 	SHELL_CMD(info, NULL, "카드 버스 클럭 · 폭 · FAT 묶음 크기", cmd_sd_info),
 	SHELL_CMD_ARG(raw, NULL, "raw [MiB] — 파일 시스템 없이 큰 덩어리 읽기 속도 (기본 16)", cmd_sd_raw, 1, 1),
+	SHELL_CMD_ARG(dma, NULL, "dma [rd|wr on|off] — 컨트롤러 DMA 상태·켜고 끄기", cmd_sd_dma, 1, 2),
 	SHELL_CMD_ARG(log, NULL, "log [on|off] — SD 실시간 로그 상태 / 켜기·끄기", cmd_sd_log, 1, 1),
 	SHELL_SUBCMD_SET_END);
 SHELL_CMD_REGISTER(sd, &sub_sd, "SD 카드 (Zephyr 직접 — 읽기 · 로그 쓰기)", NULL);

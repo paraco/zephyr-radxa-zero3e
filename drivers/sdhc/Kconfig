@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 config SDHC_RK_DW_MSHC
-	bool "Rockchip RK3566 SD 컨트롤러 (DesignWare MSHC, PIO)"
+	bool "Rockchip RK3566 SD 컨트롤러 (DesignWare MSHC, PIO + IDMAC)"
 	default y
 	depends on DT_HAS_ROCKCHIP_RK3568_DW_MSHC_ENABLED
 	select SDHC_SUPPORTS_NATIVE_MODE
 	help
-	  sdmmc0 @0xfe2b0000. U-Boot dw_mmc.c 의 FIFO 경로(DMA 없음).
+	  sdmmc0 @0xfe2b0000. U-Boot dw_mmc.c 의 FIFO 경로 + IDMAC 디스크립터 링(TF-A dw_mmc.c).

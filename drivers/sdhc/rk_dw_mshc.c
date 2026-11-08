@@ -12,7 +12,15 @@
  *     의 RK3288_CLKGEN_DIV 와 같은 뜻) — 실제 카드 클럭 = 선택값 / 2 로 계산한다.
  *   Linux rk356x-base.dtsi sdmmc0 · rk3566-radxa-zero-3.dtsi (4-bit · 3.3 V · cap-sd-highspeed)
  *
- * 범위: PIO(FIFO) · 3.3 V · 기본/고속(최대 50 MHz 카드 클럭) · 4-bit. DMA·UHS 없음.
+ * 범위: PIO(FIFO) + IDMAC(내부 DMA, 2026-11-09) · 3.3 V · 기본/고속(최대 50 MHz 카드 클럭) · 4-bit. UHS 없음.
+ *
+ * IDMAC — TF-A drivers/synopsys/emmc/dw_mmc.c(디스크립터 비트·BMOD·DBADDR·IDSTS) 를 따랐다.
+ *   디스크립터 **링** 64 칸(칸마다 4 KiB) · 사슬(CH) 방식으로 마지막 칸이 첫 칸을 가리킨다.
+ *   칸마다 캐시 줄(64 B)을 하나씩 차지한다 — 한 줄에 여러 칸이 있으면 우리가 한 칸을 정리(clean)할 때
+ *   DMA 가 옆 칸에 쓴 OWN 해제를 옛 값으로 덮는다. 링보다 큰 전송(예: 1 MiB = 256 칸)은 DMA 가 끝낸 칸
+ *   (OWN=0)을 다음 조각으로 다시 채우고 PLDMND 로 깨운다(칸이 모자라 멈췄으면 이어 간다).
+ *   버퍼 주소·길이가 64 B 정렬이 아니면 그 요청만 PIO. 읽기 버퍼는 시작 전에 비우고(flush+invalidate)
+ *   끝난 뒤 다시 무효화한다(DMA 중 투기적 적재). 쓰기는 시작 전에 정리(clean)한다.
  * 핀·전원·바이오스 클럭은 U-Boot 가 켜 둔 것을 이어받는다(카드를 읽고 뛰어오므로 켜져 있다).
  *
  * SPDX-License-Identifier: Apache-2.0
@@ -26,6 +34,8 @@
 #include <zephyr/sys/sys_io.h>
 #include <zephyr/sys/device_mmio.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/cache.h>
+#include <zephyr/sys/barrier.h>
 
 LOG_MODULE_REGISTER(rk_dw_mshc, CONFIG_SDHC_LOG_LEVEL);
 
@@ -51,8 +61,24 @@ LOG_MODULE_REGISTER(rk_dw_mshc, CONFIG_SDHC_LOG_LEVEL);
 #define FIFOTH    0x04c
 #define CDETECT   0x050
 #define UHS_REG   0x074
+#define HCON      0x070
 #define BMOD      0x080
+#define PLDMND    0x084
+#define DBADDR    0x088
+#define IDSTS     0x08c
 #define DATA      0x200
+
+#define BMOD_SWRESET BIT(0)
+#define BMOD_FB      BIT(1)
+#define BMOD_ENABLE  BIT(7)
+#define IDSTS_FBE    BIT(2)	/* 버스 치명 오류 */
+#define IDSTS_DU     BIT(4)	/* 쓸 디스크립터가 없다 (링이 비었다 — 다시 채우면 이어 간다) */
+#define IDSTS_CES    BIT(5)
+#define IDSTS_ALL    0x3ff
+#define DES0_CH      BIT(4)
+#define DES0_FS      BIT(3)
+#define DES0_LD      BIT(2)
+#define DES0_OWN     BIT(31)
 
 #define INT_RE    BIT(1)
 #define INT_CDONE BIT(2)
@@ -110,6 +136,22 @@ struct dwm_cfg {
 	DEVICE_MMIO_ROM;
 	uint32_t fifo_depth;
 };
+
+/* IDMAC 디스크립터 — 한 칸이 캐시 줄 하나 */
+struct idmac_desc {
+	volatile uint32_t des0, des1, des2, des3;
+	uint32_t pad[12];
+} __aligned(64);
+BUILD_ASSERT(sizeof(struct idmac_desc) == 64);
+#define NDESC  64
+#define DCHUNK 4096u
+static struct idmac_desc ring[NDESC];
+
+/* 셸에서 바꾸고 본다 (rk_dw_mshc.h) */
+volatile bool rk_dw_mshc_dma_rd = true;
+volatile bool rk_dw_mshc_dma_wr = true;	/* 2026-11-09 sd wtest 16 MiB (DMA 쓰기 → PIO·DMA 다시 읽기) bad 0 */
+volatile uint32_t rk_dw_mshc_n_dma, rk_dw_mshc_n_pio, rk_dw_mshc_n_unaligned, rk_dw_mshc_n_du;
+static bool idmac_ok;	/* HCON: 내부 DMA · 32비트 주소 */
 
 struct dwm_data {
 	DEVICE_MMIO_RAM;
@@ -223,6 +265,123 @@ static int dwm_set_io(const struct device *dev, struct sdhc_io *ios)
 	return 0;
 }
 
+static inline void desc_put(int slot, const uint8_t *buf, size_t k, size_t nchunks, size_t total)
+{
+	struct idmac_desc *dd = &ring[slot];
+	const size_t len = MIN((size_t)DCHUNK, total - k * DCHUNK);
+	dd->des1 = (uint32_t)len;
+	dd->des2 = (uint32_t)(uintptr_t)(buf + k * DCHUNK);
+	dd->des0 = DES0_OWN | DES0_CH | (k == 0 ? DES0_FS : 0) | (k == nchunks - 1 ? DES0_LD : 0);
+	sys_cache_data_flush_range(dd, sizeof(*dd));
+}
+
+static inline bool desc_owned(int slot)
+{
+	sys_cache_data_invd_range(&ring[slot], sizeof(ring[slot]));
+	return (ring[slot].des0 & DES0_OWN) != 0;
+}
+
+static bool dma_usable(struct sdhc_data *data, bool write)
+{
+	if (!idmac_ok || !(write ? rk_dw_mshc_dma_wr : rk_dw_mshc_dma_rd)) { return false; }
+	const uintptr_t a = (uintptr_t)data->data;
+	const size_t total = (size_t)data->block_size * data->blocks;
+	if ((a | total) & 63u || a + total > 0x100000000ull) {
+		rk_dw_mshc_n_unaligned++;
+		return false;
+	}
+	return true;
+}
+
+/* 명령을 쓰기 전에: 링을 채우고 IDMAC 를 켠다. 반환 = 이미 넣은 조각 수 */
+static size_t dma_prepare(const struct device *dev, struct sdhc_data *data, bool write)
+{
+	uint8_t *buf = data->data;
+	const size_t total = (size_t)data->block_size * data->blocks;
+	const size_t nchunks = DIV_ROUND_UP(total, DCHUNK);
+
+	if (write) {
+		sys_cache_data_flush_range(buf, total);
+	} else {
+		sys_cache_data_flush_and_invd_range(buf, total);
+	}
+	wr(dev, BMOD, BMOD_SWRESET);
+	for (int i = 0; i < 1000 && (rd(dev, BMOD) & BMOD_SWRESET); i++) { k_busy_wait(1); }
+	wr(dev, IDSTS, IDSTS_ALL);
+	const size_t first = MIN(nchunks, (size_t)NDESC);
+	for (size_t k = 0; k < first; k++) { desc_put((int)k, buf, k, nchunks, total); }
+	barrier_dsync_fence_full();
+	wr(dev, DBADDR, (uint32_t)(uintptr_t)&ring[0]);
+	wr(dev, CTRL, rd(dev, CTRL) | CTRL_DMA_EN | CTRL_IDMAC_EN);
+	wr(dev, BMOD, BMOD_ENABLE | BMOD_FB);
+	return first;
+}
+
+static void dma_off(const struct device *dev)
+{
+	wr(dev, CTRL, rd(dev, CTRL) & ~(CTRL_DMA_EN | CTRL_IDMAC_EN));
+	wr(dev, BMOD, 0);
+	wr(dev, IDSTS, IDSTS_ALL);
+}
+
+/* 명령을 쓴 뒤: 끝난 칸을 다시 채우며 DTO 를 기다린다 */
+static int xfer_dma(const struct device *dev, struct sdhc_data *data, bool write, size_t put)
+{
+	uint8_t *buf = data->data;
+	const size_t total = (size_t)data->block_size * data->blocks;
+	const size_t nchunks = DIV_ROUND_UP(total, DCHUNK);
+	const int64_t end = k_uptime_get() + (data->timeout_ms > 0 ? data->timeout_ms : 2000) +
+			    (int64_t)data->blocks * 10;
+	int ret = 0;
+
+	for (;;) {
+		const uint32_t m = rd(dev, RINTSTS);
+		const uint32_t ids = rd(dev, IDSTS);
+		if (m & (DATA_ERR | DATA_TOUT)) {
+			LOG_ERR("DMA 데이터 오류 RINTSTS 0x%08x IDSTS 0x%08x (%zu/%zu 조각)", m, ids, put, nchunks);
+			ret = -EIO;
+			break;
+		}
+		if (ids & (IDSTS_FBE | IDSTS_CES)) {
+			LOG_ERR("IDMAC 오류 IDSTS 0x%08x", ids);
+			ret = -EIO;
+			break;
+		}
+		bool refilled = false;
+		while (put < nchunks && !desc_owned((int)(put % NDESC))) {
+			desc_put((int)(put % NDESC), buf, put, nchunks, total);
+			put++;
+			refilled = true;
+		}
+		if (refilled) {
+			if (ids & IDSTS_DU) { rk_dw_mshc_n_du++; wr(dev, IDSTS, IDSTS_DU); }
+			barrier_dsync_fence_full();
+			wr(dev, PLDMND, 1);	/* 칸이 모자라 멈췄으면 이어 간다 */
+		}
+		/* DTO 는 카드 쪽이 끝났다는 뜻 — 읽기는 IDMAC 가 FIFO 를 메모리로 다 옮겨 마지막 칸을 닫을 때까지 */
+		if ((m & INT_DTO) && put == nchunks && !desc_owned((int)((nchunks - 1) % NDESC))) {
+			wr(dev, RINTSTS, m & ~INT_ACD);	/* ACD 는 호출자가 기다린다 */
+			data->bytes_xfered = total;
+			break;
+		}
+		if (k_uptime_get() > end) {
+			LOG_ERR("DMA 시간 초과 (%zu/%zu 조각, RINTSTS 0x%08x, IDSTS 0x%08x)", put, nchunks, m, ids);
+			ret = -ETIMEDOUT;
+			break;
+		}
+	}
+	dma_off(dev);
+	if (!write) {
+		sys_cache_data_invd_range(buf, total);	/* DMA 중에 투기적으로 올라온 줄을 버린다 */
+	}
+	if (ret) {
+		(void)wait_reset(dev, CTRL_DMA_RESET | CTRL_FIFO_RESET);
+	} else {
+		rk_dw_mshc_n_dma++;
+	}
+	return ret;
+}
+
 /* dwmci_data_transfer — FIFO 모드 */
 static int xfer_data(const struct device *dev, struct sdhc_data *data, bool write)
 {
@@ -289,11 +448,14 @@ static int dwm_request(const struct device *dev, struct sdhc_command *cmd, struc
 	 *   (subsys/sd/sd_ops.c card_read 주석) — 자동 정지를 켠다 */
 	const bool multi = data && (cmd->opcode == SD_READ_MULTIPLE_BLOCK ||
 				    cmd->opcode == SD_WRITE_MULTIPLE_BLOCK);
+	const bool dma = data && dma_usable(data, write);
+	size_t put = 0;
 	if (data) {
 		wr(dev, BLKSIZ, data->block_size);
 		wr(dev, BYTCNT, data->block_size * data->blocks);
 		(void)wait_reset(dev, CTRL_FIFO_RESET);
 		flags |= CMD_DATA_EXP | (write ? CMD_RW : 0) | (multi ? CMD_SEND_STOP : 0);
+		if (dma) { put = dma_prepare(dev, data, write); }
 	}
 	wr(dev, CMDARG, cmd->arg);
 
@@ -342,7 +504,12 @@ static int dwm_request(const struct device *dev, struct sdhc_command *cmd, struc
 		}
 	}
 	if (data) {
-		ret = xfer_data(dev, data, write);
+		if (dma) {
+			ret = xfer_dma(dev, data, write, put);
+		} else {
+			ret = xfer_data(dev, data, write);
+			if (!ret) { rk_dw_mshc_n_pio++; }
+		}
 		if (!ret && multi) {	/* 자동 CMD12 가 끝날 때까지 */
 			const int64_t e2 = k_uptime_get() + 1000;
 			while (!(rd(dev, RINTSTS) & INT_ACD)) {
@@ -362,6 +529,7 @@ out:
 	}
 	if (ret) {
 		wr(dev, RINTSTS, 0xffffffff);
+		if (dma) { dma_off(dev); (void)wait_reset(dev, CTRL_DMA_RESET); }
 		if (data) { (void)wait_reset(dev, CTRL_FIFO_RESET); }
 	}
 	k_mutex_unlock(&d->lock);
@@ -386,8 +554,18 @@ static int dwm_init(const struct device *dev)
 	wr(dev, RINTSTS, 0xffffffff);
 	wr(dev, INTMASK, 0);		/* 폴링만 */
 	wr(dev, TMOUT, 0xffffffff);
-	wr(dev, BMOD, 1);		/* IDMAC 리셋 · 쓰지 않는다 */
+	wr(dev, BMOD, BMOD_SWRESET);	/* IDMAC 리셋 · 요청마다 켠다 */
 	wr(dev, CTRL, rd(dev, CTRL) & ~(CTRL_DMA_EN | CTRL_IDMAC_EN));
+	/* HCON [17:16] 0 = 내부 DMA(IDMAC) · [27] 0 = 32비트 주소 (Linux SDMMC_GET_TRANS_MODE · ADDR_CONFIG) */
+	const uint32_t hcon = rd(dev, HCON);
+	idmac_ok = (((hcon >> 16) & 3u) == 0) && !((hcon >> 27) & 1u) &&
+		   ((uintptr_t)ring + sizeof(ring) <= 0x100000000ull);
+	for (int i = 0; i < NDESC; i++) {
+		ring[i].des0 = 0;
+		ring[i].des3 = (uint32_t)(uintptr_t)&ring[(i + 1) % NDESC];
+	}
+	sys_cache_data_flush_range(ring, sizeof(ring));
+	LOG_INF("HCON 0x%08x · IDMAC %s", hcon, idmac_ok ? "씀 (링 64 × 4 KiB)" : "못 씀 — PIO");
 	/* dwmci_init_fifo */
 	const uint32_t thr = c->fifo_depth / 2;
 	wr(dev, FIFOTH, (0x2u << 28) | ((thr - 1) << 16) | thr);
