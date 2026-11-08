@@ -58,9 +58,17 @@ static void heap(const char *when)
 	       s.free_bytes / 1024);
 }
 
+#ifdef LLM_CLK1416
+#include "clk1416.h"
+#endif
+
 int main(void)
 {
 	printk("=== L6c: 여러 토큰 (KV 캐시 · DeltaNet 상태) ===\n");
+#ifdef LLM_CLK1416
+	/* L6d: 1416 MHz 로 올린다. 실패하면 1104 그대로 시험한다(이유를 찍는다). */
+	printk("  [L6d] 1416 MHz 판: %s\n", clk1416_raise() == 0 ? "올렸다" : "**못 올렸다 — 1104 로 잰다**");
+#endif
 	printk("  창 0x%08" PRIxPTR " + %u MiB · 첫 토큰 %d · %d개 생성\n",
 	       (uintptr_t)BLOB_ADDR, (unsigned)(BLOB_SIZE / (1024 * 1024)),
 	       L6C_FIRST_TOKEN, L6C_N_GEN);
@@ -226,6 +234,10 @@ done:
 	} else {
 		printk("=== L6c FAIL (실패 %d) ===\n", fails);
 	}
+#ifdef LLM_CLK1416
+	clk1416_report();
+	clk1416_back_to_1104("시험 끝");
+#endif
 	/* ⚠ main 에서 돌아오지 않는다 — 이유는 apps/llm_l6b/src/main.cpp 참고
 	 *   (정적 소멸자가 NULL 로 뛴다). */
 	printk("    (시험 끝 — 여기서 멈춘다. 전원을 다시 주면 moru 로 돌아온다)\n");
