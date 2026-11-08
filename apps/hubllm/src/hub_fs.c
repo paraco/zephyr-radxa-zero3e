@@ -16,6 +16,9 @@
 #include <zephyr/fs/fs.h>
 #include <zephyr/devicetree.h>
 #include <ff.h>
+#include <zephyr/sys/byteorder.h>
+#include <zephyr/storage/disk_access.h>
+#include <zephyr/sys/sys_io.h>
 #include <string.h>
 #include <stdio.h>
 #include "hub_relay.h"
@@ -82,7 +85,69 @@ int hub_fs_model_size(const char *name, size_t *size)
 	return rc;
 }
 
-/* 1 MiB 씩 — FatFs 가 클러스터가 이어진 구간은 사용자 버퍼로 바로 여러 블록을 읽는다 */
+/* ── 빠른 모델 읽기: FAT32 묶음 연결을 직접 따라가 연속 구간을 한 번에 (최대 1 MiB) 읽는다 ──
+ * FatFs 의 f_read 는 묶음(이 카드 8 KiB) 경계마다 요청을 끊는다 → 8.6 MB/s.
+ * 256 KiB 씩 바로 읽으면 12.6 MB/s (sd raw, 2026-11-09). FatFs 빠른 탐색(FF_USE_FASTSEEK)은
+ * 모듈 ffconf.h 에 0 으로 박혀 있어 연결표는 여기서 FAT 를 직접 읽는다. 읽기만 한다. */
+static const char *rd_mode = "-";
+const char *hub_fs_read_mode(void) { return rd_mode; }
+
+static uint8_t fatc[4096] __aligned(64);
+static LBA_t fatc_base = (LBA_t)-1;
+
+static int fat32_next(FATFS *fs, uint32_t cl, uint32_t *nx)
+{
+	const uint64_t off = (uint64_t)cl * 4u;
+	const LBA_t lba = fs->fatbase + (LBA_t)(off / 512u);
+	const LBA_t base = lba & ~(LBA_t)7;
+	if (base != fatc_base) {
+		const int rc = disk_access_read("SD", fatc, (uint32_t)base, 8);
+		if (rc) { fatc_base = (LBA_t)-1; return rc; }
+		fatc_base = base;
+	}
+	*nx = sys_get_le32(fatc + (size_t)(lba - base) * 512u + (size_t)(off % 512u)) & 0x0FFFFFFFu;
+	return 0;
+}
+
+static int read_chain(FIL *fp, uint8_t *dst, size_t total, size_t max, size_t *got,
+		      int (*prog)(size_t done, size_t total))
+{
+	FATFS *fs = fp->obj.fs;
+	if (fs == NULL || fs->fs_type != FS_FAT32) { return -ENOTSUP; }
+	if (total + 512 > max) { return -ENOTSUP; }	/* 마지막 섹터를 통째로 읽는다 */
+	const uint32_t csz = fs->csize;
+	const size_t cbytes = (size_t)csz * 512u;
+	const uint32_t runmax = MAX(1u, (1024u * 1024u) / (uint32_t)cbytes);
+	fatc_base = (LBA_t)-1;
+	uint32_t cl = fp->obj.sclust;
+	size_t done = 0;
+	while (done < total) {
+		if (cl < 2 || cl >= fs->n_fatent) { return -EIO; }
+		const uint32_t start = cl;
+		uint32_t n = 1, nx;
+		while ((size_t)n * cbytes < total - done && n < runmax) {
+			int rc = fat32_next(fs, cl, &nx);
+			if (rc) { return rc; }
+			if (nx != cl + 1) { break; }
+			cl = nx;
+			n++;
+		}
+		const size_t bytes = MIN((size_t)n * cbytes, total - done);
+		const LBA_t lba = fs->database + (LBA_t)(start - 2) * csz;
+		int rc = disk_access_read("SD", dst + done, (uint32_t)lba, (uint32_t)DIV_ROUND_UP(bytes, 512));
+		if (rc) { return rc; }
+		done += bytes;
+		*got = done;
+		if (prog && prog(done, total)) { return -ECANCELED; }
+		if (done >= total) { break; }
+		rc = fat32_next(fs, cl, &nx);
+		if (rc) { return rc; }
+		cl = nx;
+	}
+	return 0;
+}
+
+/* 연속 구간을 직접 읽고(FAT32), 안 되면 FatFs 로 1 MiB 씩 */
 int hub_fs_read_model(const char *name, void *dst, size_t max, size_t *got,
 		      int (*prog)(size_t done, size_t total))
 {
@@ -99,6 +164,15 @@ int hub_fs_read_model(const char *name, void *dst, size_t max, size_t *got,
 	rc = fs_open(&f, path, FS_O_READ);
 	if (rc) { k_mutex_unlock(&io_lock); return rc; }
 	uint8_t *d = (uint8_t *)dst;
+	rd_mode = "chain";
+	rc = read_chain((FIL *)f.filep, d, total, max, got, prog);
+	if (rc != -ENOTSUP) {
+		fs_close(&f);
+		k_mutex_unlock(&io_lock);
+		return rc;
+	}
+	rc = 0;
+	rd_mode = "fatfs";
 	const size_t CH = 1024 * 1024;
 	while (*got < total) {
 		const size_t want = MIN(CH, total - *got);
@@ -328,6 +402,46 @@ static void lw_thread(void *a, void *b, void *c)
 }
 K_THREAD_DEFINE(hub_lw, 4096, lw_thread, NULL, NULL, NULL, K_PRIO_PREEMPT(14), 0, 3000);
 
+/* sd info — 지금 카드 버스: CRU 클럭 선택(clksel_con[30] [10:8]) · 버스 폭(CTYPE) · FAT 묶음 크기.
+ * 드라이버가 둘 다 같은 물리 주소로 device_map 해 두었다(arm64 은 평면 매핑). */
+static int cmd_sd_info(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc); ARG_UNUSED(argv);
+	if (busy(sh)) { return -EBUSY; }
+	const int rc = ensure_mount(sh);
+	k_mutex_unlock(&io_lock);
+	static const uint32_t src[8] = { 24000000, 400000000, 300000000, 100000000, 50000000, 750000, 0, 0 };
+	const uint32_t sel = (sys_read32(0xfdd20000UL + 0x100 + 4 * 30) >> 8) & 7;
+	const uint32_t ctype = sys_read32(DT_REG_ADDR(DT_NODELABEL(sdmmc0)) + 0x018);
+	const uint32_t div = sys_read32(DT_REG_ADDR(DT_NODELABEL(sdmmc0)) + 0x008) & 0xff;
+	const uint32_t clk = src[sel] / 2 / (div ? 2 * div : 1);
+	shell_print(sh, "HUBLLM/1 sdinfo clk_hz=%u sel=%u clkdiv=%u width=%d cluster_kib=%u mount_rc=%d", clk,
+		    sel, div, (ctype & BIT(16)) ? 8 : ((ctype & BIT(0)) ? 4 : 1),
+		    rc ? 0 : (unsigned)(fat.csize * 512u / 1024u), rc);
+	return 0;
+}
+
+/* sd raw [MiB] — 파일 시스템을 거치지 않고 256 KiB 씩(CMD18 한 번에 512 블록) 읽는 속도.
+ * FatFs 는 묶음(8 KiB) 경계에서 요청을 끊는다 — 그 손실이 얼마인지 잰다 */
+static int cmd_sd_raw(const struct shell *sh, size_t argc, char **argv)
+{
+	const size_t mib = argc > 1 ? (size_t)atoi(argv[1]) : 16;
+	if (busy(sh)) { return -EBUSY; }
+	int rc = ensure_mount(sh);
+	const uint32_t cnt = sizeof buf / 512;
+	size_t done = 0;
+	const int64_t t0 = k_uptime_get();
+	for (uint32_t lba = 0; rc == 0 && done < mib * 1024 * 1024; lba += cnt) {
+		rc = disk_access_read("SD", buf, lba, cnt);
+		if (rc == 0) { done += sizeof buf; }
+	}
+	const int64_t ms = k_uptime_get() - t0;
+	k_mutex_unlock(&io_lock);
+	shell_print(sh, "HUBLLM/1 sdraw bytes=%zu ms=%lld mbps=%.2f chunk_kib=%u rc=%d", done, (long long)ms,
+		    ms ? (double)done / 1048576.0 * 1000.0 / (double)ms : 0.0, (unsigned)(sizeof buf / 1024), rc);
+	return rc;
+}
+
 static int cmd_sd_log(const struct shell *sh, size_t argc, char **argv)
 {
 	if (argc > 1) {
@@ -460,6 +574,8 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_sd,
 	SHELL_CMD_ARG(cmp, NULL, "cmp [<MiB>] — 올린 모델을 SD 에서 읽어 RAM 과 비교 (기본 64)", cmd_hub_sdcmp, 1, 1),
 	SHELL_CMD_ARG(wtest, NULL, "wtest [MiB] — logs/wtest.bin 쓰고 다시 읽어 비교 (기본 1)", cmd_sd_wtest, 1, 1),
 	SHELL_CMD_ARG(cat, NULL, "cat <경로> [바이트] — 파일 끝 쪽 보기 (예: logs/hub-9.txt)", cmd_sd_cat, 2, 1),
+	SHELL_CMD(info, NULL, "카드 버스 클럭 · 폭 · FAT 묶음 크기", cmd_sd_info),
+	SHELL_CMD_ARG(raw, NULL, "raw [MiB] — 파일 시스템 없이 큰 덩어리 읽기 속도 (기본 16)", cmd_sd_raw, 1, 1),
 	SHELL_CMD_ARG(log, NULL, "log [on|off] — SD 실시간 로그 상태 / 켜기·끄기", cmd_sd_log, 1, 1),
 	SHELL_SUBCMD_SET_END);
 SHELL_CMD_REGISTER(sd, &sub_sd, "SD 카드 (Zephyr 직접 — 읽기 · 로그 쓰기)", NULL);

@@ -466,8 +466,8 @@ static void do_load(const char *name)
 	hub_relay_set_loaded(name);
 	const bool ok = load_blob();
 	char b[320];
-	snprintf(b, sizeof b, "HUBLLM/1 load file=%s bytes=%zu read_ms=%lld mbps=%.2f ok=%d load_ms=%d "
-		 "hash=%s n_ctx=%d heap_kib=%u llm_heap_mib=%u", name, got, (long long)read_ms,
+	snprintf(b, sizeof b, "HUBLLM/1 load file=%s mode=%s bytes=%zu read_ms=%lld mbps=%.2f ok=%d load_ms=%d "
+		 "hash=%s n_ctx=%d heap_kib=%u llm_heap_mib=%u", name, hub_fs_read_mode(), got, (long long)read_ms,
 		 read_ms ? (double)got / 1048576.0 * 1000.0 / (double)read_ms : 0.0, ok ? 1 : 0,
 		 ok ? load_ms : -1, model_hash, n_ctx_now, (unsigned)heap_used_kib(),
 		 (unsigned)(llm_bigheap_used() >> 20));

@@ -133,6 +133,16 @@ hub_chat.py 는 기본으로 Qwen non-thinking 틀처럼 `<think>\n\n</think>\n\
 ⚠ 옛 판(e4d9a75 이전)이 재부팅할 때 U-Boot 가 쓰는 번호는 hub.conf + 1 이라, 새 판이 쓴 파일을 덮을 수 있다
 (시험 중 hub-12.txt 가 그렇게 덮였다). 새 판을 영구 적용하면 없어진다.
 
+## SD 읽기 속도 (2026-11-09)
+
+- `sd info`: 카드는 이미 **50 MHz · 4비트 고속**이다 (CRU sel 3 = 100 MHz ÷ 2). 그전에 "25 MHz" 라고 적은 것은 틀렸다.
+- `sd raw 16`: 파일 시스템 없이 256 KiB 씩 → 12.6 MB/s. FatFs 경유 8.6 MB/s 와의 차이는 f_read 가
+  묶음(8 KiB)마다 요청을 끊는 손실이다. 남은 한계(이론 25 MB/s)는 PIO(CPU 가 FIFO 를 워드씩 읽음).
+- `hub load` 는 FAT32 묶음 연결을 직접 따라가 연속 구간을 최대 1 MiB 씩 읽는다(mode=chain, 실패하면 fatfs):
+  q4km 507 MiB 58.7 → **39.8 s** (12.75 MB/s) · q8out 566 MiB 65.4 → **44.4 s**. 해시 같음 ·
+  `sd cmp 600`(FatFs 경로로 전체 비교) bad 0 · 생성 정상.
+- 더 빠르게 하려면 IDMAC(컨트롤러 DMA)이 필요하다.
+
 ## 아직 없는 것
 - boot_slot (boot.cmd 수정 = 카드 작업 필요). 온도 읽기(tsadc 드라이버 없음).
 - 0.8B 모델이라 답의 사실성은 낮다 — 첫 답(저압 활선 확인)은 기술적으로 틀렸다.

@@ -93,6 +93,8 @@ int hub_fs_model_size(const char *name, size_t *size);
 /** dst 로 통째 읽는다. prog(done, total) 가 0 아닌 값을 주면 멈춘다(-ECANCELED). */
 int hub_fs_read_model(const char *name, void *dst, size_t max, size_t *got,
 		      int (*prog)(size_t done, size_t total));
+/** 마지막 hub_fs_read_model 의 방식: "chain"(연속 구간 직접) · "fatfs" · "-" */
+const char *hub_fs_read_mode(void);
 /** SD 실시간 로그를 지금 쓴다 (wait_ms 안에 카드를 못 잡으면 포기). 재부팅 직전에 부른다 */
 void hub_fs_log_flush(int wait_ms);
 /** 실시간 로그 파일 이름 ("logs/hub-N.txt"), 쓰지 않으면 "-" */
