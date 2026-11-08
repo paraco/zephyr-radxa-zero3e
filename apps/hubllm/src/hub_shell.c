@@ -14,6 +14,7 @@
 
 #include "hub.h"
 #include <rk3566_tsadc.h>
+#include <rk3566_boot_slot.h>
 
 static struct hub_req req;	/* 셸 스레드 하나만 쓴다 — submit 이 복사한다 */
 
@@ -206,15 +207,15 @@ static int cmd_hub_info(const struct shell *sh, size_t argc, char **argv)
 	if (kv) {
 		/* F3 — 모르는 값은 '-' (키는 빼지 않는다). model_hash·boot_slot 은 다음 판 */
 		shell_print(sh, "FW_INFO fmt=1 deviceid=%s role=hub release=%s build=%s%s "
-			    "variant=hubllm board=rk3566 model_hash=%s model_smp=%s boot_slot=- "
+			    "variant=hubllm board=rk3566 model_hash=%s model_smp=%s boot_slot=%s "
 			    "llm=%s n_ctx=%d ctx_kib=%d n_past=%d temp_mc=%d",
 			    hex, APP_VERSION_STRING, STRINGIFY(APP_BUILD_VERSION), MORU_GIT_DIRTY,
-			    hub_llm_model_hash(), hub_llm_model_smp(),
+			    hub_llm_model_hash(), hub_llm_model_smp(), rk3566_boot_slot(),
 			    hub_llm_state(), hub_llm_n_ctx(), hub_llm_ctx_kib(), hub_llm_n_past(),
 			    cpu_mc());
 	} else {
-		shell_print(sh, "hubllm %s (build %s%s) · 칩 %s", APP_VERSION_STRING,
-			    STRINGIFY(APP_BUILD_VERSION), MORU_GIT_DIRTY, hex);
+		shell_print(sh, "hubllm %s (build %s%s) · 칩 %s · 부팅 슬롯 %s", APP_VERSION_STRING,
+			    STRINGIFY(APP_BUILD_VERSION), MORU_GIT_DIRTY, hex, rk3566_boot_slot());
 		shell_print(sh, "  LLM  %s · 적재 %d ms · n_ctx %d · 문맥 %d KiB · 대화 %d 토큰",
 			    hub_llm_state(), hub_llm_load_ms(), hub_llm_n_ctx(), hub_llm_ctx_kib(),
 			    hub_llm_n_past());

@@ -21,6 +21,7 @@
 #include <zephyr/arch/arm64/arm-smccc.h>
 #include <zephyr/drivers/pm_cpu_ops/psci.h>
 #include <moru_led.h>
+#include <rk3566_boot_slot.h>
 #include <zephyr/logging/log_ctrl.h>
 #include <zephyr/sys/util.h>
 #include <stdlib.h>
@@ -132,6 +133,7 @@ static int cmd_moru_info(const struct shell *sh, size_t argc, char **argv)
 			    moru_preboot_us() / 1000000ULL,
 			    (moru_preboot_us() % 1000000ULL) / 1000ULL);
 	}
+	shell_print(sh, "  부팅 슬롯 %s (boot.cmd 표식 — try · main · main-alt · -)", rk3566_boot_slot());
 	print_uptime(sh);
 
 	shell_print(sh, "");

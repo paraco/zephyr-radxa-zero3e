@@ -98,6 +98,12 @@ echo "=== PiZZa Zephyr loader ==="
 mw.l 0xfdd60008 0x00010001 1
 mw.l 0xfdd60000 0x00010001 1
 
+# ── 부팅 슬롯 표식 (Studio F6, soc_init/boot_slot.c 가 읽는다) ──────────────
+# 0x51000018 = 'SLOT'(0x544f4c53) · 0x5100001c = 1 try · 2 main · 3 예비(mmc 1:2).
+# 먼저 지워 둔다 — 표식 없이 뛰면 Zephyr 는 boot_slot=- 로 낸다.
+mw.l 0x51000018 0 1
+mw.l 0x5100001c 0 1
+
 if itest.l *${ota_addr} -eq ${ota_magic}; then
 	echo "=== OTA image in RAM at ${ota_addr} ==="
 
@@ -333,16 +339,22 @@ if fatload ${devtype} ${devnum}:${distro_bootpart} ${zaddr} zephyr.bin.try; then
 		echo "  ⚠ fatrm 실패 — 이 이미지가 멈추면 카드를 꺼내야 한다"
 	fi
 	echo "  jumping to ${zentry}"
+	mw.l 0x51000018 0x544f4c53 1
+	mw.l 0x5100001c 1 1
 	go ${zentry}
 fi
 
 if fatload ${devtype} ${devnum}:${distro_bootpart} ${zaddr} zephyr.bin; then
 	echo "loaded from ${devtype} ${devnum}:${distro_bootpart}, jumping to ${zentry}"
+	mw.l 0x51000018 0x544f4c53 1
+	mw.l 0x5100001c 2 1
 	go ${zentry}
 fi
 
 if fatload mmc 1:2 ${zaddr} zephyr.bin; then
 	echo "loaded from mmc 1:2, jumping to ${zentry}"
+	mw.l 0x51000018 0x544f4c53 1
+	mw.l 0x5100001c 3 1
 	go ${zentry}
 fi
 
