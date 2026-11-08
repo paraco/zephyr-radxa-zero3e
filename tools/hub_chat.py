@@ -19,6 +19,7 @@ SPDX-License-Identifier: Apache-2.0
 """
 import argparse
 import base64
+import codecs
 import os
 import select
 import subprocess
@@ -64,7 +65,24 @@ def gen(fd, text, a, rid, keep):
         opt += f' pres={a.pres} freq={a.freq} rep={a.rep} last_n={a.last_n}'
     send(fd, f'hub gen id={rid} max={a.max} special=1 keep={1 if keep else 0}{opt} b64={b64}')
     buf, prompt_ids, tids = b'', [], []
+    # 토큰 경계에서 잘린 UTF-8(한글 3바이트 등)을 버리지 않고 이어 붙인다
+    dec = codecs.getincrementaldecoder('utf-8')('replace')
+    sys.stdout.write('[생성 중 — 첫 토큰까지 2~3초 · Ctrl-C 면 보드에 중단을 보낸다]\n')
+    sys.stdout.flush()
     deadline = time.time() + a.timeout
+    try:
+        return _read(fd, rid, a, buf, prompt_ids, tids, dec, deadline)
+    except KeyboardInterrupt:
+        print('\n[중단 — hub abort 를 보낸다]')
+        send(fd, 'hub abort')
+        # 보드는 토큰 사이에서 멈추고 done(stop=abort)을 낸다 — 그것까지 받아 둔다
+        try:
+            return _read(fd, rid, a, buf, prompt_ids, tids, dec, time.time() + 10)
+        except KeyboardInterrupt:
+            return False, prompt_ids, tids
+
+
+def _read(fd, rid, a, buf, prompt_ids, tids, dec, deadline):
     while time.time() < deadline:
         r, _, _ = select.select([fd], [], [], 0.2)
         if not r:
@@ -88,7 +106,7 @@ def gen(fd, text, a, rid, keep):
             elif f[1] == 'tok':
                 tids.append(int(kv['tid']))
                 piece = base64.b64decode(f[-1]) if '=' not in f[-1] or f[-1].endswith('=') else b''
-                sys.stdout.write(piece.decode('utf-8', 'ignore'))
+                sys.stdout.write(dec.decode(piece))
                 sys.stdout.flush()
             elif f[1] in ('done', 'err'):
                 print(f'\n\n[{s[i:]}]')
