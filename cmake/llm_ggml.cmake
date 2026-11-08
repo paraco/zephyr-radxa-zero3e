@@ -115,7 +115,11 @@ function(llm_add_ggml)
 	target_include_directories(app PRIVATE
 		${G}/include ${G}/src ${G}/src/ggml-cpu
 		${CMAKE_CURRENT_BINARY_DIR}/ggml-gen
-		${LLM_GGML_CMAKE_DIR}/../apps/llm_common)
+		${LLM_GGML_CMAKE_DIR}/../apps/llm_common
+		# moru_led.h — QEMU 빌드는 rk3566 모듈을 넣지 않으므로(qemu_run.sh)
+		# 모듈의 zephyr_include_directories 가 닿지 않는다. 여기서도 준다.
+		# 모듈이 없으면 CONFIG_MORU_LED 도 없어 빈 inline 이 된다.
+		${LLM_GGML_CMAKE_DIR}/../soc_init/include)
 	target_compile_definitions(app PRIVATE GGML_USE_CPU GGML_BACKEND_BUILD)
 	if(LLM_GGML_REPACK)
 		target_compile_definitions(app PRIVATE GGML_USE_CPU_REPACK)
