@@ -116,6 +116,10 @@ static uint32_t rk8600_uv(uint8_t r) { return 712500u + 12500u * (uint32_t)(r & 
 #define CRU_CLKSEL(n) (0x100 + 4 * (n))
 
 static mm_reg_t i2c, cru;
+static uint64_t cpu_mhz(void);
+
+/* 진단: power down 뒤 lock 이 떨어지기까지 · power up 뒤 잠기기까지 (µs) */
+static int apll_lockdrop_us = -1, apll_lock_us = -1;
 
 static inline uint32_t ir(uint32_t o) { return sys_read32(i2c + o); }
 static inline void iw(uint32_t o, uint32_t v) { sys_write32(v, i2c + o); }
@@ -279,13 +283,31 @@ static int stability(const uint8_t *buf, uint32_t ref, int reps)
  * 0 = lock 됨, -ETIMEDOUT = 10 ms 안에 lock 안 됨 */
 static int apll_set_fbdiv(uint32_t fbdiv)
 {
-	cw(CRU_MODE_CON, 0x00030000);			/* slow (24 MHz OSC) */
+	/* MODE 마스크는 원문처럼 0x1 (PLL_RK3328_MODE_MASK). 전 판은 0x3 이었다 —
+	 * 결과는 같았지만(bit1 이 0) 원문보다 넓게 쓸 이유가 없다. 검토 지적. */
+	cw(CRU_MODE_CON, 0x00010000);			/* slow (24 MHz OSC) */
 	cw(CRU_APLL_CON1, 0x20002000);			/* power down */
+
+	/* ⚠ 검토 지적 [올리면 안 됨]: power down 직후 lock 비트가 **즉시** 0 이
+	 *   되는지 보장이 없다. 지금 lock 은 1 이다. 떨어지는 데 시간이 걸리면
+	 *   아래 폴링이 **이전의 lock=1** 을 보고 잠기지 않은 PLL 로 NORMAL 에
+	 *   들어갈 수 있다. U-Boot 원문도 같은 순서라 실제 가능성은 낮지만,
+	 *   확인 비용은 몇 줄이고 틀리면 "1416 에서 불안정했다" 는 잘못된
+	 *   결론을 낸다. 그래서 **떨어지는 것을 확인한다** (최대 1 ms). */
+	int t;
+	for (t = 0; t < 1000 && (cr(CRU_APLL_CON1) & (1u << 10)); t++) {
+		k_busy_wait(1);
+	}
+	apll_lockdrop_us = t;
+
 	cw(CRU_APLL_CON0, 0x7fff0000 | (2u << 12) | fbdiv); /* postdiv1 2 · fbdiv */
 	cw(CRU_APLL_CON1, 0x20000000);			/* power up */
-	for (int t = 0; t < 10000; t++) {		/* 10 ms */
+	k_busy_wait(2);					/* 폴링 전에 2 µs (검토 제안) */
+	for (t = 0; t < 10000; t++) {			/* 10 ms */
 		if (cr(CRU_APLL_CON1) & (1u << 10)) {
-			cw(CRU_MODE_CON, 0x00030001);	/* NORMAL — **잠긴 뒤에만** */
+			k_busy_wait(100);		/* lock 직후 100 µs (검토 제안) */
+			cw(CRU_MODE_CON, 0x00010001);	/* NORMAL — **잠긴 뒤에만** */
+			apll_lock_us = t;
 			return 0;
 		}
 		k_busy_wait(1);
@@ -305,11 +327,23 @@ static void core_divs(uint32_t d)
 	cw(CRU_CLKSEL(4), 0x1f1f0000 | (d << 8) | d);
 }
 
-static void to_1104(void)
+static int to_1104(void)
 {
 	/* 내릴 때: PLL 먼저, 분주 나중 (rk3568_armclk_set_clk) */
-	(void)apll_set_fbdiv(92);
+	const int err = apll_set_fbdiv(92);
 	core_divs(3);
+	return err;
+}
+
+/* 검토 지적: 1104 로도 안 잠긴 경우를 보고한다 */
+static void back_to_1104(const char *why)
+{
+	unsigned int key = irq_lock();
+	const int err = to_1104();
+	irq_unlock(key);
+	printk("      [%s] 1104 로 되돌림: %s · 실측 %" PRIu64 " MHz\n", why,
+	       err ? "⚠⚠ **1104 로도 lock 안 됨 — SLOW(24 MHz)에 머문다**" : "OK",
+	       cpu_mhz());
 }
 
 int main(void)
@@ -372,7 +406,14 @@ int main(void)
 
 	while (k_uptime_get() - t_start < 120000) {
 		k_msleep(250);
-		if (read3(v)) { rerr++; held = false; continue; }
+		const int re = read3(v);
+		if (re) {
+			if (rerr == 0) {
+				printk("      %6lld ms: ⚠ 첫 읽기 실패 (%d) — 이후 실패는 세기만 한다\n",
+				       k_uptime_get() - t_start, re);
+			}
+			rerr++; held = false; continue;
+		}
 		reads++;
 		if (v[0] != last0 || v[1] != last1) {
 			printk("      %6lld ms: VSEL0 0x%02x→0x%02x · VSEL1 0x%02x→0x%02x\n",
@@ -417,23 +458,28 @@ int main(void)
 	err = apll_set_fbdiv(118);	/* 그다음 PLL */
 	irq_unlock(key);
 	if (err) {
-		printk("      ⚠⚠ APLL 이 10 ms 안에 lock 되지 않았다 — 1104 로 되돌린다\n");
-		key = irq_lock(); to_1104(); irq_unlock(key);
+		printk("      ⚠⚠ APLL 이 10 ms 안에 lock 되지 않았다 (lock 이 떨어지기까지 %d µs)\n",
+		       apll_lockdrop_us);
+		back_to_1104("lock 시간초과");
 		goto halt;
 	}
 	const uint64_t mhz = cpu_mhz();
 	printk("      실측 CPU **%" PRIu64 " MHz** · con0 0x%08x · con1 0x%08x\n",
 	       mhz, cr(CRU_APLL_CON0), cr(CRU_APLL_CON1));
+	printk("      lock 이 떨어지기까지 %d µs · 잠기기까지 %d µs\n",
+	       apll_lockdrop_us, apll_lock_us);
 
 	/* ── [5] 안정성 ────────────────────────────────────────────────── */
 	printk("  [5] 안정성 — 1 MiB CRC32 를 %d 회, 전부 0x%08x 여야 한다\n", STAB_REPS, ref);
 	const int bad = stability(buf, ref, STAB_REPS);
-	(void)read3(v);
-	printk("      불일치 %d / %d · VSEL0 0x%02x · VSEL1 0x%02x\n", bad, STAB_REPS, v[0], v[1]);
-	if (bad) {
-		printk("  ⚠⚠ **불안정하다.** 즉시 1104 로 되돌린다\n");
-		key = irq_lock(); to_1104(); irq_unlock(key);
-		printk("      되돌린 뒤 실측 %" PRIu64 " MHz\n", cpu_mhz());
+	const int vr = read3(v);
+	const bool vok = !vr && v[0] == VSEL_TARGET && v[1] == VSEL_TARGET;
+	printk("      불일치 %d / %d · VSEL0 0x%02x · VSEL1 0x%02x%s\n", bad, STAB_REPS,
+	       v[0], v[1], vok ? "" : "  ⚠ **시험 중 전압이 목표에서 벗어났다**");
+	if (bad || !vok) {
+		printk("  ⚠⚠ **%s** 즉시 1104 로 되돌린다\n",
+		       bad ? "불안정하다." : "결과를 믿을 수 없다(전압이 바뀌었다).");
+		back_to_1104(bad ? "CRC 불일치" : "전압 변화");
 		goto halt;
 	}
 	printk("  ✓✓ **1416 MHz 에서 안정** (실측 %" PRIu64 " MHz, 불일치 0)\n", mhz);
@@ -443,8 +489,7 @@ int main(void)
 	/* ⚠ 측정이 끝났으면 **1104 로 내리고** 멈춘다. 1416 에 머문 채 k_sleep 하면,
 	 *   만약 VSEL0 이 나중에 되돌아갈 때(그리고 VSEL0 이 실제 레일이면) 무한정
 	 *   저전압으로 앉아 있게 된다. 1104 는 어느 쪽 해석이든 전압이 충분하다. */
-	key = irq_lock(); to_1104(); irq_unlock(key);
-	printk("      멈추기 전에 1104 로 내렸다 — 실측 %" PRIu64 " MHz\n", cpu_mhz());
+	back_to_1104("측정 끝");
 
 halt:
 	printk("=== L9b 측정 끝 ===\n");
