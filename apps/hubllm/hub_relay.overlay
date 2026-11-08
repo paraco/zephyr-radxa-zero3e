@@ -1,0 +1,22 @@
+/*
+ * hub_relay — U-Boot(boot.cmd) 와 hubllm 사이의 RAM 중계 구역 (재부팅을 건너 남는다 — OTA 와 같은 길).
+ * 0x51000000 + 2 MiB, 캐시 없는 Normal 메모리. 주소 배치는 src/hub_relay.c 머리말.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+#include <zephyr/dt-bindings/memory-attr/memory-attr-arm64.h>
+
+/ {
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		hub_relay: memory@51000000 {
+			compatible = "zephyr,memory-region";
+			reg = <0x0 0x51000000 0x0 0x00200000>;	/* 2 MiB */
+			zephyr,memory-region = "HUB_RELAY";
+			zephyr,memory-attr = <DT_MEM_ARM64_MMU_NORMAL_NC>;
+		};
+	};
+};

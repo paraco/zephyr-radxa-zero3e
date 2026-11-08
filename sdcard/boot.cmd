@@ -319,15 +319,79 @@ sleep 1
 # 7. NORMAL 모드로 (MODE_CON bits[1:0] = 1)
 mw.l 0xfdd200c0 0x00030001 1
 
+# ── hub: 모델 고르기 · 로그 저장 (2026-11-08, SD 카드 1단계) ──────────────────────
+# 카드 BLOB 파티션(:3): hub.conf (hub_model=<파일> · hub_logseq=<16진>) · models/*.gguf · logs/
+# RAM 중계 (apps/hubllm/src/hub_relay.c 와 같은 주소 — 재부팅을 건너 남는다):
+#   0x510000F0 'HLOG' · 0x510000F4 길이 · 0x51100000 로그 글  → logs/hub-<seq>.txt
+#   0x510000F8 'HENV' · 0x51000100 "hub_req=<파일> [hub_save=1]" → 이번에 올릴 모델
+#   0x510001F8 'MODL' · 0x51000200 "hub_loaded=… hub_logseq=…" → hubllm 이 읽는다
+# 어느 단계가 실패해도 아래 blob.bin 경로로 떨어진다.
+setenv hub_model
+setenv hub_req
+setenv hub_save
+setenv hub_dirty
+setenv hub_logseq 0
+setenv hubcfg 0x51000400
+mw.l 0x510001F8 0 1
+if fatload ${devtype} ${devnum}:3 ${hubcfg} hub.conf; then
+	env import -t ${hubcfg} ${filesize}
+	echo "=== hub.conf: hub_model=${hub_model} hub_logseq=${hub_logseq} ==="
+fi
+if itest.l *0x510000F8 == 0x564e4548; then
+	env import -t 0x51000100 0x100
+	mw.l 0x510000F8 0 1
+	echo "=== hubllm 요청: hub_req=${hub_req} hub_save=${hub_save} ==="
+	if test "${hub_save}" = "1"; then
+		setenv hub_model ${hub_req}
+		setenv hub_dirty 1
+	fi
+	setenv hub_save
+fi
+if itest.l *0x510000F0 == 0x474f4c48; then
+	setexpr.l hub_loglen *0x510000F4
+	setexpr hub_logseq ${hub_logseq} + 1
+	if fatwrite ${devtype} ${devnum}:3 0x51100000 logs/hub-${hub_logseq}.txt ${hub_loglen}; then
+		echo "=== 로그 저장: logs/hub-${hub_logseq}.txt (0x${hub_loglen} B) ==="
+		setenv hub_dirty 1
+	fi
+	mw.l 0x510000F0 0 1
+fi
+if test "${hub_dirty}" = "1"; then
+	env export -t ${hubcfg} hub_model hub_logseq
+	if fatwrite ${devtype} ${devnum}:3 ${hubcfg} hub.conf ${filesize}; then
+		echo "=== hub.conf 갱신 ==="
+	fi
+fi
+setenv hub_load ${hub_model}
+if test -n "${hub_req}"; then
+	setenv hub_load ${hub_req}
+fi
+setenv hub_loaded
+if test -n "${hub_load}"; then
+	echo "=== models/${hub_load} 읽는다 — 큰 파일은 30~50s ==="
+	if fatload ${devtype} ${devnum}:3 0x58000000 models/${hub_load}; then
+		echo "=== models/${hub_load} -> 0x58000000 (${filesize} bytes) ==="
+		setenv hub_loaded ${hub_load}
+	fi
+fi
+
+if test -z "${hub_loaded}"; then
 echo "=== blob.bin 찾는다 (큰 파티션 3 -> boot 파티션) — 큰 파일은 30~50s ==="
 if fatload ${devtype} ${devnum}:3 0x58000000 blob.bin; then
 	echo "=== blob.bin -> 0x58000000 (${filesize} bytes, 파티션 3) ==="
+	setenv hub_loaded blob.bin
 else
 	if fatload ${devtype} ${devnum}:${distro_bootpart} 0x58000000 blob.bin; then
 		echo "=== blob.bin -> 0x58000000 (${filesize} bytes, boot 파티션) ==="
+		setenv hub_loaded boot:blob.bin
 	else
 		echo "=== blob.bin 없음 — 블롭 없이 계속한다 ==="
 	fi
+fi
+fi
+if test -n "${hub_loaded}"; then
+	env export -t 0x51000200 hub_loaded hub_logseq
+	mw.l 0x510001F8 0x4c444f4d 1
 fi
 
 if fatload ${devtype} ${devnum}:${distro_bootpart} ${zaddr} zephyr.bin.try; then

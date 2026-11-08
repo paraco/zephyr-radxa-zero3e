@@ -30,6 +30,7 @@
 #include <cstdarg>
 
 #include "hub.h"
+#include "hub_relay.h"
 #include "clk1416.h"
 #include <rk3566_tsadc.h>
 #include "llm_bigheap.h"
@@ -128,6 +129,14 @@ static void lput(const char *fmt, ...)
 }
 static void lend(void)
 {
+	/* done · err 줄은 카드 로그에도 (hub_relay — 다음 부팅에 U-Boot 가 logs/ 에 쓴다) */
+	if (!strncmp(line, "HUBLLM/1 done", 13) || !strncmp(line, "HUBLLM/1 err", 12)) {
+		char t[24];
+		snprintf(t, sizeof t, "t=%lld ", (long long)k_uptime_get());
+		char buf[sizeof line + 32];
+		snprintf(buf, sizeof buf, "%s%s", t, line);
+		hub_log(buf);
+	}
 	shell_fprintf(cur_sh, SHELL_NORMAL, "%s\n", line);
 	ll = 0;
 	line[0] = 0;
@@ -393,6 +402,13 @@ static void hub_thread(void *, void *, void *)
 	load_ms = (int)(k_uptime_get() - t0);
 	LOG_INF("LLM 준비: 적재 %d ms · n_ctx %d · 문맥 %d KiB · 힙 %u KiB · llm_heap %u MiB", load_ms,
 		n_ctx_now, ctx_kib, (unsigned)heap_used_kib(), (unsigned)(llm_bigheap_used() >> 20));
+	{
+		char b[256];
+		snprintf(b, sizeof b, "t=%lld HUBLLM/1 boot model_file=%s model_hash=%s load_ms=%d n_ctx=%d "
+			 "heap_kib=%u logseq=%s", (long long)k_uptime_get(), hub_relay_loaded(), model_hash,
+			 load_ms, n_ctx_now, (unsigned)heap_used_kib(), hub_relay_logseq());
+		hub_log(b);
+	}
 	state = ST_READY;
 	moru_led_set(MORU_LED_READY);
 	serve();

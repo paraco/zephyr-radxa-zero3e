@@ -14,6 +14,7 @@
 #include <errno.h>
 
 #include "hub.h"
+#include "hub_relay.h"
 #include <rk3566_tsadc.h>
 #include <rk3566_boot_slot.h>
 
@@ -176,6 +177,41 @@ static int cmd_hub_guard(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+/* hub model [<파일> [save]] — 1단계: 카드는 U-Boot 가 읽는다 (hub_relay.c) */
+static int cmd_hub_model(const struct shell *sh, size_t argc, char **argv)
+{
+	if (argc == 1) {
+		shell_print(sh, "HUBLLM/1 model file=%s hash=%s logseq=%s", hub_relay_loaded(),
+			    hub_llm_model_hash(), hub_relay_logseq());
+		return 0;
+	}
+	const bool save = (argc > 2 && !strcmp(argv[2], "save"));
+	if (hub_relay_request_model(argv[1], save)) {
+		shell_print(sh, "HUBLLM/1 err id=0 code=bad_arg msg=model_file_[A-Za-z0-9._-]_max60");
+		return -EINVAL;
+	}
+	shell_print(sh, "HUBLLM/1 model_switch file=%s save=%d reboot=1 — 다시 붙으면 hub model 로 확인",
+		    argv[1], save ? 1 : 0);
+	hub_relay_reboot();
+	return 0;
+}
+
+static int cmd_hub_reboot(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc); ARG_UNUSED(argv);
+	shell_print(sh, "HUBLLM/1 reboot log_bytes=%zu — 로그는 다음 부팅에 카드 logs/ 로", hub_log_len());
+	hub_relay_reboot();
+	return 0;
+}
+
+static int cmd_hub_log(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc); ARG_UNUSED(argv);
+	shell_print(sh, "HUBLLM/1 log bytes=%zu (다음 부팅에 logs/hub-<seq+1>.txt · 지금 seq=%s)",
+		    hub_log_len(), hub_relay_logseq());
+	return 0;
+}
+
 static int cmd_hub_abort(const struct shell *sh, size_t argc, char **argv)
 {
 	ARG_UNUSED(argc); ARG_UNUSED(argv);
@@ -208,10 +244,10 @@ static int cmd_hub_info(const struct shell *sh, size_t argc, char **argv)
 	if (kv) {
 		/* F3 — 모르는 값은 '-' (키는 빼지 않는다). model_hash·boot_slot 은 다음 판 */
 		shell_print(sh, "FW_INFO fmt=1 deviceid=%s role=hub release=%s build=%s%s "
-			    "variant=hubllm board=rk3566 model_hash=%s model_smp=%s boot_slot=%s "
+			    "variant=hubllm board=rk3566 model_file=%s model_hash=%s model_smp=%s boot_slot=%s "
 			    "llm=%s n_ctx=%d ctx_kib=%d n_past=%d temp_mc=%d",
 			    hex, APP_VERSION_STRING, STRINGIFY(APP_BUILD_VERSION), MORU_GIT_DIRTY,
-			    hub_llm_model_hash(), hub_llm_model_smp(), rk3566_boot_slot(),
+			    hub_relay_loaded(), hub_llm_model_hash(), hub_llm_model_smp(), rk3566_boot_slot(),
 			    hub_llm_state(), hub_llm_n_ctx(), hub_llm_ctx_kib(), hub_llm_n_past(),
 			    cpu_mc());
 	} else {
@@ -232,6 +268,9 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_hub,
 	SHELL_CMD(reset, NULL, "KV(대화) 비우기", cmd_hub_reset),
 	SHELL_CMD_ARG(ctx, NULL, "ctx n=<n> — 문맥 다시 만들기", cmd_hub_ctx, 2, 0),
 	SHELL_CMD_ARG(clk, NULL, "clk 1416|1104 — 코어 클럭", cmd_hub_clk, 2, 0),
+	SHELL_CMD_ARG(model, NULL, "model [<파일> [save]] — 지금 모델 / 다음 부팅 모델(재부팅)", cmd_hub_model, 1, 2),
+	SHELL_CMD(reboot, NULL, "재부팅 — 쌓인 로그를 U-Boot 가 카드에 쓴다", cmd_hub_reboot),
+	SHELL_CMD(log, NULL, "로그 크기", cmd_hub_log),
 	SHELL_CMD(temp, NULL, "칩 온도 (TSADC) + 셧다운 문턱 + 부트로더가 남긴 설정", cmd_hub_temp),
 	SHELL_CMD_ARG(tshut, NULL, "tshut <°C> — 하드웨어 셧다운 문턱 (0 끔, 60..95)", cmd_hub_tshut, 2, 0),
 	SHELL_CMD_ARG(guard, NULL, "guard [down pause stop] — 소프트웨어 보호 (°C)", cmd_hub_guard, 1, 3),
