@@ -1,0 +1,20 @@
+/*
+ * sdmmc0 — RK3566 SD 컨트롤러 (drivers/sdhc/rk_dw_mshc.c) + SD 디스크 "SD" (FatFs 볼륨 0).
+ * 주소·FIFO 는 linux rk356x-base.dtsi sdmmc0. 핀·전원·버스 클럭은 U-Boot 가 켜 둔 것을 쓴다.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+/ {
+	sdmmc0: mmc@fe2b0000 {
+		compatible = "rockchip,rk3568-dw-mshc";
+		reg = <0xfe2b0000 0x4000>;
+		fifo-depth = <256>;
+		status = "okay";
+
+		sdmmc {
+			compatible = "zephyr,sdmmc-disk";
+			disk-name = "SD";
+			status = "okay";
+		};
+	};
+};

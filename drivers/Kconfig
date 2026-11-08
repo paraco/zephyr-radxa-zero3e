@@ -1,3 +1,4 @@
 # SPDX-License-Identifier: Apache-2.0
 rsource "usb/udc/Kconfig"
 rsource "hwinfo/Kconfig"
+rsource "sdhc/Kconfig"

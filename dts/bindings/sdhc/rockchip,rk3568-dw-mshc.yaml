@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: Apache-2.0
+description: |
+  Rockchip RK3566/RK3568 SD 컨트롤러 (Synopsys DesignWare Mobile Storage Host, sdmmc0).
+  drivers/sdhc/rk_dw_mshc.c — U-Boot drivers/mmc/dw_mmc.c 의 FIFO(PIO) 경로를 옮겼다.
+  클럭·핀·전원은 U-Boot 가 해 둔 설정을 이어받고, 카드 클럭은 CRU clksel_con[30] 으로 고른다.
+
+compatible: "rockchip,rk3568-dw-mshc"
+
+include: [sdhc.yaml]
+
+properties:
+  reg:
+    required: true
+
+  fifo-depth:
+    type: int
+    default: 256
+    description: FIFO 깊이 (32비트 워드). linux rk356x-base.dtsi 는 0x100.

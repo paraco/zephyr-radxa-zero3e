@@ -2,7 +2,7 @@
 cmake_minimum_required(VERSION 3.20.0)
 # hubllm = moru + llama. 모델 창(0x58000000)은 L6c 와 같은 공용 overlay.
 set(EXTRA_DTC_OVERLAY_FILE
-    "${CMAKE_CURRENT_SOURCE_DIR}/../llm_common/model_blob.overlay;${CMAKE_CURRENT_SOURCE_DIR}/../llm_common/llm_heap.overlay;${CMAKE_CURRENT_SOURCE_DIR}/hub_relay.overlay")
+    "${CMAKE_CURRENT_SOURCE_DIR}/../llm_common/model_blob.overlay;${CMAKE_CURRENT_SOURCE_DIR}/../llm_common/llm_heap.overlay;${CMAKE_CURRENT_SOURCE_DIR}/hub_relay.overlay;${CMAKE_CURRENT_SOURCE_DIR}/sdmmc0.overlay")
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(hubllm)
 
@@ -66,7 +66,7 @@ target_include_directories(app PRIVATE
 target_sources(app PRIVATE src/main.c src/moru_mark.c src/moru_boot.c
                            src/moru_shell.c src/moru_usbd.c
                            src/moru_htop.c src/moru_fatal.c
-                           src/hub_llm.cpp src/hub_shell.c src/sha256.c src/hub_relay.c)
+                           src/hub_llm.cpp src/hub_shell.c src/sha256.c src/hub_relay.c src/hub_fs.c)
 
 # ── llama (L6c 와 같은 묶음 · ggml 은 -O3) ─────────────────────────────
 set(LLM_GGML_OPT_LEVEL "-O3" CACHE STRING "" FORCE)
