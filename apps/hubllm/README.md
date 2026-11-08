@@ -111,6 +111,28 @@ hub_chat.py 는 기본으로 Qwen non-thinking 틀처럼 `<think>\n\n</think>\n\
 - 바꾼 모델은 이번 부팅에만 쓴다. 다음 부팅 기본값은 `hub model <파일> save`.
 - 읽는 동안 `sd ls`·`sd cmp` 는 `err code=busy` (FatFs 를 한 번에 하나만 쓴다).
 
+## SD 에 로그 직접 쓰기 — 2b (2026-11-09)
+
+- 부팅하면 쓰기 스레드가 `logs/hub-<N>.txt` 를 만들고 2 초마다 새 줄을 덧붙인 뒤 fs_sync 한다.
+  N = max(logs/ 의 가장 큰 번호 + 1, U-Boot 가 넘긴 다음 번호). hub.conf 는 Zephyr 가 쓰지 않는다.
+- 쓰는 동안 U-Boot 는 로그를 저장하지 않는다('HLOG' 를 지움). 쓰기가 실패하면 예전처럼 재부팅 때 U-Boot 가 쓴다.
+- `hub reboot`·`hub model <파일>` 은 재부팅 직전에 마지막 줄을 쓴다.
+- 명령: `sd log [on|off]` · `sd cat <경로> [바이트]` · `sd wtest [MiB]`. `hub model` 에 `logfile=`.
+
+실기 (apply try):
+| 시험 | 결과 |
+|---|---|
+| 첫 쓰기 `sd wtest 1` · `16` | bad 0 · 쓰기 2.3~3.3 MB/s · 읽기 8.6 MB/s |
+| 쓴 뒤 셸 재부팅 | U-Boot 가 모델(해시 같음)·로그를 정상 처리 — FAT 이상 없음 |
+| 실시간 기록 | boot·done 줄이 바로 파일에 · 생성 4.25 tok/s 그대로 |
+| 질문 직후 `hub reboot` | 마지막 done 줄까지 들어감 (471 → 754 B) |
+| **전원 차단** | hub-13.txt 471 B 그대로 남음 — 1단계(재부팅 때만 저장)의 빈틈을 메웠다 |
+
+한계: 전원이 끊기면 마지막 동기화(≤ 2 s) 뒤 줄은 잃고, FAT 갱신 중이면 메타데이터가 어긋날 수 있다 ·
+로그는 중계 구역 크기 때문에 부팅 한 번에 1 MiB 에서 멈춘다 · `hub load` 동안은 기록이 밀렸다가 끝난 뒤 들어간다.
+⚠ 옛 판(e4d9a75 이전)이 재부팅할 때 U-Boot 가 쓰는 번호는 hub.conf + 1 이라, 새 판이 쓴 파일을 덮을 수 있다
+(시험 중 hub-12.txt 가 그렇게 덮였다). 새 판을 영구 적용하면 없어진다.
+
 ## 아직 없는 것
 - boot_slot (boot.cmd 수정 = 카드 작업 필요). 온도 읽기(tsadc 드라이버 없음).
 - 0.8B 모델이라 답의 사실성은 낮다 — 첫 답(저압 활선 확인)은 기술적으로 틀렸다.
