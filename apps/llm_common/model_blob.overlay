@@ -47,7 +47,10 @@
 
 		model_blob: memory@58000000 {
 			compatible = "zephyr,memory-region";
-			reg = <0x0 0x58000000 0x0 0x20000000>;	/* 512 MiB */
+			/* 576 MiB (0x58000000 ~ 0x7C000000). 2026-11-08 512 → 576: 출력층 q8_0 모델 566.6 MiB.
+			 * U-Boot 는 0x7DE00000 위에 있다(hubllm `hub dram` 실측 — "U-Boot" 문자열 0x7DECD742~,
+			 * 0x7E000000~0x7FE00000 0 채움). 창 끝과 약 30 MiB 떨어진다. 더 늘리지 않는다. */
+			reg = <0x0 0x58000000 0x0 0x24000000>;	/* 576 MiB */
 			zephyr,memory-region = "MODEL_BLOB";
 			zephyr,memory-attr = <DT_MEM_ARM64_MMU_NORMAL>;
 		};
