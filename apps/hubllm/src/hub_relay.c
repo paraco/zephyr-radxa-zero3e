@@ -3,7 +3,9 @@
  *
  * 재부팅을 건너 DRAM 이 남는 것(OTA 가 이미 쓰는 길)을 이용한다. sdcard/boot.cmd 와 같은 주소:
  *   0x510000F0 'HLOG'(0x474f4c48) · 0x510000F4 길이 · 0x51100000 로그 글 (≤ 1 MiB)
- *   0x51000300 "hub_loglen=<16진>\n" — U-Boot 는 env import -t 로 길이를 읽는다
+ *   0x51000300 "hub_loglen=<16진>\nhub_logseq=<다음 번호>\n" — U-Boot 는 env import -t 로 읽는다.
+ *       ⚠ 이 U-Boot 에서는 setexpr 가 동작하지 않는다(길이도 번호 +1 도 빈 값·그대로) —
+ *         그래서 다음 번호도 hubllm 이 계산해 넘긴다 (10진).
  *       (setexpr.l *주소 로 읽는 방식은 이 U-Boot 에서 빈 값을 냈다 — fatwrite 사용법 안내, 2026-11-08)
  *       → 다음 부팅 때 U-Boot 가 BLOB 파티션 logs/hub-<seq>.txt 로 쓴다 (seq 는 16진수)
  *   0x510000F8 'HENV'(0x564e4548) · 0x51000100 "hub_req=<파일>\n[hub_save=1\n]" (NUL 끝)
@@ -23,6 +25,7 @@
 #include <zephyr/logging/log_ctrl.h>
 #include <zephyr/sys/printk.h>
 #include <string.h>
+#include <stdlib.h>
 #include <errno.h>
 #include "hub_relay.h"
 
@@ -42,6 +45,7 @@
 
 static char loaded[64] = "-", logseq[16] = "-";
 static size_t loglen;
+static unsigned next_seq = 1;	/* 이번 부팅 로그가 저장될 번호 = hub.conf 의 번호 + 1 */
 static bool truncated;
 static struct k_spinlock lk;
 
@@ -82,8 +86,9 @@ void hub_log(const char *line)
 	}
 	sys_write32((uint32_t)loglen, R + OFF_LOGLEN);
 	{
-		char t[32];
-		const int k2 = snprintk(t, sizeof t, "hub_loglen=%x\n", (unsigned)loglen);
+		char t[64];
+		const int k2 = snprintk(t, sizeof t, "hub_loglen=%x\nhub_logseq=%u\n", (unsigned)loglen,
+					next_seq);
 		memcpy((void *)(R + OFF_LENTXT), t, (size_t)k2 + 1);	/* NUL 까지 */
 	}
 	sys_write32(MAG_LOG, R + OFF_LOGMAG);
@@ -125,6 +130,7 @@ static int hub_relay_init(void)
 		const char *t = (const char *)(R + OFF_MOD);
 		get_val(t, 0x100, "hub_loaded", loaded, sizeof loaded);
 		get_val(t, 0x100, "hub_logseq", logseq, sizeof logseq);
+		next_seq = (unsigned)strtoul(logseq, NULL, 10) + 1U;
 	}
 	sys_write32(0, R + OFF_MODMAG);
 	/* 앞 부팅의 로그는 U-Boot 가 이미 저장했다(boot.cmd 가 HLOG 를 지운다). 새로 시작 */

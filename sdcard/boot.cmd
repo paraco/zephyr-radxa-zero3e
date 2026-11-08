@@ -322,7 +322,7 @@ mw.l 0xfdd200c0 0x00030001 1
 # ── hub: 모델 고르기 · 로그 저장 (2026-11-08, SD 카드 1단계) ──────────────────────
 # 카드 BLOB 파티션(:3): hub.conf (hub_model=<파일> · hub_logseq=<16진>) · models/*.gguf · logs/
 # RAM 중계 (apps/hubllm/src/hub_relay.c 와 같은 주소 — 재부팅을 건너 남는다):
-#   0x510000F0 'HLOG' · 0x51000300 "hub_loglen=<16진>" · 0x51100000 로그 글  → logs/hub-<seq>.txt
+#   0x510000F0 'HLOG' · 0x51000300 "hub_loglen=<16진> hub_logseq=<다음>" · 0x51100000 로그 글  → logs/hub-<seq>.txt
 #   0x510000F8 'HENV' · 0x51000100 "hub_req=<파일> [hub_save=1]" → 이번에 올릴 모델
 #   0x510001F8 'MODL' · 0x51000200 "hub_loaded=… hub_logseq=…" → hubllm 이 읽는다
 # 어느 단계가 실패해도 아래 blob.bin 경로로 떨어진다.
@@ -350,7 +350,7 @@ fi
 if itest.l *0x510000F0 == 0x474f4c48; then
 	setenv hub_loglen
 	env import -t 0x51000300 0x40
-	setexpr hub_logseq ${hub_logseq} + 1
+	# ⚠ setexpr 는 이 U-Boot 에서 동작하지 않는다 — 다음 번호(hub_logseq)는 hubllm 이 위 글에 넣었다
 	if fatwrite ${devtype} ${devnum}:3 0x51100000 logs/hub-${hub_logseq}.txt ${hub_loglen}; then
 		echo "=== 로그 저장: logs/hub-${hub_logseq}.txt (0x${hub_loglen} B) ==="
 		setenv hub_dirty 1
