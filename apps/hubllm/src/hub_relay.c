@@ -3,6 +3,8 @@
  *
  * 재부팅을 건너 DRAM 이 남는 것(OTA 가 이미 쓰는 길)을 이용한다. sdcard/boot.cmd 와 같은 주소:
  *   0x510000F0 'HLOG'(0x474f4c48) · 0x510000F4 길이 · 0x51100000 로그 글 (≤ 1 MiB)
+ *   0x51000300 "hub_loglen=<16진>\n" — U-Boot 는 env import -t 로 길이를 읽는다
+ *       (setexpr.l *주소 로 읽는 방식은 이 U-Boot 에서 빈 값을 냈다 — fatwrite 사용법 안내, 2026-11-08)
  *       → 다음 부팅 때 U-Boot 가 BLOB 파티션 logs/hub-<seq>.txt 로 쓴다 (seq 는 16진수)
  *   0x510000F8 'HENV'(0x564e4548) · 0x51000100 "hub_req=<파일>\n[hub_save=1\n]" (NUL 끝)
  *       → U-Boot 가 models/<파일> 을 올린다. save 면 hub.conf 의 hub_model 도 바꾼다
@@ -19,6 +21,7 @@
 #include <zephyr/sys/sys_io.h>
 #include <zephyr/arch/arm64/arm-smccc.h>
 #include <zephyr/logging/log_ctrl.h>
+#include <zephyr/sys/printk.h>
 #include <string.h>
 #include <errno.h>
 #include "hub_relay.h"
@@ -30,6 +33,7 @@
 #define OFF_ENV      0x100
 #define OFF_MODMAG   0x1F8
 #define OFF_MOD      0x200
+#define OFF_LENTXT   0x300
 #define OFF_LOG      0x100000
 #define LOG_MAX      (1u << 20)
 #define MAG_LOG      0x474f4c48u
@@ -77,6 +81,11 @@ void hub_log(const char *line)
 		loglen += n + 1;
 	}
 	sys_write32((uint32_t)loglen, R + OFF_LOGLEN);
+	{
+		char t[32];
+		const int k2 = snprintk(t, sizeof t, "hub_loglen=%x\n", (unsigned)loglen);
+		memcpy((void *)(R + OFF_LENTXT), t, (size_t)k2 + 1);	/* NUL 까지 */
+	}
 	sys_write32(MAG_LOG, R + OFF_LOGMAG);
 	k_spin_unlock(&lk, k);
 }
