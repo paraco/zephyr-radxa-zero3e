@@ -268,11 +268,22 @@ static uint32_t crc32_sw(const uint8_t *p, size_t n)
 #define STAB_SZ   (1u << 20)
 #define STAB_REPS 50
 
-static int stability(const uint8_t *buf, uint32_t ref, int reps)
+/* 10 회마다 VSEL 을 다시 읽는다. 읽기 실패나 목표가 아니면 즉시 멈추고
+ * *vbad 에 1 을 둔다 — 저전압 1416 에 오래 머물지 않게 (검토 지적 1). */
+static int stability(const uint8_t *buf, uint32_t ref, int reps, int *vbad)
 {
 	int bad = 0;
+	uint8_t v[3];
+	*vbad = 0;
 	for (int r = 0; r < reps; r++) {
 		if (crc32_sw(buf, STAB_SZ) != ref) { bad++; }
+		if ((r % 10) == 9) {
+			if (read3(v) || v[0] != VSEL_TARGET || v[1] != VSEL_TARGET) {
+				printk("      ⚠ %d 회째 VSEL 0x%02x/0x%02x — 중단\n", r + 1, v[0], v[1]);
+				*vbad = 1;
+				return bad;
+			}
+		}
 	}
 	return bad;
 }
@@ -359,6 +370,14 @@ int main(void)
 	       cpu_mhz(), cr(CRU_APLL_CON0), cr(CRU_APLL_CON1));
 	printk("      clksel_con[3] 0x%08x · [4] 0x%08x · [5] 0x%08x\n",
 	       cr(CRU_CLKSEL(3)), cr(CRU_CLKSEL(4)), cr(CRU_CLKSEL(5)));
+	/* 시작 구성 확인 (검토 지적 2): fbdiv 만 바꾸므로 나머지가 1104 판이어야 한다.
+	 * con0[14:0] = postdiv1 2 · fbdiv 92 = 0x205c
+	 * con1 refdiv[5:0]=1 · postdiv2[8:6]=1 · dsmpd b12=1 (lock b10 은 보지 않는다) */
+	if ((cr(CRU_APLL_CON0) & 0x7fff) != 0x205c ||
+	    (cr(CRU_APLL_CON1) & 0x11ff) != 0x1041) {
+		printk("      ⚠⚠ APLL 구성이 1104 판이 아니다 — **아무것도 쓰지 않고 중단**\n");
+		goto halt;
+	}
 
 	/* ── [1] 읽기 먼저 ─────────────────────────────────────────────── */
 	const uint32_t clkdiv = ir(I2C_CLKDIV);
@@ -468,12 +487,18 @@ int main(void)
 	       mhz, cr(CRU_APLL_CON0), cr(CRU_APLL_CON1));
 	printk("      lock 이 떨어지기까지 %d µs · 잠기기까지 %d µs\n",
 	       apll_lockdrop_us, apll_lock_us);
+	if (mhz < 1380 || mhz > 1450) {
+		printk("  ⚠⚠ 실측이 1416 범위(1380~1450) 밖이다 — 1104 로 되돌린다\n");
+		back_to_1104("주파수 범위 밖");
+		goto halt;
+	}
 
 	/* ── [5] 안정성 ────────────────────────────────────────────────── */
 	printk("  [5] 안정성 — 1 MiB CRC32 를 %d 회, 전부 0x%08x 여야 한다\n", STAB_REPS, ref);
-	const int bad = stability(buf, ref, STAB_REPS);
+	int vbad;
+	const int bad = stability(buf, ref, STAB_REPS, &vbad);
 	const int vr = read3(v);
-	const bool vok = !vr && v[0] == VSEL_TARGET && v[1] == VSEL_TARGET;
+	const bool vok = !vbad && !vr && v[0] == VSEL_TARGET && v[1] == VSEL_TARGET;
 	printk("      불일치 %d / %d · VSEL0 0x%02x · VSEL1 0x%02x%s\n", bad, STAB_REPS,
 	       v[0], v[1], vok ? "" : "  ⚠ **시험 중 전압이 목표에서 벗어났다**");
 	if (bad || !vok) {
