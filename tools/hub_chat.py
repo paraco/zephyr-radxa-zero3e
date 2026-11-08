@@ -2,7 +2,7 @@
 """hubllm 에 질문을 보내고 답을 흘려 받는다 (HUBLLM/1, apps/hubllm/src/hub.h).
 
     python3 tools/hub_chat.py "질문"                    # 한 번 (greedy)
-    python3 tools/hub_chat.py --temp 0.7 --topk 20 --topp 0.95 --seed 7 "질문"
+    python3 tools/hub_chat.py --temp 0.7 --topk 20 --topp 0.8 --pres 1.5 --seed 7 "질문"
     python3 tools/hub_chat.py --verify "질문"           # 호스트 greedy 와 토큰 열 대조
     python3 tools/hub_chat.py --chat                    # 대화 (KV 이어가기, 빈 줄로 끝)
     python3 tools/hub_chat.py --raw "<|im_start|>user\\nhi<|im_end|>\\n"
@@ -55,6 +55,8 @@ def drain(fd, t=0.3):
 def gen(fd, text, a, rid, keep):
     b64 = base64.b64encode(text.encode()).decode()
     opt = f' temp={a.temp} topk={a.topk} topp={a.topp} seed={a.seed}' if a.temp > 0 else ''
+    if a.pres or a.freq or a.rep != 1.0:
+        opt += f' pres={a.pres} freq={a.freq} rep={a.rep} last_n={a.last_n}'
     send(fd, f'hub gen id={rid} max={a.max} special=1 keep={1 if keep else 0}{opt} b64={b64}')
     buf, prompt_ids, tids = b'', [], []
     deadline = time.time() + a.timeout
@@ -117,6 +119,10 @@ def main():
     ap.add_argument('--topk', type=int, default=20)
     ap.add_argument('--topp', type=float, default=0.95)
     ap.add_argument('--seed', type=int, default=1)
+    ap.add_argument('--pres', type=float, default=0.0, help='presence_penalty (Qwen 권장 1.5)')
+    ap.add_argument('--freq', type=float, default=0.0)
+    ap.add_argument('--rep', type=float, default=1.0)
+    ap.add_argument('--last-n', dest='last_n', type=int, default=64)
     ap.add_argument('--raw', action='store_true')
     ap.add_argument('--chat', action='store_true')
     ap.add_argument('--verify', action='store_true')
@@ -159,8 +165,8 @@ def main():
                 if a.raw else f'<|im_start|>user\n{a.question}<|im_end|>\n<|im_start|>assistant\n')
         ok, pids, tids = gen(fd, text, a, rid, keep=False)
         if ok and a.verify:
-            if a.temp > 0:
-                print('[대조 생략 — 확률 샘플링은 호스트와 같을 필요가 없다]')
+            if a.temp > 0 or a.pres or a.freq or a.rep != 1.0:
+                print('[대조 생략 — 확률 샘플링·벌점은 호스트 greedy 와 비교하지 않는다]')
             else:
                 verify(pids, tids, a.max)
         return 0 if ok else 1

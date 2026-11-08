@@ -166,10 +166,20 @@ static void run_one(void)
 
 	/* 샘플러: temp 0 = greedy. 그 밖 = top_k → top_p → temp → dist(seed) */
 	llama_sampler *smp = llama_sampler_chain_init(llama_sampler_chain_default_params());
+	const bool pen = (r.pres != 0.0f || r.freq != 0.0f || r.rep != 1.0f) && r.last_n != 0 &&
+			 r.rep > 0.0f;
+	auto add_pen = [&]() {
+		if (pen) {
+			llama_sampler_chain_add(smp, llama_sampler_init_penalties(
+				nv, r.last_n, r.rep, r.freq, r.pres));
+		}
+	};
 	if (r.temp <= 0.0f) {
+		add_pen();
 		llama_sampler_chain_add(smp, llama_sampler_init_greedy());
 	} else {
 		if (r.topk > 0) { llama_sampler_chain_add(smp, llama_sampler_init_top_k(r.topk)); }
+		add_pen();	/* top_k 뒤 — 전체 어휘(248,320)에 걸면 느리다 (llama.h 주석) */
 		if (r.topp > 0.0f && r.topp < 1.0f) {
 			llama_sampler_chain_add(smp, llama_sampler_init_top_p(r.topp, 1));
 		}
@@ -225,10 +235,10 @@ static void run_one(void)
 	const double pp_tps = t_pp ? (double)n * 1000.0 / (double)t_pp : 0.0;
 	const double tg_tps = (n_gen > 1 && t_tg) ? (double)(n_gen - 1) * 1000.0 / (double)t_tg : 0.0;
 	OUT("HUBLLM/1 done id=%u n_prompt=%d n_gen=%d ttft_ms=%" PRId64 " pp_tps=%.2f tg_tps=%.2f "
-	    "n_ctx=%d ctx_kib=%d heap_kib=%u threads=%d n_past=%d keep=%d temp=%.2f stop=%s",
+	    "n_ctx=%d ctx_kib=%d heap_kib=%u threads=%d n_past=%d keep=%d temp=%.2f pres=%.2f stop=%s",
 	    r.id, n, n_gen, ttft, pp_tps, tg_tps, n_ctx_now, ctx_kib,
 	    (unsigned)heap_used_kib(), HUB_THREADS, n_past_now(), r.keep ? 1 : 0,
-	    (double)r.temp, stop);
+	    (double)r.temp, (double)r.pres, stop);
 }
 
 static bool make_ctx(int want);

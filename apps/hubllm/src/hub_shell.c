@@ -22,6 +22,8 @@ static int cmd_hub_gen(const struct shell *sh, size_t argc, char **argv)
 	req.kind = HUB_GEN;
 	req.max_gen = 64;
 	req.topp = 1.0f;
+	req.rep = 1.0f;
+	req.last_n = 64;
 	bool have_in = false;
 
 	for (size_t i = 1; i < argc; i++) {
@@ -38,6 +40,14 @@ static int cmd_hub_gen(const struct shell *sh, size_t argc, char **argv)
 			req.topp = strtof(a + 5, NULL);
 		} else if (!strncmp(a, "seed=", 5)) {
 			req.seed = strtoul(a + 5, NULL, 0);
+		} else if (!strncmp(a, "pres=", 5)) {
+			req.pres = strtof(a + 5, NULL);
+		} else if (!strncmp(a, "freq=", 5)) {
+			req.freq = strtof(a + 5, NULL);
+		} else if (!strncmp(a, "rep=", 4)) {
+			req.rep = strtof(a + 4, NULL);
+		} else if (!strncmp(a, "last_n=", 7)) {
+			req.last_n = atoi(a + 7);
 		} else if (!strncmp(a, "keep=", 5)) {
 			req.keep = atoi(a + 5) != 0;
 		} else if (!strncmp(a, "special=", 8)) {
@@ -154,7 +164,7 @@ static int cmd_hub_info(const struct shell *sh, size_t argc, char **argv)
 
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_hub,
 	SHELL_CMD_ARG(gen, NULL, "gen id=<n> max=<n> b64=<글> [special=1] | ids=<a,b,…>",
-		      cmd_hub_gen, 2, 11),
+		      cmd_hub_gen, 2, 15),
 	SHELL_CMD(reset, NULL, "KV(대화) 비우기", cmd_hub_reset),
 	SHELL_CMD_ARG(ctx, NULL, "ctx n=<n> — 문맥 다시 만들기", cmd_hub_ctx, 2, 0),
 	SHELL_CMD(abort, NULL, "생성 중단 (토큰 사이에서)", cmd_hub_abort),

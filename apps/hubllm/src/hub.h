@@ -11,7 +11,11 @@
  * 호스트 → 보드 (셸 명령):
  *   hub gen id=<n> max=<tok> b64=<글> [special=1]     또는  ids=<a,b,…>
  *           [temp=<f>] [topk=<n>] [topp=<f>] [seed=<n>] [keep=1]
- *       temp 0(기본) = greedy. temp>0 = top_k → top_p → temp → dist(seed).
+ *           [pres=<f>] [freq=<f>] [rep=<f>] [last_n=<n>]
+ *       temp 0(기본) = greedy. temp>0 = top_k → (penalties) → top_p → temp → dist(seed).
+ *       pres/freq/rep 를 주면 penalties 를 낀다 (pres = presence_penalty, Qwen 카드 권장
+ *       1.5). 0/0/1 이면 없다. last_n 기본 64. 벌점은 **생성한 토큰**에만 매긴다
+ *       (프롬프트 토큰은 넣지 않는다). greedy 에 주면 penalties → greedy.
  *       keep=1 = 앞 대화의 KV 에 **이어서** 넣는다(새 부분만 보낸다).
  *       keep 이면 마지막 생성 토큰도 KV 에 넣어 둔다 — 다음 프롬프트는 그 뒤부터.
  *   hub reset            KV 를 비운다
@@ -43,6 +47,8 @@ struct hub_req {
 	int ctx_n;		/* HUB_CTX */
 	float temp, topp;
 	int topk;
+	float pres, freq, rep;
+	int last_n;
 	uint32_t seed;
 	bool keep;
 	uint32_t id;
