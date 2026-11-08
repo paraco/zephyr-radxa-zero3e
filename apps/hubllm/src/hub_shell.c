@@ -181,8 +181,8 @@ static int cmd_hub_guard(const struct shell *sh, size_t argc, char **argv)
 static int cmd_hub_model(const struct shell *sh, size_t argc, char **argv)
 {
 	if (argc == 1) {
-		shell_print(sh, "HUBLLM/1 model file=%s hash=%s logseq=%s", hub_relay_loaded(),
-			    hub_llm_model_hash(), hub_relay_logseq());
+		shell_print(sh, "HUBLLM/1 model file=%s hash=%s logseq=%s logfile=%s", hub_relay_loaded(),
+			    hub_llm_model_hash(), hub_relay_logseq(), hub_fs_log_name());
 		return 0;
 	}
 	const bool save = (argc > 2 && !strcmp(argv[2], "save"));

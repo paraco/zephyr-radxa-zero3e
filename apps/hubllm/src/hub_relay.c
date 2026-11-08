@@ -28,6 +28,7 @@
 #include <stdlib.h>
 #include <errno.h>
 #include "hub_relay.h"
+#include "hub.h"
 
 #define R            ((uintptr_t)DT_REG_ADDR(DT_NODELABEL(hub_relay)))
 #define OFF_LOGMAG   0xF0
@@ -47,11 +48,37 @@ static char loaded[64] = "-", logseq[16] = "-";
 static size_t loglen;
 static unsigned next_seq = 1;	/* 이번 부팅 로그가 저장될 번호 = hub.conf 의 번호 + 1 */
 static bool truncated;
+static volatile bool uboot_save = true;
 static struct k_spinlock lk;
 
 const char *hub_relay_loaded(void) { return loaded; }
 const char *hub_relay_logseq(void) { return logseq; }
 size_t hub_log_len(void) { return loglen; }
+const char *hub_log_buf(void) { return (const char *)(R + OFF_LOG); }
+unsigned hub_relay_next_seq(void) { return next_seq; }
+
+static void write_lentxt(void)
+{
+	char t[64];
+	const int k2 = snprintk(t, sizeof t, "hub_loglen=%x\nhub_logseq=%u\n", (unsigned)loglen, next_seq);
+	memcpy((void *)(R + OFF_LENTXT), t, (size_t)k2 + 1);	/* NUL 까지 */
+}
+
+void hub_relay_set_next_seq(unsigned seq)
+{
+	k_spinlock_key_t k = k_spin_lock(&lk);
+	next_seq = seq;
+	write_lentxt();
+	k_spin_unlock(&lk, k);
+}
+
+void hub_relay_set_uboot_save(bool on)
+{
+	k_spinlock_key_t k = k_spin_lock(&lk);
+	uboot_save = on;
+	sys_write32(on && loglen ? MAG_LOG : 0, R + OFF_LOGMAG);
+	k_spin_unlock(&lk, k);
+}
 
 static void get_val(const char *txt, size_t n, const char *key, char *out, size_t outn)
 {
@@ -85,13 +112,9 @@ void hub_log(const char *line)
 		loglen += n + 1;
 	}
 	sys_write32((uint32_t)loglen, R + OFF_LOGLEN);
-	{
-		char t[64];
-		const int k2 = snprintk(t, sizeof t, "hub_loglen=%x\nhub_logseq=%u\n", (unsigned)loglen,
-					next_seq);
-		memcpy((void *)(R + OFF_LENTXT), t, (size_t)k2 + 1);	/* NUL 까지 */
-	}
-	sys_write32(MAG_LOG, R + OFF_LOGMAG);
+	write_lentxt();
+	/* ⚠ 여기서 SD 를 만지지 않는다 — hub_fs_read_model 이 io_lock 을 쥔 채 진행 줄을 hub_log 로 남긴다 */
+	if (uboot_save) { sys_write32(MAG_LOG, R + OFF_LOGMAG); }
 	k_spin_unlock(&lk, k);
 }
 
@@ -130,6 +153,7 @@ int hub_relay_request_model(const char *file, bool save)
 void hub_relay_reboot(void)
 {
 	struct arm_smccc_res res = { 0 };
+	hub_fs_log_flush(2000);	/* SD 실시간 기록의 마지막 줄 (hub load 중이면 기다리다 포기) */
 	log_panic();
 	k_msleep(50);
 	__asm__ volatile("dsb sy" ::: "memory");
