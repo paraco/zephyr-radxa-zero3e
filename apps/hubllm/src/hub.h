@@ -7,12 +7,19 @@
  *   HUBLLM/1 done   id=<n> n_prompt=<n> n_gen=<n> ttft_ms=<n> pp_tps=<f>
  *                   tg_tps=<f> n_ctx=<n> ctx_kib=<n> heap_kib=<n> threads=<n> stop=<eos|max|abort>
  *   HUBLLM/1 err    id=<n> code=<…> msg=<…>
+ *   HUBLLM/1 ctx    n_ctx=<n> ctx_kib=<n>                     (hub ctx 의 결과)
  * 호스트 → 보드 (셸 명령):
  *   hub gen id=<n> max=<tok> b64=<글> [special=1]     또는  ids=<a,b,…>
+ *           [temp=<f>] [topk=<n>] [topp=<f>] [seed=<n>] [keep=1]
+ *       temp 0(기본) = greedy. temp>0 = top_k → top_p → temp → dist(seed).
+ *       keep=1 = 앞 대화의 KV 에 **이어서** 넣는다(새 부분만 보낸다).
+ *       keep 이면 마지막 생성 토큰도 KV 에 넣어 둔다 — 다음 프롬프트는 그 뒤부터.
+ *   hub reset            KV 를 비운다
+ *   hub ctx n=<n>        문맥을 n_ctx 로 다시 만든다 (KV 도 비워진다)
  *   hub abort
  *   hub info [--kv]
  *
- * 첫 판: greedy · 단발(매 요청 KV 를 비운다). 샘플러·대화 이어가기는 둘째 판.
+ * 둘째 판(2026-11-08): 샘플러 · keep · ctx · model_hash(F2).
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -29,7 +36,15 @@ struct shell;
 #define HUB_MAX_PROMPT_BYTES 3072
 #define HUB_MAX_PROMPT_IDS   1024
 
+enum hub_kind { HUB_GEN = 0, HUB_RESET, HUB_CTX };
+
 struct hub_req {
+	int kind;
+	int ctx_n;		/* HUB_CTX */
+	float temp, topp;
+	int topk;
+	uint32_t seed;
+	bool keep;
 	uint32_t id;
 	int max_gen;
 	bool use_ids;
@@ -48,6 +63,10 @@ const char *hub_llm_state(void);
 int hub_llm_n_ctx(void);
 int hub_llm_ctx_kib(void);
 int hub_llm_load_ms(void);
+int hub_llm_n_past(void);
+/** sha256(GGUF 머리 = 텐서 데이터 앞까지) · sha256(데이터 표본 64 × 64 KiB) — 16진 64자, 없으면 "-" */
+const char *hub_llm_model_hash(void);
+const char *hub_llm_model_smp(void);
 
 #ifdef __cplusplus
 }

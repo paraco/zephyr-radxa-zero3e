@@ -66,7 +66,7 @@ target_include_directories(app PRIVATE
 target_sources(app PRIVATE src/main.c src/moru_mark.c src/moru_boot.c
                            src/moru_shell.c src/moru_usbd.c
                            src/moru_htop.c src/moru_fatal.c
-                           src/hub_llm.cpp src/hub_shell.c)
+                           src/hub_llm.cpp src/hub_shell.c src/sha256.c)
 
 # ── llama (L6c 와 같은 묶음 · ggml 은 -O3) ─────────────────────────────
 set(LLM_GGML_OPT_LEVEL "-O3" CACHE STRING "" FORCE)

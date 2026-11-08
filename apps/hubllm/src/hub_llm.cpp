@@ -18,6 +18,8 @@
 #include <zephyr/logging/log.h>
 
 #include "llama.h"
+#include "gguf.h"
+#include "sha256.h"
 
 #include <cerrno>
 #include <cinttypes>
@@ -33,7 +35,9 @@ LOG_MODULE_REGISTER(hub_llm, LOG_LEVEL_INF);
 extern "C" int malloc_runtime_stats_get(struct sys_memory_stats *stats);
 
 #define BLOB_ADDR ((uintptr_t)DT_REG_ADDR(DT_NODELABEL(model_blob)))
-#define MODEL_BYTES 532517120u	/* L6c 와 같다 — F2 에서 GGUF 머리로 계산하게 바꾼다 */
+#define BLOB_WIN ((size_t)DT_REG_SIZE(DT_NODELABEL(model_blob)))
+static size_t model_bytes;	/* GGUF 머리에서 계산한다 (데이터 시작 + 텐서 끝) */
+static char model_hash[65] = "-", model_smp[65] = "-";
 
 /* 문맥: 큰 것부터 시도한다. n_ubatch 는 메모리를 크게 좌우한다(L7b: 64 → +108 MiB). */
 static const int ctx_try[] = { 1024, 512, 256 };
@@ -63,6 +67,14 @@ extern "C" int hub_llm_n_ctx(void) { return n_ctx_now; }
 extern "C" int hub_llm_ctx_kib(void) { return ctx_kib; }
 extern "C" int hub_llm_load_ms(void) { return load_ms; }
 extern "C" void hub_llm_abort(void) { atomic_set(&abort_flag, 1); }
+extern "C" const char *hub_llm_model_hash(void) { return model_hash; }
+extern "C" const char *hub_llm_model_smp(void) { return model_smp; }
+
+static int n_past_now(void)
+{
+	return ctx ? (int)llama_memory_seq_pos_max(llama_get_memory(ctx), 0) + 1 : 0;
+}
+extern "C" int hub_llm_n_past(void) { return state == ST_BUSY ? -1 : n_past_now(); }
 
 extern "C" int hub_llm_submit(const struct shell *sh, const struct hub_req *r)
 {
@@ -138,8 +150,12 @@ static void run_one(void)
 			return;
 		}
 	}
-	if (n + r.max_gen > n_ctx_now) {
-		OUT("HUBLLM/1 err id=%u code=ctx_full msg=%d+%d>%d", r.id, n, r.max_gen, n_ctx_now);
+	llama_memory_t mem = llama_get_memory(ctx);
+	if (!r.keep) { llama_memory_clear(mem, true); }
+	const int n_past0 = n_past_now();
+	if (n_past0 + n + r.max_gen + 1 > n_ctx_now) {
+		OUT("HUBLLM/1 err id=%u code=ctx_full msg=%d+%d+%d>%d", r.id, n_past0, n, r.max_gen,
+		    n_ctx_now);
 		return;
 	}
 
@@ -148,10 +164,23 @@ static void run_one(void)
 	for (int i = 0; i < n; i++) { lput(i ? ",%d" : "%d", (int)toks[i]); }
 	lend();
 
-	llama_memory_clear(llama_get_memory(ctx), true);	/* 첫 판: 단발 */
+	/* 샘플러: temp 0 = greedy. 그 밖 = top_k → top_p → temp → dist(seed) */
+	llama_sampler *smp = llama_sampler_chain_init(llama_sampler_chain_default_params());
+	if (r.temp <= 0.0f) {
+		llama_sampler_chain_add(smp, llama_sampler_init_greedy());
+	} else {
+		if (r.topk > 0) { llama_sampler_chain_add(smp, llama_sampler_init_top_k(r.topk)); }
+		if (r.topp > 0.0f && r.topp < 1.0f) {
+			llama_sampler_chain_add(smp, llama_sampler_init_top_p(r.topp, 1));
+		}
+		llama_sampler_chain_add(smp, llama_sampler_init_temp(r.temp));
+		llama_sampler_chain_add(smp, llama_sampler_init_dist(r.seed));
+	}
+
 	const int64_t t0 = k_uptime_get();
 	if (llama_decode(ctx, llama_batch_get_one(toks, n)) != 0) {
 		OUT("HUBLLM/1 err id=%u code=decode msg=prefill", r.id);
+		llama_sampler_free(smp);
 		return;
 	}
 	const int64_t t_pp = k_uptime_get() - t0;
@@ -161,10 +190,7 @@ static void run_one(void)
 	const char *stop = "max";
 	llama_token tok = 0;
 	for (;;) {
-		const float *lg = llama_get_logits_ith(ctx, -1);
-		int best = 0;
-		for (int i = 1; i < nv; i++) { if (lg[i] > lg[best]) { best = i; } }
-		tok = best;
+		tok = llama_sampler_sample(smp, ctx, -1);	/* accept 까지 한다 */
 		if (n_gen == 0) { ttft = k_uptime_get() - t0; }
 
 		char piece[64];
@@ -184,17 +210,73 @@ static void run_one(void)
 		const int64_t s = k_uptime_get();
 		if (llama_decode(ctx, llama_batch_get_one(&tok, 1)) != 0) {
 			OUT("HUBLLM/1 err id=%u code=decode msg=gen_%d", r.id, n_gen);
+			llama_sampler_free(smp);
 			return;
 		}
 		t_tg += k_uptime_get() - s;
+	}
+	llama_sampler_free(smp);
+	/* keep: 마지막 토큰도 KV 에 넣어 둔다 — 다음 프롬프트는 그 **뒤**부터 보낸다 */
+	if (r.keep && llama_decode(ctx, llama_batch_get_one(&tok, 1)) != 0) {
+		OUT("HUBLLM/1 err id=%u code=decode msg=keep_last", r.id);
+		return;
 	}
 
 	const double pp_tps = t_pp ? (double)n * 1000.0 / (double)t_pp : 0.0;
 	const double tg_tps = (n_gen > 1 && t_tg) ? (double)(n_gen - 1) * 1000.0 / (double)t_tg : 0.0;
 	OUT("HUBLLM/1 done id=%u n_prompt=%d n_gen=%d ttft_ms=%" PRId64 " pp_tps=%.2f tg_tps=%.2f "
-	    "n_ctx=%d ctx_kib=%d heap_kib=%u threads=%d stop=%s",
+	    "n_ctx=%d ctx_kib=%d heap_kib=%u threads=%d n_past=%d keep=%d temp=%.2f stop=%s",
 	    r.id, n, n_gen, ttft, pp_tps, tg_tps, n_ctx_now, ctx_kib,
-	    (unsigned)heap_used_kib(), HUB_THREADS, stop);
+	    (unsigned)heap_used_kib(), HUB_THREADS, n_past_now(), r.keep ? 1 : 0,
+	    (double)r.temp, stop);
+}
+
+static bool make_ctx(int want);
+static void serve(void);
+
+static void hex32(const uint8_t *d, char *out)
+{
+	static const char hx[] = "0123456789abcdef";
+	for (int i = 0; i < 32; i++) { out[2 * i] = hx[d[i] >> 4]; out[2 * i + 1] = hx[d[i] & 15]; }
+	out[64] = 0;
+}
+
+/* F2: 크기·해시. 머리 = 파일 처음부터 텐서 데이터 시작까지.
+ *     표본 = 데이터 구간에서 균등 간격 64 개 × 64 KiB (마지막 덩이는 끝에 붙는다).
+ *     호스트 tools/gguf_hash.py 와 같은 규칙. */
+static bool model_scan(void)
+{
+	gguf_init_params gp = { /*no_alloc =*/ true, /*ctx =*/ nullptr };
+	gguf_context *g = gguf_init_from_buffer((const void *)BLOB_ADDR, BLOB_WIN, gp);
+	if (g == nullptr) { return false; }
+	const size_t off = gguf_get_data_offset(g);
+	size_t end = 0;
+	for (int64_t i = 0; i < gguf_get_n_tensors(g); i++) {
+		const size_t e = gguf_get_tensor_offset(g, i) + gguf_get_tensor_size(g, i);
+		if (e > end) { end = e; }
+	}
+	gguf_free(g);
+	model_bytes = off + end;
+	if (model_bytes > BLOB_WIN) { return false; }
+
+	const int64_t t0 = k_uptime_get();
+	uint8_t d[32];
+	struct sha256 h;
+	sha256_init(&h);
+	sha256_update(&h, (const void *)BLOB_ADDR, off);
+	sha256_final(&h, d);
+	hex32(d, model_hash);
+	const size_t CH = 65536, NS = 64;
+	sha256_init(&h);
+	for (size_t k = 0; k < NS; k++) {
+		const size_t pos = (end > CH) ? off + (end - CH) * k / (NS - 1) : off;
+		sha256_update(&h, (const uint8_t *)BLOB_ADDR + pos, end > CH ? CH : end);
+	}
+	sha256_final(&h, d);
+	hex32(d, model_smp);
+	LOG_INF("모델 %zu B (머리 %zu B) · 해시 %" PRId64 " ms · 머리 %.16s… · 표본 %.16s…",
+		model_bytes, off, k_uptime_get() - t0, model_hash, model_smp);
+	return true;
 }
 
 static void hub_thread(void *, void *, void *)
@@ -210,7 +292,13 @@ static void hub_thread(void *, void *, void *)
 	}
 	llama_backend_init();
 	const int64_t t0 = k_uptime_get();
-	FILE *f = fmemopen((void *)BLOB_ADDR, MODEL_BYTES, "rb");
+	if (!model_scan()) {
+		LOG_ERR("GGUF 머리를 읽지 못했다");
+		state = ST_ERROR;
+		moru_led_set(MORU_LED_FAIL);
+		return;
+	}
+	FILE *f = fmemopen((void *)BLOB_ADDR, model_bytes, "rb");
 	llama_model_params mp = llama_model_default_params();
 	mp.n_gpu_layers    = 0;
 	mp.load_mode       = LLAMA_LOAD_MODE_MMAP;
@@ -225,8 +313,30 @@ static void hub_thread(void *, void *, void *)
 	}
 	vocab = llama_model_get_vocab(model);
 
+	if (!make_ctx(0)) {
+		LOG_ERR("문맥 생성 실패");
+		state = ST_ERROR;
+		moru_led_set(MORU_LED_FAIL);
+		return;
+	}
+	load_ms = (int)(k_uptime_get() - t0);
+	LOG_INF("LLM 준비: 적재 %d ms · n_ctx %d · 문맥 %d KiB · 힙 %u KiB", load_ms, n_ctx_now,
+		ctx_kib, (unsigned)heap_used_kib());
+	state = ST_READY;
+	moru_led_set(MORU_LED_READY);
+	serve();
+}
+
+/* n=0 이면 ctx_try 순으로. 실패하면 false (ctx 는 nullptr) */
+static bool make_ctx(int want)
+{
+	if (ctx) { llama_free(ctx); ctx = nullptr; }
 	const size_t before = heap_used_kib();
-	for (int nc : ctx_try) {
+	const int one[1] = { want };
+	const int *list = want ? one : ctx_try;
+	const int cnt = want ? 1 : (int)ARRAY_SIZE(ctx_try);
+	for (int k = 0; k < cnt; k++) {
+		const int nc = list[k];
 		llama_context_params cp = llama_context_default_params();
 		cp.n_ctx           = nc;
 		cp.n_batch         = nc;
@@ -235,26 +345,41 @@ static void hub_thread(void *, void *, void *)
 		cp.n_threads_batch = HUB_THREADS;
 		cp.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED;
 		ctx = llama_init_from_model(model, cp);
-		if (ctx) { n_ctx_now = nc; break; }
-		LOG_WRN("n_ctx %d 문맥 실패 — 줄인다", nc);
+		if (ctx) {
+			n_ctx_now = nc;
+			ctx_kib = (int)(heap_used_kib() - before);
+			return true;
+		}
+		LOG_WRN("n_ctx %d 문맥 실패", nc);
 	}
-	if (ctx == nullptr) {
-		LOG_ERR("문맥 생성 실패");
-		state = ST_ERROR;
-		moru_led_set(MORU_LED_FAIL);
-		return;
-	}
-	ctx_kib = (int)(heap_used_kib() - before);
-	load_ms = (int)(k_uptime_get() - t0);
-	LOG_INF("LLM 준비: 적재 %d ms · n_ctx %d · 문맥 %d KiB · 힙 %u KiB", load_ms, n_ctx_now,
-		ctx_kib, (unsigned)heap_used_kib());
-	state = ST_READY;
-	moru_led_set(MORU_LED_READY);
+	n_ctx_now = 0;
+	ctx_kib = 0;
+	return false;
+}
 
+static void serve(void)
+{
 	for (;;) {
 		k_sem_take(&req_sem, K_FOREVER);
 		moru_led_set(MORU_LED_INFER);
-		run_one();
+		if (cur.kind == HUB_RESET) {
+			llama_memory_clear(llama_get_memory(ctx), true);
+			OUT("HUBLLM/1 reset n_past=0");
+		} else if (cur.kind == HUB_CTX) {
+			const int old = n_ctx_now;
+			if (!make_ctx(cur.ctx_n)) {
+				OUT("HUBLLM/1 err id=0 code=ctx_alloc msg=%d", cur.ctx_n);
+				if (!make_ctx(old) && !make_ctx(0)) {
+					state = ST_ERROR;
+					moru_led_set(MORU_LED_FAIL);
+					return;
+				}
+			}
+			OUT("HUBLLM/1 ctx n_ctx=%d ctx_kib=%d heap_kib=%u", n_ctx_now, ctx_kib,
+			    (unsigned)heap_used_kib());
+		} else {
+			run_one();
+		}
 		moru_led_set(MORU_LED_READY);
 		state = ST_READY;
 	}
