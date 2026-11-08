@@ -85,6 +85,7 @@ def gen(fd, text, a, rid, keep):
                 sys.stdout.flush()
             elif f[1] in ('done', 'err'):
                 print(f'\n\n[{s[i:]}]')
+                gen.last_stop = kv.get('stop', '')
                 return (f[1] == 'done'), prompt_ids, tids
     print('\n[시간 초과]')
     return False, prompt_ids, tids
@@ -103,6 +104,9 @@ def verify(prompt_ids, tids, n):
     same = (host == tids)
     print(f'[호스트 대조: {"✓ 전부 같다" if same else "✗ 다르다"} — 일치 {k}/{len(tids)} '
           f'(보드 {len(tids)} · 호스트 {len(host)})]')
+    if not same and k < min(len(host), len(tids)):
+        print(f'[첫 차이 위치 {k}: 보드 {tids[k]} · 호스트 {host[k]} — '
+              f'호스트의 1·2등 차이는 HUB_MARGIN=1 {HOST_REF} … 로 본다]')
 
 
 def main():
@@ -139,7 +143,9 @@ def main():
                     break
                 if not q:
                     break
-                head = '' if first else '\n'
+                # 앞 답이 <|im_end|>(eos) 로 끝나지 않았으면(max·abort) 여기서 닫는다
+                head = '' if first else (
+                    '\n' if getattr(gen, 'last_stop', '') == 'eos' else '<|im_end|>\n')
                 text = f'{head}<|im_start|>user\n{q}<|im_end|>\n<|im_start|>assistant\n'
                 ok, _, _ = gen(fd, text, a, rid, keep=True)
                 first = False

@@ -45,6 +45,16 @@ int main(int argc, char **argv)
 	if (llama_decode(ctx, llama_batch_get_one(in.data(), (int)in.size())) != 0) { return 4; }
 	std::printf("tids=");
 	for (int i = 0; i < n_gen; i++) {
+		if (std::getenv("HUB_MARGIN")) {	/* 걸음마다 1·2등 로짓 (stderr) */
+			const float *lg = llama_get_logits_ith(ctx, -1);
+			const int nv = llama_vocab_n_tokens(vocab);
+			int a = 0, b = 1;
+			if (lg[b] > lg[a]) { a = 1; b = 0; }
+			for (int k = 2; k < nv; k++) {
+				if (lg[k] > lg[a]) { b = a; a = k; } else if (lg[k] > lg[b]) { b = k; }
+			}
+			std::fprintf(stderr, "%d %d %.5f %d %.5f %.5f\n", i, a, lg[a], b, lg[b], lg[a] - lg[b]);
+		}
 		llama_token t = llama_sampler_sample(smp, ctx, -1);
 		std::printf(i ? ",%d" : "%d", t);
 		if (llama_vocab_is_eog(vocab, t) || i == n_gen - 1) { break; }
