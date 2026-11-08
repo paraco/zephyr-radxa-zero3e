@@ -2,7 +2,7 @@
 cmake_minimum_required(VERSION 3.20.0)
 # hubllm = moru + llama. 모델 창(0x58000000)은 L6c 와 같은 공용 overlay.
 set(EXTRA_DTC_OVERLAY_FILE
-    "${CMAKE_CURRENT_SOURCE_DIR}/../llm_common/model_blob.overlay")
+    "${CMAKE_CURRENT_SOURCE_DIR}/../llm_common/model_blob.overlay;${CMAKE_CURRENT_SOURCE_DIR}/../llm_common/llm_heap.overlay")
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(hubllm)
 
@@ -70,10 +70,15 @@ target_sources(app PRIVATE src/main.c src/moru_mark.c src/moru_boot.c
 
 # ── llama (L6c 와 같은 묶음 · ggml 은 -O3) ─────────────────────────────
 set(LLM_GGML_OPT_LEVEL "-O3" CACHE STRING "" FORCE)
+# repack ON (L8q 실측: 배치 prefill 1.90 배 · 생성 1.10 배 · 정답 8/8 · 적재 +9 s).
+# 가중치 사본은 llm_heap(0x10000000 + 768 MiB, L9c 검증)에 놓인다 — llm_bigheap.c.
+set(LLM_GGML_REPACK ON CACHE BOOL "" FORCE)
 include(${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/llm_ggml.cmake)
 include(${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/llm_llama.cmake)
 llm_add_ggml()
 llm_add_llama(L6B)
 target_sources(app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../llm_common/ggml_port.c
-                           ${CMAKE_CURRENT_SOURCE_DIR}/../llm_common/clk1416.c)
+                           ${CMAKE_CURRENT_SOURCE_DIR}/../llm_common/clk1416.c
+                           ${CMAKE_CURRENT_SOURCE_DIR}/../llm_common/llm_bigheap.c)
+zephyr_ld_options(-Wl,--wrap=posix_memalign -Wl,--wrap=free)
 llm_ggml_flags(${CMAKE_CURRENT_SOURCE_DIR}/src/hub_llm.cpp)

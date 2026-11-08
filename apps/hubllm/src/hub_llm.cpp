@@ -30,6 +30,7 @@
 #include "hub.h"
 #include "clk1416.h"
 #include <rk3566_tsadc.h>
+#include "llm_bigheap.h"
 #include <moru_led.h>
 
 LOG_MODULE_REGISTER(hub_llm, LOG_LEVEL_INF);
@@ -93,7 +94,9 @@ extern "C" int hub_llm_submit(const struct shell *sh, const struct hub_req *r)
 static size_t heap_used_kib(void)
 {
 	struct sys_memory_stats s;
-	return malloc_runtime_stats_get(&s) == 0 ? s.allocated_bytes / 1024 : 0;
+	/* 큰 할당은 llm_heap 으로 간다 — 둘을 합쳐야 문맥 크기가 맞게 나온다 */
+	return (malloc_runtime_stats_get(&s) == 0 ? s.allocated_bytes / 1024 : 0) +
+	       llm_bigheap_used() / 1024;
 }
 
 /* llama·ggml 로그는 셸 CDC 를 어지럽히지 않게 경고 이상만 LOG 로 (uart2) */
@@ -282,7 +285,7 @@ static void run_one(void)
 	const double pp_tps = t_pp ? (double)n * 1000.0 / (double)t_pp : 0.0;
 	const double tg_tps = (n_gen > 1 && t_tg) ? (double)(n_gen - 1) * 1000.0 / (double)t_tg : 0.0;
 	OUT("HUBLLM/1 done id=%u n_prompt=%d n_gen=%d ttft_ms=%" PRId64 " pp_tps=%.2f tg_tps=%.2f "
-	    "n_ctx=%d ctx_kib=%d heap_kib=%u threads=%d n_past=%d keep=%d temp=%.2f pres=%.2f rep=%.2f clk=%d guard_fail=%u temp_mc=%d max_temp_mc=%d throttle_ms=%d clk_down=%d stop=%s",
+	    "n_ctx=%d ctx_kib=%d heap_kib=%u repack=1 threads=%d n_past=%d keep=%d temp=%.2f pres=%.2f rep=%.2f clk=%d guard_fail=%u temp_mc=%d max_temp_mc=%d throttle_ms=%d clk_down=%d stop=%s",
 	    r.id, n, n_gen, ttft, pp_tps, tg_tps, n_ctx_now, ctx_kib,
 	    (unsigned)heap_used_kib(), HUB_THREADS, n_past_now(), r.keep ? 1 : 0,
 	    (double)r.temp, (double)r.pres, (double)r.rep,
@@ -362,7 +365,7 @@ static void hub_thread(void *, void *, void *)
 	mp.n_gpu_layers    = 0;
 	mp.load_mode       = LLAMA_LOAD_MODE_MMAP;
 	mp.check_tensors   = false;
-	mp.use_extra_bufts = false;
+	mp.use_extra_bufts = true;	/* repack (q4_K/q5_K/q6_K_8x4) — 사본은 llm_heap */
 	model = f ? llama_model_load_from_file_ptr(f, mp) : nullptr;
 	if (model == nullptr) {
 		LOG_ERR("모델 적재 실패");
@@ -379,8 +382,8 @@ static void hub_thread(void *, void *, void *)
 		return;
 	}
 	load_ms = (int)(k_uptime_get() - t0);
-	LOG_INF("LLM 준비: 적재 %d ms · n_ctx %d · 문맥 %d KiB · 힙 %u KiB", load_ms, n_ctx_now,
-		ctx_kib, (unsigned)heap_used_kib());
+	LOG_INF("LLM 준비: 적재 %d ms · n_ctx %d · 문맥 %d KiB · 힙 %u KiB · llm_heap %u MiB", load_ms,
+		n_ctx_now, ctx_kib, (unsigned)heap_used_kib(), (unsigned)(llm_bigheap_used() >> 20));
 	state = ST_READY;
 	moru_led_set(MORU_LED_READY);
 	serve();
