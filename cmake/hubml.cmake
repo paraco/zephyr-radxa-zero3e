@@ -7,5 +7,7 @@ function(hubml_add)
 	target_include_directories(app PRIVATE ${HUBML_DIR}/include)
 	target_sources(app PRIVATE
 		${HUBML_DIR}/src/mcol.c
-		${HUBML_DIR}/src/ingest.c)
+		${HUBML_DIR}/src/ingest.c
+		${HUBML_DIR}/src/xmb.c
+		${HUBML_DIR}/src/train.c)
 endfunction()

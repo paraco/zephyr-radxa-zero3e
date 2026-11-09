@@ -74,3 +74,50 @@ void mcol_hello_get(const uint8_t *p, struct mcol_hello *m)
 	m->nfeat = p[14];
 	m->sensor_hash = sys_get_le32(p + 16);
 }
+
+int mcol_feat_get(const uint8_t *pl, uint16_t len, int i, float *x, int nmax, uint8_t *regime, uint8_t *quality)
+{
+	if (len < MCOL_FEAT_HDR) {
+		return -EBADMSG;
+	}
+	const int n = pl[0], c = pl[1];
+	const size_t vl = mcol_feat_vec_len(c);
+	if (i >= n || c > nmax || MCOL_FEAT_HDR + (size_t)n * vl > len) {
+		return -EINVAL;
+	}
+	const uint8_t *v = pl + MCOL_FEAT_HDR + (size_t)i * vl;
+	for (int k = 0; k < c; k++) {
+		const uint32_t u = sys_get_le32(v + 4 * k);
+		memcpy(&x[k], &u, 4);
+	}
+	if (regime) {
+		*regime = v[4 * c];
+	}
+	if (quality) {
+		*quality = v[4 * c + 1];
+	}
+	return 0;
+}
+
+int mcol_feat_put(uint8_t *pl, size_t cap, int contract, int n, const float *xs, const uint8_t *quality)
+{
+	const size_t vl = mcol_feat_vec_len(contract);
+	if (n > MCOL_FEAT_MAX_N || MCOL_FEAT_HDR + (size_t)n * vl > cap) {
+		return -EMSGSIZE;
+	}
+	pl[0] = (uint8_t)n;
+	pl[1] = (uint8_t)contract;
+	pl[2] = pl[3] = 0;
+	for (int i = 0; i < n; i++) {
+		uint8_t *v = pl + MCOL_FEAT_HDR + (size_t)i * vl;
+		for (int k = 0; k < contract; k++) {
+			uint32_t u;
+			memcpy(&u, &xs[i * contract + k], 4);
+			sys_put_le32(u, v + 4 * k);
+		}
+		v[4 * contract] = 0;
+		v[4 * contract + 1] = quality ? quality[i] : 0;
+		sys_put_le16(1000, v + 4 * contract + 2);
+	}
+	return (int)(MCOL_FEAT_HDR + (size_t)n * vl);
+}

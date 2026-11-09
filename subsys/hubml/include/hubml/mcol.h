@@ -81,6 +81,16 @@ struct mcol_hello {
  *  next = 이 번호 앞은 모두 허브 SD 에 기록됨. sack bit i = next+1+i 도 기록됨. */
 #define MCOL_ACK_ENTRY_LEN 9
 
+/** FEAT 본문: [n u8][contract u8][rsv u16] + n × { f32 × contract · regime u8 · quality u8 · dt_ms u16 }
+ *  contract 34(MFEAT34)면 벡터당 140 B, 8 개 묶음 = 1,124 B. quality 0 = 정상 측정 */
+#define MCOL_FEAT_MAX_N 8
+#define MCOL_FEAT_HDR   4
+static inline size_t mcol_feat_vec_len(int contract) { return (size_t)contract * 4 + 4; }
+/** i 번째 벡터를 꺼낸다. 0 = 정상 */
+int mcol_feat_get(const uint8_t *pl, uint16_t len, int i, float *x, int nmax, uint8_t *regime, uint8_t *quality);
+/** 묶음 만들기 (Edge·시험용). 반환 = 본문 길이 */
+int mcol_feat_put(uint8_t *pl, size_t cap, int contract, int n, const float *xs, const uint8_t *quality);
+
 /** 반환 = 데이터그램 길이 (머리+본문+CRC), 음수 = 오류 */
 int mcol_encode(uint8_t *out, size_t cap, const struct mcol_hdr *h, const void *payload);
 /** 0 = 정상. -EBADMSG 매직·판·길이·CRC 이상 */
