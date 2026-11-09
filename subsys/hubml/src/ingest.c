@@ -59,6 +59,7 @@ static struct edge edges[HUBML_MAX_EDGES];	/* sid = 번호 + 1 */
 static const struct hubml_xport *xp;
 static char root[48];
 static struct hubml_stats st;
+static void anchor_reset(void);
 
 /* ── 대기열: 두 벌을 번갈아 (rx 는 act 에, commit 은 다른 벌을 쓴다) ─────── */
 struct qrec {
@@ -378,6 +379,7 @@ int hubml_ingest_init(const char *r, const struct hubml_xport *x)
 	xp = x;
 	memset(edges, 0, sizeof edges);
 	memset(&st, 0, sizeof st);
+	anchor_reset();	/* 허브가 새로 켜지면 장비마다 다시 앵커를 남긴다 */
 	qb[0].n = qb[1].n = 0;
 	qb[0].used = qb[1].used = 0;
 	act = 0;
@@ -398,6 +400,47 @@ void hubml_ingest_crash(void)
 	qb[0].n = qb[1].n = 0;
 	qb[0].used = qb[1].used = 0;
 	k_mutex_unlock(&st_mtx);
+}
+
+/* ── 시각 앵커 ────────────────────────────────────────────────────────
+ * 레코드는 **허브가 받은 날** 파일에 쓰인다(밀린 데이터도). 측정 시각을 되살리려면 Edge 단조 시각(edge_ms, 같은
+ * boot_id 안에서 단조)과 허브 UTC 의 짝이 필요하다 → FEAT 중 **밀리지 않은(BACKLOG 아님)** 레코드에서만 짝을 뽑아
+ * 장비마다 (새 boot_id · 그 날짜 파일에 이번 허브 기동에서 처음 · 10 분 지남) 때 한 줄:
+ *   {"seq":<n>,"stream":1,"boot_id":<b>,"edge_ms":<ms>,"hub_ms":<허브 epoch ms>,"time_set":<0|1>}
+ * 측정 UTC ≈ hub_ms_앵커 + (edge_ms − edge_ms_앵커)  (같은 boot_id, 가까운 앵커). time_set 0 이면 hub_ms 는 가동 시간. */
+#define ANCHOR_EVERY_MS (10 * 60 * 1000)
+struct anchor_st {
+	uint16_t boot;
+	int64_t last_hub_ms;
+	char day[9];
+};
+static struct anchor_st anc[HUBML_MAX_EDGES];
+static void anchor_reset(void) { memset(anc, 0, sizeof anc); }
+
+static void anchor_maybe(const struct qrec *r, const uint8_t *d, uint64_t uid, const char *day)
+{
+	if (r->stream != MCOL_S_FEAT || (d[7] & MCOL_F_BACKLOG) || r->sid == 0 || r->sid > HUBML_MAX_EDGES) {
+		return;
+	}
+	const uint16_t boot = sys_get_le16(d + 22);
+	struct anchor_st *a = &anc[r->sid - 1];
+	if (a->last_hub_ms && a->boot == boot && !strcmp(a->day, day) && r->hub_ms - a->last_hub_ms < ANCHOR_EVERY_MS) {
+		return;
+	}
+	char p[96], l[192];
+	snprintf(p, sizeof p, "%s/ds/%016llx/%s/anchor.jsonl", root, (unsigned long long)uid, day);
+	const int n = snprintf(l, sizeof l, "{\"seq\":%u,\"stream\":1,\"boot_id\":%u,\"edge_ms\":%llu,\"hub_ms\":%lld,\"time_set\":%d}\n",
+			       sys_get_le32(d + 8), boot, (unsigned long long)sys_get_le64(d + 12), (long long)r->hub_ms,
+			       hubml_time_is_set() ? 1 : 0);
+	struct fs_file_t f;
+	fs_file_t_init(&f);
+	if (fs_open(&f, p, FS_O_CREATE | FS_O_WRITE | FS_O_APPEND) == 0) {
+		(void)fs_write(&f, l, (size_t)n);
+		fs_close(&f);
+		a->boot = boot;
+		a->last_hub_ms = r->hub_ms;
+		strcpy(a->day, day);
+	}
 }
 
 static int rec_cmp(const void *a, const void *b)
@@ -493,6 +536,7 @@ int hubml_ingest_commit(void)
 			}
 			uint8_t lp[2];
 			sys_put_le16(q->rec[j].len, lp);
+			anchor_maybe(&q->rec[j], q->data + q->rec[j].off, e->uid, day);	/* 다른 파일 — 열린 파일은 하나뿐(FS_FATFS_NUM_FILES 4) */
 			if (fs_write(&f, lp, 2) != 2 ||
 			    fs_write(&f, q->data + q->rec[j].off, q->rec[j].len) != q->rec[j].len) {
 				rc = -EIO;

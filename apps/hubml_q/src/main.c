@@ -18,6 +18,7 @@
 #include <ff.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <hubml/mcol.h>
 #include <hubml/ingest.h>
 
@@ -310,6 +311,36 @@ int main(void)
 	}
 	printk("둘째 날 파일이 있는 장비 %u / %d\n", d1, NE);
 	if (d1 == 0) { printk("✗ 날짜가 바뀌지 않았다 — 날짜 나눔을 시험하지 못했다\n"); ok = false; }
+	/* 시각 앵커: 장비·날짜마다 있고, 같은 boot 안에서 edge_ms 가 줄지 않는다 */
+	int anc_files = 0, anc_lines = 0, anc_bad = 0;
+	for (int i = 0; i < NE; i++) {
+		for (int dd = 0; dd < 2; dd++) {
+			char p[96];
+			static char buf[2048];
+			snprintf(p, sizeof p, ROOT "/ds/%016llx/%s/anchor.jsonl", (unsigned long long)E[i].uid, dd ? day1 : day0);
+			struct fs_file_t f;
+			fs_file_t_init(&f);
+			if (fs_open(&f, p, FS_O_READ)) { continue; }
+			const ssize_t n = fs_read(&f, buf, sizeof buf - 1);
+			fs_close(&f);
+			buf[n > 0 ? n : 0] = 0;
+			anc_files++;
+			long long prev = -1;
+			for (char *l = buf; *l; ) {
+				char *nl = strchr(l, '\n');
+				if (!nl) { break; }
+				*nl = 0;
+				char *e = strstr(l, "\"edge_ms\":");
+				const long long em = e ? atoll(e + 10) : -2;
+				if (!strstr(l, "\"boot_id\":1") || em < prev) { anc_bad++; }
+				prev = em;
+				anc_lines++;
+				l = nl + 1;
+			}
+		}
+	}
+	printk("시각 앵커: 파일 %d · 줄 %d · 이상 %d\n", anc_files, anc_lines, anc_bad);
+	if (anc_files < NE || anc_bad) { printk("✗ 앵커\n"); ok = false; }
 	printk(ok ? "=== Lm1 PASS\n" : "=== Lm1 FAIL\n");
 	return 0;
 }
