@@ -1,0 +1,9 @@
+/* QEMU 시험용 RAM 디스크 32 MiB — 실기의 SD(FatFs)와 같은 FatFs 코드를 지난다 */
+/ {
+	ramdisk0 {
+		compatible = "zephyr,ram-disk";
+		disk-name = "RAM";
+		sector-size = <512>;
+		sector-count = <65536>;
+	};
+};

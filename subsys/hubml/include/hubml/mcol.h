@@ -1,0 +1,94 @@
+/*
+ * MCOL/1 — Edge → HUB AI 수집 규약 (HaLow UDP 데이터그램 하나 = 레코드 하나).
+ *
+ *   [머리 24 B][본문 len B][CRC32 4 B]   리틀엔디안 · CRC-32/IEEE(머리+본문)
+ *
+ *   0  'M' 'C'      2   ver(1)   3 type
+ *   4  edge_sid u16 (허브가 HELLO_ACK 로 정해 준 번호, HELLO 는 0)
+ *   6  stream u8    7 flags u8
+ *   8  seq u32      (흐름별, Edge 재부팅에도 이어진다 — 보낼 함에 저장)
+ *   12 edge_ms u64  (Edge 단조 시각)
+ *   20 len u16      22 boot_id u16
+ *
+ * 한 데이터그램은 1,200 B 이하 — NRC SoftAP_RPC 의 udp_rx base64 버퍼(1,600 B) 한도.
+ * 설계: docs/hub-ml-plan.md (수집 영역).
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+#pragma once
+#include <stdint.h>
+#include <stddef.h>
+#include <stdbool.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#define MCOL_VER         1
+#define MCOL_HDR_LEN     24
+#define MCOL_CRC_LEN     4
+#define MCOL_MAX_DGRAM   1200
+#define MCOL_MAX_PAYLOAD (MCOL_MAX_DGRAM - MCOL_HDR_LEN - MCOL_CRC_LEN)
+
+enum mcol_type {
+	MCOL_T_HELLO = 1,
+	MCOL_T_HELLO_ACK,
+	MCOL_T_FEAT,
+	MCOL_T_RAW_HDR,
+	MCOL_T_RAW_CHUNK,
+	MCOL_T_EVT,
+	MCOL_T_HB,
+	MCOL_T_ACK,
+	MCOL_T_CMD,
+};
+
+enum mcol_stream {
+	MCOL_S_CTRL = 0,
+	MCOL_S_FEAT,
+	MCOL_S_RAW,
+	MCOL_S_EVT,
+	MCOL_S_HB,
+	MCOL_NSTREAM,
+};
+
+#define MCOL_F_BACKLOG 0x01	/* 밀린 데이터 (끊겼다 이어진 뒤) */
+
+struct mcol_hdr {
+	uint8_t type;
+	uint16_t edge_sid;
+	uint8_t stream;
+	uint8_t flags;
+	uint32_t seq;
+	uint64_t edge_ms;
+	uint16_t len;
+	uint16_t boot_id;
+};
+
+/** HELLO 본문 (20 B) */
+struct mcol_hello {
+	uint64_t uid;		/* 칩 고유번호 */
+	uint32_t fw;		/* 펌웨어 판 */
+	uint16_t contract;	/* 특징 계약 (MFEAT34 = 34) */
+	uint8_t nfeat;
+	uint32_t sensor_hash;	/* 센서 설정 해시 */
+};
+#define MCOL_HELLO_LEN 20
+
+/** HELLO_ACK 본문 (16 B): sid u16 · rsv u16 · hub_ms u64 · raw_period_s u32 */
+#define MCOL_HELLO_ACK_LEN 16
+
+/** ACK 본문: 항목 n 개 × 9 B { stream u8 · next u32 · sack u32 }
+ *  next = 이 번호 앞은 모두 허브 SD 에 기록됨. sack bit i = next+1+i 도 기록됨. */
+#define MCOL_ACK_ENTRY_LEN 9
+
+/** 반환 = 데이터그램 길이 (머리+본문+CRC), 음수 = 오류 */
+int mcol_encode(uint8_t *out, size_t cap, const struct mcol_hdr *h, const void *payload);
+/** 0 = 정상. -EBADMSG 매직·판·길이·CRC 이상 */
+int mcol_decode(const uint8_t *in, size_t n, struct mcol_hdr *h, const uint8_t **payload);
+
+void mcol_hello_put(uint8_t *p, const struct mcol_hello *m);
+void mcol_hello_get(const uint8_t *p, struct mcol_hello *m);
+
+#ifdef __cplusplus
+}
+#endif
