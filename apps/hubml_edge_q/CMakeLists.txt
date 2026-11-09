@@ -8,6 +8,8 @@ set(HUBML_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../subsys/hubml)
 target_include_directories(app PRIVATE ${HUBML_DIR}/include ${HUBML_DIR}/testdata)
 target_compile_definitions(app PRIVATE XMB_MAX_FEAT=34 XMB_MAX_NODE=2400)
 target_sources(app PRIVATE src/main.c ${HUBML_DIR}/src/mcol.c ${HUBML_DIR}/src/xmb.c)
+# Cortex-M33 은 VFMA 가 있어 기본으로 축약될 수 있다 — Edge 펌웨어(R0)도 같은 옵션을 쓴다
+set_source_files_properties(${HUBML_DIR}/src/xmb.c PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
 set(gen_dir ${ZEPHYR_BINARY_DIR}/include/generated)
 generate_inc_file_for_target(app ${HUBML_DIR}/testdata/golden_kind3.xmb ${gen_dir}/golden_kind3.xmb.inc)
 generate_inc_file_for_target(app ${HUBML_DIR}/testdata/golden_kind1.xmb ${gen_dir}/golden_kind1.xmb.inc)

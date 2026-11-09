@@ -11,6 +11,7 @@
 #include <string.h>
 #include <hubml/mcol.h>
 #include <hubml/xmb.h>
+#include <zephyr/sys/crc.h>
 
 static const uint8_t k3[] = {
 #include "golden_kind3.xmb.inc"
@@ -92,6 +93,20 @@ int main(void)
 	       feat_ok ? "같음" : "다름", crc_reject ? "예" : "아니오");
 	if (!hello_ok || !feat_ok || !crc_reject) { ok = false; }
 
+	/* 골든 기대값을 NaN 으로 바꾸고 CRC 를 다시 맞춘 파일 — 거부해야 한다 (예전 `> tol` 꼴은 통과시켰다) */
+	{
+		static uint8_t b[sizeof k3];
+		memcpy(b, k3, sizeof k3);
+		const size_t gold_end = sizeof k3 - 4;		/* 골든 4 × 35 f32 뒤 CRC */
+		const uint32_t nan = 0x7fc00000;
+		memcpy(b + gold_end - 4, &nan, 4);		/* 마지막 골든의 기대 점수 */
+		const uint32_t c = crc32_ieee(b + XMB_HDR_LEN, gold_end - XMB_HDR_LEN);
+		memcpy(b + gold_end, &c, 4);
+		const int r = xmd_parse(b, sizeof b, &md, 1e-5f);
+		printk("NaN 골든 + CRC 다시 맞춤 → %d (-7 = 골든 거부)\n", r);
+		if (r != -7) { ok = false; }
+		xmd_parse(k3, sizeof k3, &md, 1e-5f);
+	}
 	printk(ok ? "=== Lm3 PASS\n" : "=== Lm3 FAIL\n");
 	return 0;
 }

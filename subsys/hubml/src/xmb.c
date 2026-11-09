@@ -144,7 +144,8 @@ int xmb_parse(const uint8_t *in, size_t n, struct xmb_model *m, float tol)
 	}
 	for (int g = 0; g < XMB_NGOLDEN; g++) {
 		const float got = xmb_predict(m, m->golden[g]);
-		if (fabsf(got - m->golden[g][m->nfeat]) > tol) {
+		/* ⚠ !(≤) 꼴 — 기대값이 NaN 이면 `> tol` 은 거짓이라 변조 파일이 통과한다 (2026-11-09 Studio 지적) */
+		if (!(fabsf(got - m->golden[g][m->nfeat]) <= tol)) {
 			return -7;
 		}
 	}
@@ -271,7 +272,7 @@ int xmd_parse(const uint8_t *in, size_t n0, struct xmd_model *m, float tol)
 		for (int i = 0; i < TRI(n); i++, p += 4) { m->reg[r].L[i] = getf(p); }
 		m->reg[r].thr_d2 = getf(p);
 		p += 4;
-		if (!(m->reg[r].thr_d2 > 0.0f)) {
+		if (!(m->reg[r].thr_d2 > 0.0f) || !isfinite(m->reg[r].thr_d2)) {
 			return -5;
 		}
 	}
@@ -282,7 +283,7 @@ int xmd_parse(const uint8_t *in, size_t n0, struct xmd_model *m, float tol)
 	}
 	for (int g = 0; g < XMB_NGOLDEN; g++) {
 		const float got = xmd_score(m, m->golden[g], NULL);
-		if (fabsf(got - m->golden[g][n]) > tol * fmaxf(1.0f, fabsf(got))) {
+		if (!(fabsf(got - m->golden[g][n]) <= tol * fmaxf(1.0f, fabsf(got)))) {	/* NaN 도 거부 */
 			return -7;
 		}
 	}
