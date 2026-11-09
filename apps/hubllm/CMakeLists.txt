@@ -66,10 +66,15 @@ target_include_directories(app PRIVATE
 target_sources(app PRIVATE src/main.c src/moru_mark.c src/moru_boot.c
                            src/moru_shell.c src/moru_usbd.c
                            src/moru_htop.c src/moru_fatal.c
-                           src/hub_llm.cpp src/hub_shell.c src/hub_relay.c src/hub_fs.c
-                           ${CMAKE_CURRENT_SOURCE_DIR}/../../subsys/hubml/src/sha256.c)
-# sha256 은 subsys/hubml 로 옮겼다 (원장 해시 사슬과 같이 쓴다) — "sha256.h" 로 그대로 찾게 한다
-target_include_directories(app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../subsys/hubml/include/hubml ${CMAKE_CURRENT_SOURCE_DIR}/../../subsys/hubml/include)
+                           src/hub_llm.cpp src/hub_shell.c src/hub_relay.c src/hub_fs.c)
+# ── hubml: 현장 ML 허브 (수집 · 원장 · 학습 · 배포 · ml 셸) — subsys/hubml, docs/hub-ml-plan.md ──
+# sha256 도 거기 있다 — hub_llm 의 모델 해시가 "sha256.h" 로 찾게 include/hubml 을 더한다
+include(${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/hubml.cmake)
+hubml_add()
+target_include_directories(app PRIVATE ${HUBML_DIR}/include/hubml)
+# 대기열 512 KiB × 2 — 장비 20 대 × 30 s (SD 를 hub load 가 쥐는 동안) ≈ 210 KB 를 넉넉히. RAM 은 malloc_arena
+# 240 MB 고정이라 정적 여유가 작다(1 MiB × 2 면 99.2 %).
+target_compile_definitions(app PRIVATE "HUBML_QUEUE_BYTES=(512*1024)")
 
 # ── llama (L6c 와 같은 묶음 · ggml 은 -O3) ─────────────────────────────
 set(LLM_GGML_OPT_LEVEL "-O3" CACHE STRING "" FORCE)

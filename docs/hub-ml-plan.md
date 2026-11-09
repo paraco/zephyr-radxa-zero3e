@@ -71,7 +71,7 @@ HaLow(NRC7394 BridgeRPC 위 UDP, ≤ 1,200 B/데이터그램, TCP 없음) 한 �
 | M5b Edge 배포 전송 | ✅ | Lm5 (A55): MCOL CMD BEGIN·CHUNK(1 KiB, 창 4, go-back-N)·END·ACTIVATE ↔ Edge `edge.c` · 손실 10 %·중복 5 % → 11 KB 41 틱 · champion 슬롯·ACTIVATE 는 champion 별칭(서명) 없이 거부 · 변조(CRC 다시 맞춤) → Edge sha256 거부 −3 · kind 1 → −4 · 계약 다름 → −5 · 무응답 → 시간 초과 · 원장 deploy 사건 · Edge 점수 = 허브 비트 일치. Lm3(M33)에 같은 edge.c 받기·ACTIVATE 시험 추가 — `struct hubml_edge` 39 KB |
 | M5c 시범 점수(champion/challenger 병행 보고) · 서명 검증(ed25519) | 다음 | |
 | M2 데이터 관리 · 정상 관문 · M6 감시 | | |
-| hubllm 통합 (`ml` 명령 · USB CDC 운반) | | |
+| hubllm 통합 (`ml` 읽기 명령 · USB 운반) | ✅ 빌드 | Lm6 (A55 가짜 셸): `ml time set` · `ml rx b64=`(HELLO → `HUBML/1 tx` HELLO_ACK) · FEAT 20·HB 4 → commit → tx ACK · `ml status/dev ls/ds ls --kv` · `ml ledger` b64 사슬 다시 계산 = `ledger_done head`. hubllm 빌드(root `/0:/ml`, hub_fs io_lock 공유, 칩 ID, 대기열 512 KiB×2, RAM 98.7 %) — **실기 확인 전** |
 | 실기 한 번 (apply try) | | |
 
 시험 씨앗(Studio 3자 시험용): `subsys/hubml/testdata/` — `golden_kind1.xmb` · `golden_kind3.xmb` · `pv.json`(64 벡터 + 기대값) ·

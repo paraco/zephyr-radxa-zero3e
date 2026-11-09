@@ -13,7 +13,11 @@ function(hubml_add)
 		${HUBML_DIR}/src/sha256.c
 		${HUBML_DIR}/src/ledger.c
 		${HUBML_DIR}/src/deploy.c
-		${HUBML_DIR}/src/edge.c)
+		${HUBML_DIR}/src/edge.c
+		${HUBML_DIR}/src/hubml.c)
+	if(CONFIG_SHELL)
+		target_sources(app PRIVATE ${HUBML_DIR}/src/ml_shell.c)
+	endif()
 	# 허브(A55)·Edge(M7·M33)·Studio 가 점수를 비트까지 같게 내려면 FMA 축약을 끈다 (Studio 3자 대조 2026-11-09)
 	set_source_files_properties(${HUBML_DIR}/src/xmb.c ${HUBML_DIR}/src/train.c PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
 endfunction()

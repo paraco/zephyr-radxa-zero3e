@@ -26,6 +26,7 @@
 #include <stdio.h>
 #include "hub_relay.h"
 #include "hub.h"
+#include <zephyr/drivers/hwinfo.h>
 
 /* 볼륨 0("SD") → 물리 드라이브 0 의 두 번째 MS Basic Data 파티션 */
 PARTITION VolToPart[FF_VOLUMES] = { { 0, 2 } };
@@ -640,3 +641,33 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_sd,
 	SHELL_CMD_ARG(log, NULL, "log [on|off] — SD 실시간 로그 상태 / 켜기·끄기", cmd_sd_log, 1, 1),
 	SHELL_SUBCMD_SET_END);
 SHELL_CMD_REGISTER(sd, &sub_sd, "SD 카드 (Zephyr 직접 — 읽기 · 로그 쓰기)", NULL);
+
+/* ── hubml 연결: SD 를 같이 쓴다 ─────────────────────────────────────────
+ * hubml 의 weak 갈고리를 덮어쓴다 — FatFs 는 재진입이 안 되므로 hub_fs 의 io_lock 을 함께 쓰고(재귀 뮤텍스),
+ * 저장소 준비 = BLOB 파티션 마운트, 허브 ID = 칩 ID(FW_INFO deviceid 와 같은 16진). root = "/0:/ml" */
+void hubml_fs_lock(void) { k_mutex_lock(&io_lock, K_FOREVER); }
+void hubml_fs_unlock(void) { k_mutex_unlock(&io_lock); }
+int hubml_storage_ready(void)
+{
+	const int rc = ensure_mount(NULL);
+	if (rc) {
+		return rc;
+	}
+	const int m = fs_mkdir("/0:/ml");
+	return (m == 0 || m == -EEXIST) ? 0 : m;
+}
+const char *hubml_default_hub_id(void)
+{
+	static char hex[33];
+	if (!hex[0]) {
+		uint8_t id[16];
+		const ssize_t n = hwinfo_get_device_id(id, sizeof id);
+		for (ssize_t i = 0; i < n && i < 16; i++) {
+			snprintf(hex + 2 * i, 3, "%02x", id[i]);
+		}
+		if (n <= 0) {
+			strcpy(hex, "-");
+		}
+	}
+	return hex;
+}
