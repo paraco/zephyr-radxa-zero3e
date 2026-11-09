@@ -9,5 +9,7 @@ function(hubml_add)
 		${HUBML_DIR}/src/mcol.c
 		${HUBML_DIR}/src/ingest.c
 		${HUBML_DIR}/src/xmb.c
-		${HUBML_DIR}/src/train.c)
+		${HUBML_DIR}/src/train.c
+		${HUBML_DIR}/src/sha256.c
+		${HUBML_DIR}/src/ledger.c)
 endfunction()

@@ -21,7 +21,9 @@ static K_MUTEX_DEFINE(st_mtx);	/* 장비 표 · 대기열 (rx 와 commit 사이)
 
 /* ── 시각 ─────────────────────────────────────────────────────────────── */
 static int64_t epoch_base;	/* epoch_ms - uptime_ms */
-void hubml_time_set(int64_t epoch_ms) { epoch_base = epoch_ms - k_uptime_get(); }
+static bool time_set;
+void hubml_time_set(int64_t epoch_ms) { epoch_base = epoch_ms - k_uptime_get(); time_set = true; }
+bool hubml_time_is_set(void) { return time_set; }
 int64_t hubml_time_now(void) { return epoch_base + k_uptime_get(); }
 
 void hubml_day_str(int64_t epoch_ms, char out[9])

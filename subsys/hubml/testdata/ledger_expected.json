@@ -1,0 +1,46 @@
+{
+ "ledger_sample.jsonl": {
+  "ok": true,
+  "lines": 10,
+  "head": "1a67c9b1262dba49125b07632cdfa792e3026984143931740ad80905c7eea6e4",
+  "bad_seq": null,
+  "torn_bytes": 0,
+  "aliases": {
+   "4d50444d00000001/v0": "4d50444d00000001:1",
+   "4d50444d00000001/challenger": "4d50444d00000001:2",
+   "4d50444d00000001/champion": "4d50444d00000001:1"
+  }
+ },
+ "ledger_tampered.jsonl": {
+  "ok": false,
+  "lines": 2,
+  "head": "3c2e87d116d894fafdc6fa117cc9719a52a9195e48a372c6eda3146880bb667f",
+  "bad_seq": 3,
+  "torn_bytes": 0,
+  "aliases": {}
+ },
+ "ledger_torn.jsonl": {
+  "ok": true,
+  "lines": 10,
+  "head": "1a67c9b1262dba49125b07632cdfa792e3026984143931740ad80905c7eea6e4",
+  "bad_seq": null,
+  "torn_bytes": 26,
+  "aliases": {
+   "4d50444d00000001/v0": "4d50444d00000001:1",
+   "4d50444d00000001/challenger": "4d50444d00000001:2",
+   "4d50444d00000001/champion": "4d50444d00000001:1"
+  }
+ },
+ "ledger_unknown_kind.jsonl": {
+  "ok": true,
+  "lines": 11,
+  "head": "fae25bd5e043302a480575085b56f3de060c389e80dbbd71727fa38dbf7759d0",
+  "bad_seq": null,
+  "torn_bytes": 0,
+  "aliases": {
+   "4d50444d00000001/v0": "4d50444d00000001:1",
+   "4d50444d00000001/challenger": "4d50444d00000001:2",
+   "4d50444d00000001/champion": "4d50444d00000001:1"
+  }
+ }
+}

@@ -56,6 +56,8 @@ HaLow(NRC7394 BridgeRPC 위 UDP, ≤ 1,200 B/데이터그램, TCP 없음) 한 �
 `ml ds ls uid=<hex> --kv` · `ml ledger since=<seq> max=<n>` (원장 JSONL 줄 b64, seq·prev_sha256) · 원본은 `sd ls`·`sd cat`.
 쓰기(M5 이후, 사용자 승인 뒤): `ml approve …` · `ml model put …` · `ml train …` · `ml deploy …`.
 원장 = 허브 SD 의 덧붙이기 JSONL + 해시 사슬 + 별칭(v0/champion/challenger/shadow) — MLflow 서버는 쓰지 않는다.
+**정본 규격: MoruLab_MLOps `design/MLCC_LEDGER_SPEC.md` (`mlledger/1`)** — `subsys/hubml/src/ledger.c` 가 따른다.
+읽기 응답: `HUBML/1 ledger seq=<n> b64=<줄>` … `HUBML/1 ledger_done last= head= total=`.
 
 ## 6. 진행 (실기 없이 QEMU 로, 실기는 마지막 한 번)
 
@@ -64,11 +66,14 @@ HaLow(NRC7394 BridgeRPC 위 UDP, ≤ 1,200 B/데이터그램, TCP 없음) 한 �
 | M1 수집 엔진 | ✅ | Lm1 (A55): 가짜 Edge 20 · 손실 5 %·중복 3 %·뒤바뀜 · 재시작 2 종 · 자정 넘김 → 20,180 레코드 무손실·한 번씩 |
 | M3 학습 · M4 평가 | ✅ | Lm2 (A55): 하루 86,400 벡터 학습 1.5 s · kind 1/3 왕복·변조 거부 · 파이썬 대조 kind1 6e-8 · kind3 0 |
 | Edge 이식 | ✅ | **Lm3 (Cortex-M33 32비트)**: 같은 모델 파일 → 64 벡터 비트까지 같음 · MCOL 왕복 |
-| M5 원장(JSONL·해시 사슬·별칭)·배포 | 다음 | |
+| M5a 원장 (`mlledger/1`) | ✅ | Lm4 (A55): 등록 관문(깨진 모델 거부) · model_id `<uid>:<n>` · 별칭 v0/challenger/champion(서명 없으면 거부)·승격·되돌리기 · 재시작 복원 · 반쪽 꼬리 잘라 내기 + `ledger_repair` · 중간 변조 감지(덧붙이기 막힘) · 호스트 `tools/ledger_verify.py` 사슬 대조 |
+| M5b Edge 배포 전송 · 시범 점수 · 서명 검증(ed25519) | 다음 | |
 | M2 데이터 관리 · 정상 관문 · M6 감시 | | |
 | hubllm 통합 (`ml` 명령 · USB CDC 운반) | | |
 | 실기 한 번 (apply try) | | |
 
 시험 씨앗(Studio 3자 시험용): `subsys/hubml/testdata/` — `golden_kind1.xmb` · `golden_kind3.xmb` · `pv.json`(64 벡터 + 기대값) ·
-`sample_feat.mcs` + `sample_feat_expected.json`. 다시 만들기: `./tools/qemu_run.sh apps/hubml_q2` → `python3 tools/hubml_testdata.py <로그> subsys/hubml/testdata`.
+`sample_feat.mcs` + `sample_feat_expected.json` · 원장 `ledger_{sample,tampered,torn,unknown_kind}.jsonl` + `ledger_expected.json` ·
+**허브 root 표본** `hubroot_sample/` (장비 2 대 ds · ml_state.bin · ledger.jsonl · models — Studio 폴더 열기 시험용, Lm4 에서 되살림:
+`python3 tools/hubroot_extract.py <Lm4 로그> <폴더>`). 다시 만들기: `./tools/qemu_run.sh apps/hubml_q2` → `python3 tools/hubml_testdata.py <로그> subsys/hubml/testdata`.
 실행: `./tools/qemu_run.sh apps/hubml_q` (Lm1) · `apps/hubml_q2` (Lm2, 뒤에 `python3 tools/xmb_ref.py <로그>`) · `./tools/qemu_edge_run.sh apps/hubml_edge_q` (Lm3).

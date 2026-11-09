@@ -70,6 +70,8 @@ int hubml_ingest_edges(struct hubml_edge_info *out, int max);
 /** 허브 시각 (UTC ms). 기본은 0 + 가동 시간 — Studio 가 ml time set 으로 맞춘다 */
 void hubml_time_set(int64_t epoch_ms);
 int64_t hubml_time_now(void);
+/** 시각을 맞췄는가 (ml time set) — 원장 ts 가 UTC 인지 T+초 인지 */
+bool hubml_time_is_set(void);
 
 /** FatFs 를 다른 쓰는 곳(hub_fs 등)과 함께 쓸 때 잠금 — 기본은 내부 뮤텍스, 앱이 덮어쓴다 */
 void hubml_fs_lock(void);

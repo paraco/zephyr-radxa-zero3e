@@ -66,7 +66,10 @@ target_include_directories(app PRIVATE
 target_sources(app PRIVATE src/main.c src/moru_mark.c src/moru_boot.c
                            src/moru_shell.c src/moru_usbd.c
                            src/moru_htop.c src/moru_fatal.c
-                           src/hub_llm.cpp src/hub_shell.c src/sha256.c src/hub_relay.c src/hub_fs.c)
+                           src/hub_llm.cpp src/hub_shell.c src/hub_relay.c src/hub_fs.c
+                           ${CMAKE_CURRENT_SOURCE_DIR}/../../subsys/hubml/src/sha256.c)
+# sha256 은 subsys/hubml 로 옮겼다 (원장 해시 사슬과 같이 쓴다) — "sha256.h" 로 그대로 찾게 한다
+target_include_directories(app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../subsys/hubml/include/hubml ${CMAKE_CURRENT_SOURCE_DIR}/../../subsys/hubml/include)
 
 # ── llama (L6c 와 같은 묶음 · ggml 은 -O3) ─────────────────────────────
 set(LLM_GGML_OPT_LEVEL "-O3" CACHE STRING "" FORCE)
