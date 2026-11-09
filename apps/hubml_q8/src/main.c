@@ -11,6 +11,9 @@
 static const struct { uint32_t n; uint8_t d[64]; } SV[] = {
 #include "sha512_vectors.inc"
 };
+static const struct { uint8_t seed[32], pk[32], sig[64]; uint32_t n; uint8_t m[256]; } SG[] = {
+#include "ed25519_sign_vectors.inc"
+};
 static const struct { uint8_t pk[32], sig[64]; uint32_t n; uint8_t m[1000]; } EV[] = {
 #include "ed25519_vectors.inc"
 };
@@ -60,6 +63,15 @@ int main(void)
 	printk("ed25519: 정상 %d/%d · 서명 변조 거부 %d/%d · 메시지 변조 거부 %d/%d · 공개키 변조 거부 %d/%d · s+L 거부 %d/%d · %lld ms (QEMU)\n",
 	       good, n, rej_sig, n, rej_msg, n, rej_pk, n, rej_mal, n, ms);
 	if (good != n || rej_sig != n || rej_msg != n || rej_pk != n || rej_mal != n) { ok = false; }
+	int sg = 0;
+	for (int i = 0; i < ARRAY_SIZE(SG); i++) {
+		uint8_t sig[64], pk[32];
+		hubml_ed25519_sign(sig, SG[i].m, SG[i].n, SG[i].seed, pk);
+		sg += !memcmp(pk, SG[i].pk, 32) && !memcmp(sig, SG[i].sig, 64) &&
+		      hubml_ed25519_verify(sig, SG[i].m, SG[i].n, pk) == 0;
+	}
+	printk("서명(시험 빌드): 공개키·서명 바이트가 Mac 과 같고 검증 통과 %d/%d\n", sg, ARRAY_SIZE(SG));
+	if (sg != ARRAY_SIZE(SG)) { ok = false; }
 	printk(ok ? "=== Lm8 PASS\n" : "=== Lm8 FAIL\n");
 	return 0;
 }

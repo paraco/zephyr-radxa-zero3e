@@ -15,7 +15,8 @@ function(hubml_add)
 		${HUBML_DIR}/src/deploy.c
 		${HUBML_DIR}/src/edge.c
 		${HUBML_DIR}/src/hubml.c
-		${HUBML_DIR}/src/ed25519.c)
+		${HUBML_DIR}/src/ed25519.c
+		${HUBML_DIR}/src/approve.c)
 	if(CONFIG_SHELL)
 		target_sources(app PRIVATE ${HUBML_DIR}/src/ml_shell.c)
 	endif()

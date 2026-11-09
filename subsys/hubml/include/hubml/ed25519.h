@@ -18,6 +18,11 @@ void hubml_sha512(const void *m, size_t n, uint8_t out[64]);
 /** 0 = 서명이 맞다 · -1 공개키 이상 · -2 s 범위 밖 · -3 서명 다름 */
 int hubml_ed25519_verify(const uint8_t sig[64], const void *msg, size_t n, const uint8_t pk[32]);
 
+#ifdef HUBML_ED25519_SIGN
+/** 시험 빌드에만 — 서명(RFC 8032). seed = 비밀 32 B. 허브는 서명하지 않는다(검증만) */
+void hubml_ed25519_sign(uint8_t sig[64], const void *msg, size_t n, const uint8_t seed[32], uint8_t pk_out[32]);
+#endif
+
 #ifdef __cplusplus
 }
 #endif

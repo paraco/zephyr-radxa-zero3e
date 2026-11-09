@@ -327,3 +327,47 @@ int hubml_ed25519_verify(const uint8_t sig[64], const void *msg, size_t n, const
 	ppack(t, p);
 	return memcmp(t, sig, 32) ? -3 : 0;
 }
+
+#ifdef HUBML_ED25519_SIGN
+static void reduce64(uint8_t r[32], const uint8_t h[64])
+{
+	int64_t x[64];
+	for (int i = 0; i < 64; i++) { x[i] = h[i]; }
+	modL(r, x);
+}
+
+void hubml_ed25519_sign(uint8_t sig[64], const void *msg, size_t n, const uint8_t seed[32], uint8_t pk[32])
+{
+	if (!consts_ready) {
+		init_consts();
+	}
+	uint8_t d[64], r[32], k[32], hh[64];
+	hubml_sha512(seed, 32, d);
+	d[0] &= 248;
+	d[31] &= 127;
+	d[31] |= 64;
+	gf p[4];
+	sbase(p, d);
+	ppack(pk, p);
+	struct s512 s;
+	s_init(&s);
+	s_upd(&s, d + 32, 32);
+	s_upd(&s, msg, n);
+	s_fin(&s, hh);
+	reduce64(r, hh);
+	sbase(p, r);
+	ppack(sig, p);
+	s_init(&s);
+	s_upd(&s, sig, 32);
+	s_upd(&s, pk, 32);
+	s_upd(&s, msg, n);
+	s_fin(&s, hh);
+	reduce64(k, hh);
+	int64_t x[64] = { 0 };
+	for (int i = 0; i < 32; i++) { x[i] = r[i]; }
+	for (int i = 0; i < 32; i++) {
+		for (int j = 0; j < 32; j++) { x[i + j] += (int64_t)k[i] * d[j]; }
+	}
+	modL(sig + 32, x);
+}
+#endif

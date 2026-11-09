@@ -27,6 +27,7 @@
 #include <hubml/ingest.h>
 #include <hubml/ledger.h>
 #include <hubml/train.h>
+#include <hubml/approve.h>
 #include <hubml/sha256.h>
 
 extern const struct shell *hubml_tx_shell;
@@ -438,6 +439,22 @@ static int cmd_model_ls(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+static int cmd_approve(const struct shell *sh, size_t argc, char **argv)
+{
+	if (ready(sh)) {
+		return -EIO;
+	}
+	struct hubml_approve_result r;
+	const int rc = hubml_approve(arg(argc, argv, "b64"), arg(argc, argv, "sig"), arg(argc, argv, "key"), &r);
+	if (rc) {
+		shell_print(sh, "HUBML/1 err code=%s msg=%d", r.code ? r.code : "?", rc);
+		return rc;
+	}
+	shell_print(sh, "HUBML/1 approve ok=1 kind=%s seq=%u head=%s deploy=%d", r.kind, r.seq, r.head, r.deploy);
+	return 0;
+}
+
+THIN(cmd_approve)
 THIN(cmd_status)
 THIN(cmd_dev_ls)
 THIN(cmd_ds_ls)
@@ -466,5 +483,6 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_ml,
 	SHELL_CMD(commit, NULL, "지금 기록·ACK (시험용)", cmd_commit_t),
 	SHELL_CMD_ARG(train, NULL, "train uid=<hex16> days=<d1,…> [q=] — 학습 → 원장 + challenger 제안", cmd_train_t, 3, 1),
 	SHELL_CMD(model, &sub_ml_model, "모델 · 별칭", NULL),
+	SHELL_CMD_ARG(approve, NULL, "approve b64=<본문> sig=<ed25519> key=<id> — 사람 승인 (mlledger/1 §4)", cmd_approve_t, 4, 0),
 	SHELL_SUBCMD_SET_END);
 SHELL_CMD_REGISTER(ml, &sub_ml, "MoruLab 허브 ML (HUBML/1)", NULL);

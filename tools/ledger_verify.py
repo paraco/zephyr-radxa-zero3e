@@ -29,6 +29,28 @@ def verify(data: bytes):
     return {'ok': bad is None, 'lines': (bad - 1) if bad else len(lines), 'head': prev, 'bad_seq': bad,
             'torn_bytes': torn, 'aliases': alias}
 
+EXCL = ('v', 'seq', 'prev', 'ts', 'actor', 'sig', 'approval_head')
+
+def verify_approvals(data: bytes, pk_hex: str):
+    """mlledger/1 v0.2 §4: 승인 줄에서 본문을 다시 만들어 ed25519(sha256(정규 본문)) 검증 (Mac cryptography)"""
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+    import base64
+    key = Ed25519PublicKey.from_public_bytes(bytes.fromhex(pk_hex))
+    n = good = 0
+    for l in [l for l in data.split(b'\n') if l]:
+        j = json.loads(l)
+        if 'approval_head' not in j:
+            continue
+        n += 1
+        body = {k: v for k, v in j.items() if k not in EXCL}
+        body['v'] = 1; body['head'] = j['approval_head']
+        canon = json.dumps(body, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()
+        try:
+            key.verify(base64.b64decode(j['sig']['b64']), hashlib.sha256(canon).digest()); good += 1
+        except Exception as e:
+            print(f'✗ seq {j["seq"]} 서명 다름: {canon[:120]!r}')
+    return n, good
+
 def from_log(path):
     raw = [l.rstrip(b'\r') for l in open(path, 'rb').read().split(b'\n')]
     got = [l[len(b'LEDGER '):] for l in raw if l.startswith(b'LEDGER ')]
@@ -60,6 +82,13 @@ def seed(log, out):
 def main():
     if sys.argv[1] == '--seed':
         return seed(sys.argv[2], sys.argv[3])
+    if sys.argv[1] == '--pk':
+        data = from_log(sys.argv[3])
+        n, good = verify_approvals(data, sys.argv[2])
+        print(f'승인 줄 {n} 개 · Mac cryptography 서명 검증 {good}/{n}')
+        if n == 0 or good != n:
+            sys.exit(1)
+        sys.argv = [sys.argv[0], sys.argv[3]]
     r = verify(from_log(sys.argv[1]))
     print(('사슬 정상' if r['ok'] else f'✗ {r["bad_seq"]} 번에서 깨짐') + f' · {r["lines"]} 줄 · 머리 {r["head"][:16]}… · 잘린 꼬리 {r["torn_bytes"]} B · 별칭 ' +
           ', '.join(f'{a}={m}' for a, m in sorted(r['aliases'].items())))

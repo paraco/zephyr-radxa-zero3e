@@ -211,13 +211,32 @@ static void ts_str(char *o, size_t n)
 		 tm.tm_min, tm.tm_sec);
 }
 
+static int append_locked(const char *expect, const char *kind, const char *actor, const char *fields, const char *sig,
+			 uint32_t *seq_out);
+
 int hubml_ledger_append(const char *kind, const char *actor, const char *fields, const char *sig, uint32_t *seq_out)
+{
+	return append_locked(NULL, kind, actor, fields, sig, seq_out);
+}
+
+int hubml_ledger_append_if_head(const char *expect_head, const char *kind, const char *actor, const char *fields,
+				const char *sig, uint32_t *seq_out)
+{
+	return append_locked(expect_head, kind, actor, fields, sig, seq_out);
+}
+
+static int append_locked(const char *expect, const char *kind, const char *actor, const char *fields, const char *sig,
+			 uint32_t *seq_out)
 {
 	static char l[HUBML_LEDGER_LINE_MAX + 2];
 	k_mutex_lock(&lmtx, K_FOREVER);
 	if (!head.ok) {
 		k_mutex_unlock(&lmtx);
 		return -EBADMSG;
+	}
+	if (expect && strcmp(expect, head.hash)) {
+		k_mutex_unlock(&lmtx);
+		return -ESTALE;
 	}
 	char ts[24];
 	ts_str(ts, sizeof ts);

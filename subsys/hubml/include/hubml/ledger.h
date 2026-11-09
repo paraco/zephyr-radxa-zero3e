@@ -42,6 +42,9 @@ void hubml_ledger_head(struct hubml_ledger_head *out);
 /** fields = 앞뒤 중괄호 없는 JSON 조각 (줄바꿈 금지, NULL 가능). sig = JSON 객체 문자열(NULL = 칸 없음).
  *  반환 0, seq_out = 번호 */
 int hubml_ledger_append(const char *kind, const char *actor, const char *fields, const char *sig, uint32_t *seq_out);
+/** expect_head 가 지금 머리와 같을 때만 덧붙인다 (원장 잠금 안에서 확인 — 승인 재사용·끼어들기 방지). -ESTALE = 머리 다름 */
+int hubml_ledger_append_if_head(const char *expect_head, const char *kind, const char *actor, const char *fields,
+				const char *sig, uint32_t *seq_out);
 typedef void (*hubml_ledger_cb)(uint32_t seq, const char *line, size_t n, void *user);
 /** since 번호부터 최대 max 줄. 반환 = 넘긴 줄 수 */
 int hubml_ledger_read(uint32_t since, int max, hubml_ledger_cb cb, void *user);
