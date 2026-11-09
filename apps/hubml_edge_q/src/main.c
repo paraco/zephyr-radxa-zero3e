@@ -11,6 +11,9 @@
 #include <string.h>
 #include <hubml/mcol.h>
 #include <hubml/xmb.h>
+#include <hubml/edge.h>
+#include <hubml/sha256.h>
+#include <zephyr/sys/byteorder.h>
 #include <zephyr/sys/crc.h>
 
 static const uint8_t k3[] = {
@@ -106,6 +109,50 @@ int main(void)
 		printk("NaN 골든 + CRC 다시 맞춤 → %d (-7 = 골든 거부)\n", r);
 		if (r != -7) { ok = false; }
 		xmd_parse(k3, sizeof k3, &md, 1e-5f);
+	}
+	/* Edge 모델 받기 (edge.c — 허브 Lm5 와 같은 코드) : BEGIN · CHUNK(1,024) · END · ACTIVATE */
+	{
+		static struct hubml_edge E;
+		hubml_edge_init(&E, 34);
+		uint8_t b[MCOL_CMD_HDR + 44 + 4 + MCOL_CHUNK], r[MCOL_CMD_ACK_LEN];
+		uint8_t d[32];
+		struct sha256 s;
+		sha256_init(&s);
+		sha256_update(&s, k3, sizeof k3);
+		sha256_final(&s, d);
+		b[0] = MCOL_OP_BEGIN; b[1] = 0; sys_put_le16(7, b + 2);
+		memset(b + 4, 0, 44);
+		b[4] = 1; b[5] = 3;
+		sys_put_le32(sizeof k3, b + 8);
+		sys_put_le32(1, b + 12);
+		memcpy(b + 16, d, 32);
+		int st = (int8_t)(hubml_edge_on_cmd(&E, b, MCOL_CMD_HDR + 44, r), r[1]);
+		for (uint32_t off = 0; off < sizeof k3 && !st; off += MCOL_CHUNK) {
+			const uint32_t n = MIN((uint32_t)MCOL_CHUNK, (uint32_t)sizeof k3 - off);
+			b[0] = MCOL_OP_CHUNK;
+			sys_put_le32(off, b + 4);
+			memcpy(b + 8, k3 + off, n);
+			hubml_edge_on_cmd(&E, b, (uint16_t)(8 + n), r);
+			st = (int8_t)r[1];
+		}
+		b[0] = MCOL_OP_END;
+		hubml_edge_on_cmd(&E, b, MCOL_CMD_HDR, r);
+		const int end_st = (int8_t)r[1];
+		b[0] = MCOL_OP_ACTIVATE; sys_put_le16(8, b + 2);
+		hubml_edge_on_cmd(&E, b, MCOL_CMD_HDR, r);
+		const int act_st = (int8_t)r[1];
+		float x[34], c, h;
+		int same = 0;
+		for (int i = 0; i < n; i++) {
+			for (int k = 0; k < 34; k++) { x[k] = f_of(PV[i][k]); }
+			hubml_edge_score(&E, x, &c, &h);
+			const float e3 = f_of(PV[i][35]);
+			same += !memcmp(&c, &e3, 4);
+		}
+		printk("Edge 받기: END %d · ACTIVATE %d · champion sha256 일치 %s · 점수 비트 일치 %d/%d · struct hubml_edge %u B\n",
+		       end_st, act_st, E.slot[0].valid && !memcmp(E.slot[0].sha, d, 32) ? "예" : "아니오", same, n,
+		       (unsigned)sizeof(E));
+		if (end_st || act_st || same != n) { ok = false; }
 	}
 	printk(ok ? "=== Lm3 PASS\n" : "=== Lm3 FAIL\n");
 	return 0;

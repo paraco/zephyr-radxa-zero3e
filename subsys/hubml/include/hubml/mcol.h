@@ -40,7 +40,20 @@ enum mcol_type {
 	MCOL_T_HB,
 	MCOL_T_ACK,
 	MCOL_T_CMD,
+	MCOL_T_CMD_ACK,		/* Edge → 허브: CMD 의 결과 (제어 흐름, 순번 추적 없음 — 허브가 다시 보낸다) */
 };
+
+/* CMD 본문: op u8 · rsv u8 · xfer u16 · … (허브 → Edge, 모델 배포)
+ *   BEGIN    slot u8 · kind u8 · rsv u16 · size u32 · num u32 · sha256[32]          (44 B)
+ *   CHUNK    off u32 · 데이터 (≤ MCOL_CHUNK)
+ *   END      —
+ *   ACTIVATE — (challenger 슬롯을 champion 으로 — 승격. 옛 champion 은 challenger 로 내려 되돌리기에 쓴다)
+ * CMD_ACK 본문 (48 B): op u8 · status i8 · xfer u16 · next_off u32 · slot u8 · rsv[3] · num u32 · sha256[32]
+ *   status 0 정상 · -1 순서/번호 · -2 너무 큼 · -3 sha256 다름 · -4 파일 검사 실패 · -5 계약 다름 · -6 슬롯 비었음 */
+enum mcol_op { MCOL_OP_BEGIN = 1, MCOL_OP_CHUNK, MCOL_OP_END, MCOL_OP_ACTIVATE };
+#define MCOL_CHUNK       1024
+#define MCOL_CMD_HDR     4
+#define MCOL_CMD_ACK_LEN 48
 
 enum mcol_stream {
 	MCOL_S_CTRL = 0,

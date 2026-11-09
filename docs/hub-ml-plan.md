@@ -29,6 +29,7 @@ HaLow(NRC7394 BridgeRPC 위 UDP, ≤ 1,200 B/데이터그램, TCP 없음) 한 �
 
 | type | 본문 |
 |---|---|
+| CMD / CMD_ACK | 배포: op · xfer · BEGIN(slot·kind·size·num·sha256) · CHUNK(off + ≤1,024 B) · END · ACTIVATE / 응답 48 B (op · status · xfer · next_off · slot · num · sha256). status 0 · −1 순서 · −2 크기 · −3 sha256 · −4 파일 검사(kind 3 만) · −5 계약 · −6 빈 슬롯. Edge 는 끝낸 전송 번호·결과를 기억해 늦은 메시지에 같은 결과를 돌려준다 |
 | HELLO | **24 B**: uid u64 · fw u32 · contract u16 · nfeat u8 · rsv · sensor_hash u32 · **schema_hash u32** (MLCC 요청으로 추가) |
 | HELLO_ACK | sid u16 · rsv · hub_ms u64 · raw_period_s u32 |
 | FEAT | n u8 · contract u8 · rsv u16 · n × { f32×contract · regime u8 · quality u8 · dt_ms u16 } (34 특징 8 개 = 1,124 B) |
@@ -67,7 +68,8 @@ HaLow(NRC7394 BridgeRPC 위 UDP, ≤ 1,200 B/데이터그램, TCP 없음) 한 �
 | M3 학습 · M4 평가 | ✅ | Lm2 (A55): 하루 86,400 벡터 학습 1.5 s · kind 1/3 왕복·변조 거부 · 파이썬 대조 kind1 6e-8 · kind3 0 |
 | Edge 이식 | ✅ | **Lm3 (Cortex-M33 32비트)**: 같은 모델 파일 → 64 벡터 비트까지 같음 · MCOL 왕복 |
 | M5a 원장 (`mlledger/1`) | ✅ | Lm4 (A55): 등록 관문(깨진 모델 거부) · model_id `<uid>:<n>` · 별칭 v0/challenger/champion(서명 없으면 거부)·승격·되돌리기 · 재시작 복원 · 반쪽 꼬리 잘라 내기 + `ledger_repair` · 중간 변조 감지(덧붙이기 막힘) · 호스트 `tools/ledger_verify.py` 사슬 대조 |
-| M5b Edge 배포 전송 · 시범 점수 · 서명 검증(ed25519) | 다음 | |
+| M5b Edge 배포 전송 | ✅ | Lm5 (A55): MCOL CMD BEGIN·CHUNK(1 KiB, 창 4, go-back-N)·END·ACTIVATE ↔ Edge `edge.c` · 손실 10 %·중복 5 % → 11 KB 41 틱 · champion 슬롯·ACTIVATE 는 champion 별칭(서명) 없이 거부 · 변조(CRC 다시 맞춤) → Edge sha256 거부 −3 · kind 1 → −4 · 계약 다름 → −5 · 무응답 → 시간 초과 · 원장 deploy 사건 · Edge 점수 = 허브 비트 일치. Lm3(M33)에 같은 edge.c 받기·ACTIVATE 시험 추가 — `struct hubml_edge` 39 KB |
+| M5c 시범 점수(champion/challenger 병행 보고) · 서명 검증(ed25519) | 다음 | |
 | M2 데이터 관리 · 정상 관문 · M6 감시 | | |
 | hubllm 통합 (`ml` 명령 · USB CDC 운반) | | |
 | 실기 한 번 (apply try) | | |

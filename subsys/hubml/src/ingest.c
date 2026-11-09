@@ -189,7 +189,9 @@ void hubml_ingest_rx(uint32_t addr, const uint8_t *buf, size_t n)
 	e->addr = addr;
 	e->last_rx_ms = hubml_time_now();
 	if (h.stream == MCOL_S_CTRL) {
-		goto out;	/* 제어 흐름은 저장하지 않는다 */
+		k_mutex_unlock(&st_mtx);
+		hubml_on_ctrl(h.edge_sid, &h, pl);	/* 제어 흐름은 저장하지 않는다 — 배포 응답 등 */
+		return;
 	}
 	struct sstate *s = &e->rcv[h.stream];
 	const int w = win_check(s, h.seq);
@@ -539,6 +541,32 @@ int hubml_ingest_commit(void)
 	st.max_commit_ms = MAX(st.max_commit_ms, st.last_commit_ms);
 	k_mutex_unlock(&commit_mtx);
 	return rc;
+}
+
+__weak void hubml_on_ctrl(uint16_t sid, const struct mcol_hdr *h, const uint8_t *pl)
+{
+	ARG_UNUSED(sid); ARG_UNUSED(h); ARG_UNUSED(pl);
+}
+
+int hubml_ingest_find(uint64_t uid, uint16_t *sid, uint32_t *addr)
+{
+	int rc = -ENOENT;
+	k_mutex_lock(&st_mtx, K_FOREVER);
+	for (int i = 0; i < HUBML_MAX_EDGES; i++) {
+		if (edges[i].used && edges[i].uid == uid) {
+			*sid = (uint16_t)(i + 1);
+			*addr = edges[i].addr;
+			rc = 0;
+			break;
+		}
+	}
+	k_mutex_unlock(&st_mtx);
+	return rc;
+}
+
+int hubml_ingest_send(uint32_t addr, const uint8_t *buf, size_t n)
+{
+	return (xp && xp->send) ? xp->send(addr, buf, n) : -ENODEV;
 }
 
 void hubml_ingest_stats(struct hubml_stats *out)

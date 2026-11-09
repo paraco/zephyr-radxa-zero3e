@@ -67,6 +67,13 @@ void hubml_ingest_test_cut_before_state(void);
 void hubml_ingest_stats(struct hubml_stats *out);
 int hubml_ingest_edges(struct hubml_edge_info *out, int max);
 
+/** uid 로 장비 찾기 → sid · 주소. 0 = 있음 */
+int hubml_ingest_find(uint64_t uid, uint16_t *sid, uint32_t *addr);
+/** 허브 → Edge 보내기 (지금 운반으로) */
+int hubml_ingest_send(uint32_t addr, const uint8_t *buf, size_t n);
+/** 제어 흐름 수신 갈고리 — CMD_ACK 등 (weak, 배포 모듈이 덮어쓴다) */
+void hubml_on_ctrl(uint16_t sid, const struct mcol_hdr *h, const uint8_t *pl);
+
 /** 허브 시각 (UTC ms). 기본은 0 + 가동 시간 — Studio 가 ml time set 으로 맞춘다 */
 void hubml_time_set(int64_t epoch_ms);
 int64_t hubml_time_now(void);
