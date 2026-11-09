@@ -69,10 +69,12 @@ HaLow(NRC7394 BridgeRPC 위 UDP, ≤ 1,200 B/데이터그램, TCP 없음) 한 �
 | Edge 이식 | ✅ | **Lm3 (Cortex-M33 32비트)**: 같은 모델 파일 → 64 벡터 비트까지 같음 · MCOL 왕복 |
 | M5a 원장 (`mlledger/1`) | ✅ | Lm4 (A55): 등록 관문(깨진 모델 거부) · model_id `<uid>:<n>` · 별칭 v0/challenger/champion(서명 없으면 거부)·승격·되돌리기 · 재시작 복원 · 반쪽 꼬리 잘라 내기 + `ledger_repair` · 중간 변조 감지(덧붙이기 막힘) · 호스트 `tools/ledger_verify.py` 사슬 대조 |
 | M5b Edge 배포 전송 | ✅ | Lm5 (A55): MCOL CMD BEGIN·CHUNK(1 KiB, 창 4, go-back-N)·END·ACTIVATE ↔ Edge `edge.c` · 손실 10 %·중복 5 % → 11 KB 41 틱 · champion 슬롯·ACTIVATE 는 champion 별칭(서명) 없이 거부 · 변조(CRC 다시 맞춤) → Edge sha256 거부 −3 · kind 1 → −4 · 계약 다름 → −5 · 무응답 → 시간 초과 · 원장 deploy 사건 · Edge 점수 = 허브 비트 일치. Lm3(M33)에 같은 edge.c 받기·ACTIVATE 시험 추가 — `struct hubml_edge` 39 KB |
-| M5c 시범 점수(champion/challenger 병행 보고) · 서명 검증(ed25519) | 다음 | |
+| 승인 서명 (ed25519 · `ml approve`) | ✅ | Lm8: ed25519 검증·SHA-512 = Mac cryptography/hashlib, 변조·s+L 거부 · Lm9: `ml approve`(mlledger/1 v0.2 §4) 실패 11 가지 거부·원장 무변화 · alias champion·normal_gate 기록 · stale(재사용) · 원장 줄 서명을 Mac 에서 재구성·검증 2/2 |
+| M6 변화 감시 (`ml drift`) | ✅ | Lm10: 날 A 학습 → 날 B 1X 1.0→1.5 배 → 경보율 0.47 % → 81 %, 주범 ord_1x(z 6.29), verdict alarm. 보고만(재학습 계기 아님) |
+| 시범 점수(champion/challenger 병행 보고) · LLM 주간 보고 | 다음 | |
 | M2 데이터 관리 · 정상 관문 · M6 감시 | | |
 | hubllm 통합 (`ml` 읽기 명령 · USB 운반) | ✅ 빌드 | Lm6 (A55 가짜 셸): `ml time set` · `ml rx b64=`(HELLO → `HUBML/1 tx` HELLO_ACK) · FEAT 20·HB 4 → commit → tx ACK · `ml status/dev ls/ds ls --kv` · `ml ledger` b64 사슬 다시 계산 = `ledger_done head`. hubllm 빌드(root `/0:/ml`, hub_fs io_lock 공유, 칩 ID, 대기열 512 KiB×2, RAM 98.7 %) — **실기 확인 전** |
-| 실기 한 번 (apply try) | | |
+| 실기 한 번 (apply try) | ⚠ 1차 실패 → 고침 | 6e9ebf6: 첫 `ml status` 에서 셸 멈춤(셸 스택 4 KiB 넘침) → c28b551 에서 ml 본체를 16 KiB 스레드로, QEMU 를 4 KiB 명령 스레드로 맞춰 재현·검증. 재시험 대기(허브 셸 포트를 MoruLab Studio 앱이 쥐고 있음) |
 
 시험 씨앗(Studio 3자 시험용): `subsys/hubml/testdata/` — `golden_kind1.xmb` · `golden_kind3.xmb` · `pv.json`(64 벡터 + 기대값) ·
 `sample_feat.mcs` + `sample_feat_expected.json` · 원장 `ledger_{sample,tampered,torn,unknown_kind}.jsonl` + `ledger_expected.json` ·

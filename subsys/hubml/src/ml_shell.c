@@ -15,6 +15,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 #include <errno.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,6 +29,7 @@
 #include <hubml/ledger.h>
 #include <hubml/train.h>
 #include <hubml/approve.h>
+#include <hubml/mfeat34.h>
 #include <hubml/sha256.h>
 
 extern const struct shell *hubml_tx_shell;
@@ -439,6 +441,99 @@ static int cmd_model_ls(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+/* ── ml drift: v0(또는 지정 모델) 기준선 대비 날짜별 변화 — 보고만 한다(재학습 계기 아님, MLCC 합의) ── */
+#define DH 1000	/* 점수 0..10 히스토그램 */
+struct drift_acc {
+	const struct xmd_model *m;
+	uint32_t n, alarm;
+	double sum;
+	uint32_t hist[DH];
+	double zsum[HUBML_NFEAT];
+};
+static void drift_cb(const float *x, uint32_t idx, void *u)
+{
+	ARG_UNUSED(idx);
+	struct drift_acc *a = u;
+	const float sc = xmd_score(a->m, x, NULL);
+	a->n++;
+	a->sum += sc;
+	a->alarm += sc > 1.0f;
+	int b = (int)(sc * (DH / 10));
+	a->hist[b < 0 ? 0 : (b >= DH ? DH - 1 : b)]++;
+	int r = 0;
+	while (r < a->m->nreg - 1 && x[a->m->reg_feat] >= a->m->edges[r]) { r++; }
+	for (int i = 0; i < HUBML_NFEAT; i++) {
+		if (a->m->reg[r].sd[i] > 0.0f) {
+			a->zsum[i] += fabs((double)x[i] - a->m->reg[r].mean[i]) / a->m->reg[r].sd[i];
+		}
+	}
+}
+
+static int cmd_drift(const struct shell *sh, size_t argc, char **argv)
+{
+	if (ready(sh)) {
+		return -EIO;
+	}
+	const char *u = arg(argc, argv, "uid"), *ds = arg(argc, argv, "days"), *mo = arg(argc, argv, "model");
+	if (!u || strlen(u) != 16 || !ds) {
+		shell_print(sh, "HUBML/1 err code=bad_arg msg=uid=<hex16>_days=<yyyymmdd,…>_[model=<id>]");
+		return -EINVAL;
+	}
+	const uint64_t uid = strtoull(u, NULL, 16);
+	char mid[32];
+	strncpy(mid, mo ? mo : hubml_alias_get(uid, HUBML_A_V0), sizeof mid - 1);
+	mid[sizeof mid - 1] = 0;
+	static uint8_t file[16384];
+	static struct xmd_model m;
+	const int n = mid[0] ? hubml_model_load(uid, mid, file, sizeof file) : -ENOENT;
+	if (n <= 0 || xmd_parse(file, (size_t)n, &m, 1e-5f)) {
+		shell_print(sh, "HUBML/1 err code=not_found msg=model_%s", mid[0] ? mid : "v0_none");
+		return -ENOENT;
+	}
+	static struct drift_acc a;
+	double first = 0, last = 0, last_rate = 0;
+	int nd = 0;
+	for (const char *p = ds; *p;) {
+		char day[1][9];
+		if (strlen(p) < 8) { break; }
+		memcpy(day[0], p, 8);
+		day[0][8] = 0;
+		p += 8;
+		if (*p == ',') { p++; }
+		memset(&a, 0, sizeof a);
+		a.m = &m;
+		hubml_feat_each(hubml_root(), uid, day, 1, drift_cb, &a);
+		if (!a.n) {
+			shell_print(sh, "HUBML/1 drift uid=%s day=%s model=%s n=0", u, day[0], mid);
+			continue;
+		}
+		uint64_t acc = 0, want = (uint64_t)a.n * 95 / 100;
+		int p95 = DH - 1;
+		for (int b = 0; b < DH; b++) { acc += a.hist[b]; if (acc >= want) { p95 = b; break; } }
+		int top[3] = { -1, -1, -1 };
+		for (int k = 0; k < 3; k++) {
+			for (int i = 0; i < HUBML_NFEAT; i++) {
+				if (i == top[0] || i == top[1]) { continue; }
+				if (top[k] < 0 || a.zsum[i] > a.zsum[top[k]]) { top[k] = i; }
+			}
+		}
+		const double mean = a.sum / a.n, rate = (double)a.alarm / a.n;
+		shell_print(sh, "HUBML/1 drift uid=%s day=%s model=%s n=%u alarm_rate=%.4f mean_score=%.3f p95_score=%.2f "
+			    "top=%s:%.2f,%s:%.2f,%s:%.2f", u, day[0], mid, a.n, rate, mean, (p95 + 1) * 10.0 / DH,
+			    hubml_mfeat34_name[top[0]], a.zsum[top[0]] / a.n, hubml_mfeat34_name[top[1]], a.zsum[top[1]] / a.n,
+			    hubml_mfeat34_name[top[2]], a.zsum[top[2]] / a.n);
+		if (!nd) { first = mean; }
+		last = mean;
+		last_rate = rate;
+		nd++;
+	}
+	const double trend = nd > 1 ? (last - first) / (nd - 1) : 0;
+	const char *verdict = last_rate > 0.05 ? "alarm" : ((last_rate > 0.015 || trend > 0.05) ? "watch" : "stable");
+	shell_print(sh, "HUBML/1 drift_done uid=%s model=%s days=%d trend=%.4f last_alarm_rate=%.4f verdict=%s", u, mid, nd,
+		    trend, last_rate, verdict);
+	return 0;
+}
+
 static int cmd_approve(const struct shell *sh, size_t argc, char **argv)
 {
 	if (ready(sh)) {
@@ -455,6 +550,7 @@ static int cmd_approve(const struct shell *sh, size_t argc, char **argv)
 }
 
 THIN(cmd_approve)
+THIN(cmd_drift)
 THIN(cmd_status)
 THIN(cmd_dev_ls)
 THIN(cmd_ds_ls)
@@ -483,6 +579,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_ml,
 	SHELL_CMD(commit, NULL, "지금 기록·ACK (시험용)", cmd_commit_t),
 	SHELL_CMD_ARG(train, NULL, "train uid=<hex16> days=<d1,…> [q=] — 학습 → 원장 + challenger 제안", cmd_train_t, 3, 1),
 	SHELL_CMD(model, &sub_ml_model, "모델 · 별칭", NULL),
+	SHELL_CMD_ARG(drift, NULL, "drift uid=<hex16> days=<d1,…> [model=<id>] — v0 대비 날짜별 변화 (보고만)", cmd_drift_t, 3, 1),
 	SHELL_CMD_ARG(approve, NULL, "approve b64=<본문> sig=<ed25519> key=<id> — 사람 승인 (mlledger/1 §4)", cmd_approve_t, 4, 0),
 	SHELL_SUBCMD_SET_END);
 SHELL_CMD_REGISTER(ml, &sub_ml, "MoruLab 허브 ML (HUBML/1)", NULL);
