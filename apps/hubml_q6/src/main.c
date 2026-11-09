@@ -102,7 +102,7 @@ int main(void)
 	k_msleep(100);
 
 	run("ml time set 1794182400000");
-	CHECK(strstr(out, "HUBML/1 time time_ms=1794182400") != NULL, "ml time set → %.60s", out);
+	CHECK(strstr(out, "HUBML/1 time ok=1 time_ms=1794182400") != NULL, "ml time set → HUBML/1 time ok=1");
 
 	uint8_t pl[MCOL_MAX_PAYLOAD], d[MCOL_MAX_DGRAM];
 	struct mcol_hello hm = { .uid = UID, .fw = 0x0102, .contract = 34, .nfeat = 34, .sensor_hash = 1, .schema_hash = 0x4d463334 };
@@ -186,7 +186,7 @@ int main(void)
 	}
 	char done[160];
 	snprintf(done, sizeof done, "ledger_done last=%d head=%s total=%d ok=1", nl, prev, nl);
-	CHECK(nl == 2 && chain_ok && strstr(out, done), "ml ledger → %d 줄 b64 · 사슬 다시 계산 · ledger_done head 일치", nl);
+	CHECK(nl == 3 && chain_ok && strstr(out, done) && strstr((char *)line, "\"kind\":\"alias\""), "ml ledger → %d 줄 b64 · 사슬 다시 계산 · ledger_done head 일치", nl);
 	printk("%s", out);
 	size_t unused = 0;
 	k_thread_stack_space_get(cmd_thr, &unused);

@@ -247,8 +247,17 @@ static int cmd_time_set(const struct shell *sh, size_t argc, char **argv)
 	if (ready(sh)) {
 		return -EIO;
 	}
+	const bool was = hubml_time_is_set();
+	const int64_t before = hubml_time_now();
 	hubml_time_set(strtoll(argv[1], NULL, 10));
-	shell_print(sh, "HUBML/1 time time_ms=%lld time_set=1", (long long)hubml_time_now());
+	const int64_t after = hubml_time_now();
+	/* 원장 ts 가 T+초 → UTC 로 바뀌거나 뛰므로 사건으로 남긴다 (Studio 원장 보기에 표시) */
+	char fl[160];
+	snprintf(fl, sizeof fl, "\"prev_set\":%s,\"prev_ms\":%lld,\"new_ms\":%lld,\"delta_ms\":%lld",
+		 was ? "true" : "false", (long long)before, (long long)after, (long long)(after - before));
+	const int lr = hubml_ledger_append("time_set", "studio", fl, NULL, NULL);
+	shell_print(sh, "HUBML/1 time ok=%d time_ms=%lld time_set=1 delta_ms=%lld", lr == 0 ? 1 : 0, (long long)after,
+		    (long long)(after - before));
 	return 0;
 }
 

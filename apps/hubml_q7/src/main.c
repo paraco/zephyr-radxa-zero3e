@@ -110,7 +110,7 @@ int main(void)
 
 	/* 원장 4 사건 */
 	run("ml ledger since=1 max=10");
-	CHECK(strstr(out, "HUBML/1 ledger_done last=4") && strstr(out, "total=4 ok=1"), "원장 4 줄 · 사슬 정상");
+	CHECK(strstr(out, "HUBML/1 ledger_done last=5") && strstr(out, "total=5 ok=1"), "원장 5 줄(time_set + 4 사건) · 사슬 정상");
 	static char lines[16384];
 	int li = 0;
 	struct ctx { char *b; int *i; } c = { lines, &li };
