@@ -18,8 +18,16 @@ extern "C" {
 /** root 예 "/0:/ml" · hub_id = 칩 ID. 여러 번 불러도 한 번만 연다. 0 = 정상 */
 int hubml_start(const char *root, const char *hub_id);
 bool hubml_started(void);
+/** hubml 스레드 안에서만 — 다시 hubml_call 하지 않고 바로 연다 */
+int hubml_start_here(const char *root, const char *hub_id);
 const char *hubml_root(void);
 const char *hubml_hub_id(void);
+/** fn(arg) 을 hubml 스레드(16 KiB 스택)에서 돌리고 끝날 때까지 기다린다. 반환 = fn 의 반환.
+ *  ⚠ 셸 스레드 스택은 실기 hubllm 에서 4 KiB 다 — 무거운 일(SD 훑기 · 학습 · 원장 읽기)을 거기서 하면 넘친다
+ *  (2026-11-09 실기: ml status 첫 호출에서 셸이 멈췄다. QEMU 는 16 KiB 셸이라 못 잡았다). */
+int hubml_call(int (*fn)(void *arg), void *arg);
+/** 저장소 여유(KiB) — 시작할 때 hubml 스레드가 한 번 잰다(FAT 전체를 훑을 수 있다). 재기 전이면 -1 */
+long long hubml_free_kib(void);
 /** 저장소 준비 갈고리 (weak) — hubllm 은 SD 마운트를 여기서 한다. 0 = 준비됨 */
 int hubml_storage_ready(void);
 

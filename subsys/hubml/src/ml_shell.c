@@ -39,13 +39,33 @@ extern const struct shell *hubml_tx_shell;
 #endif
 __weak const char *hubml_default_hub_id(void) { return HUBML_SHELL_HUB_ID; }
 
+/* 셸 처리기는 얇게: 본체를 hubml 스레드에서 돌린다 (hubml.h 의 hubml_call 경고) */
+struct call {
+	int (*fn)(const struct shell *, size_t, char **);
+	const struct shell *sh;
+	size_t argc;
+	char **argv;
+};
+static int call_fn(void *p)
+{
+	struct call *c = p;
+	return c->fn(c->sh, c->argc, c->argv);
+}
+#define THIN(name)                                                                                           \
+	static int name##_t(const struct shell *sh, size_t argc, char **argv)                                 \
+	{                                                                                                    \
+		struct call c = { name, sh, argc, argv };                                                     \
+		hubml_tx_shell = sh;                                                                          \
+		return hubml_call(call_fn, &c);                                                               \
+	}
+
 static int ready(const struct shell *sh)
 {
 	hubml_tx_shell = sh;
 	if (hubml_started()) {
 		return 0;
 	}
-	const int rc = hubml_start(HUBML_SHELL_ROOT, hubml_default_hub_id());
+	const int rc = hubml_start_here(HUBML_SHELL_ROOT, hubml_default_hub_id());	/* 이미 hubml 스레드 안 */
 	if (rc) {
 		shell_print(sh, "HUBML/1 err code=start msg=%d", rc);
 	}
@@ -69,19 +89,15 @@ static int cmd_status(const struct shell *sh, size_t argc, char **argv)
 	if (ready(sh)) {
 		return -EIO;
 	}
-	struct hubml_stats s;
-	struct hubml_ledger_head h;
-	struct hubml_edge_info e[HUBML_MAX_EDGES];
+	static struct hubml_stats s;
+	static struct hubml_ledger_head h;
+	static struct hubml_edge_info e[HUBML_MAX_EDGES];
 	hubml_ingest_stats(&s);
 	hubml_ledger_head(&h);
 	const int ne = hubml_ingest_edges(e, HUBML_MAX_EDGES);
-	struct fs_statvfs v;
-	hubml_fs_lock();
-	const int vr = fs_statvfs(hubml_root(), &v);
-	hubml_fs_unlock();
-	const unsigned long long free_kib = vr ? 0 : (unsigned long long)v.f_bfree * v.f_frsize / 1024;
+	const long long free_kib = hubml_free_kib();	/* -1 = 아직 재는 중 (FAT 전체를 훑을 수 있어 배경에서) */
 	shell_print(sh, "HUBML/1 status hub=%s root=%s time_ms=%lld time_set=%d edges=%d rx=%u accepted=%u dup=%u bad=%u "
-		    "qfull=%u commits=%u commit_err=%u max_commit_ms=%u queued=%zu ledger_next=%u ledger_ok=%d free_kib=%llu",
+		    "qfull=%u commits=%u commit_err=%u max_commit_ms=%u queued=%zu ledger_next=%u ledger_ok=%d free_kib=%lld",
 		    hubml_hub_id(), hubml_root(), (long long)hubml_time_now(), hubml_time_is_set() ? 1 : 0, ne, s.rx,
 		    s.accepted, s.dup, s.bad, s.qfull, s.commits, s.commit_err, s.max_commit_ms, s.queued, h.next_seq,
 		    h.ok ? 1 : 0, free_kib);
@@ -413,23 +429,33 @@ static int cmd_model_ls(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
-SHELL_STATIC_SUBCMD_SET_CREATE(sub_ml_dev, SHELL_CMD_ARG(ls, NULL, "ls [--kv] — 장비 표", cmd_dev_ls, 1, 1),
+THIN(cmd_status)
+THIN(cmd_dev_ls)
+THIN(cmd_ds_ls)
+THIN(cmd_ledger)
+THIN(cmd_rx)
+THIN(cmd_time_set)
+THIN(cmd_commit)
+THIN(cmd_train)
+THIN(cmd_model_ls)
+
+SHELL_STATIC_SUBCMD_SET_CREATE(sub_ml_dev, SHELL_CMD_ARG(ls, NULL, "ls [--kv] — 장비 표", cmd_dev_ls_t, 1, 1),
 			       SHELL_SUBCMD_SET_END);
-SHELL_STATIC_SUBCMD_SET_CREATE(sub_ml_ds, SHELL_CMD_ARG(ls, NULL, "ls uid=<hex16> [--kv] — 날짜·흐름별", cmd_ds_ls, 2, 1),
+SHELL_STATIC_SUBCMD_SET_CREATE(sub_ml_ds, SHELL_CMD_ARG(ls, NULL, "ls uid=<hex16> [--kv] — 날짜·흐름별", cmd_ds_ls_t, 2, 1),
 			       SHELL_SUBCMD_SET_END);
-SHELL_STATIC_SUBCMD_SET_CREATE(sub_ml_time, SHELL_CMD_ARG(set, NULL, "set <epoch_ms> — 허브 UTC", cmd_time_set, 2, 0),
+SHELL_STATIC_SUBCMD_SET_CREATE(sub_ml_time, SHELL_CMD_ARG(set, NULL, "set <epoch_ms> — 허브 UTC", cmd_time_set_t, 2, 0),
 			       SHELL_SUBCMD_SET_END);
-SHELL_STATIC_SUBCMD_SET_CREATE(sub_ml_model, SHELL_CMD_ARG(ls, NULL, "ls uid=<hex16> — 별칭", cmd_model_ls, 2, 0),
+SHELL_STATIC_SUBCMD_SET_CREATE(sub_ml_model, SHELL_CMD_ARG(ls, NULL, "ls uid=<hex16> — 별칭", cmd_model_ls_t, 2, 0),
 			       SHELL_SUBCMD_SET_END);
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_ml,
-	SHELL_CMD_ARG(status, NULL, "status [--kv] — 허브 ML 상태", cmd_status, 1, 1),
+	SHELL_CMD_ARG(status, NULL, "status [--kv] — 허브 ML 상태", cmd_status_t, 1, 1),
 	SHELL_CMD(dev, &sub_ml_dev, "장비", NULL),
 	SHELL_CMD(ds, &sub_ml_ds, "데이터 묶음", NULL),
-	SHELL_CMD_ARG(ledger, NULL, "ledger since=<seq> max=<n> — 원장 줄", cmd_ledger, 1, 2),
-	SHELL_CMD_ARG(rx, NULL, "rx b64=<MCOL> [addr=<n>] — USB 운반 수신", cmd_rx, 2, 1),
+	SHELL_CMD_ARG(ledger, NULL, "ledger since=<seq> max=<n> — 원장 줄", cmd_ledger_t, 1, 2),
+	SHELL_CMD_ARG(rx, NULL, "rx b64=<MCOL> [addr=<n>] — USB 운반 수신", cmd_rx_t, 2, 1),
 	SHELL_CMD(time, &sub_ml_time, "시각", NULL),
-	SHELL_CMD(commit, NULL, "지금 기록·ACK (시험용)", cmd_commit),
-	SHELL_CMD_ARG(train, NULL, "train uid=<hex16> days=<d1,…> [q=] — 학습 → 원장 + challenger 제안", cmd_train, 3, 1),
+	SHELL_CMD(commit, NULL, "지금 기록·ACK (시험용)", cmd_commit_t),
+	SHELL_CMD_ARG(train, NULL, "train uid=<hex16> days=<d1,…> [q=] — 학습 → 원장 + challenger 제안", cmd_train_t, 3, 1),
 	SHELL_CMD(model, &sub_ml_model, "모델 · 별칭", NULL),
 	SHELL_SUBCMD_SET_END);
 SHELL_CMD_REGISTER(ml, &sub_ml, "MoruLab 허브 ML (HUBML/1)", NULL);

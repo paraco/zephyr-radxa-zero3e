@@ -33,10 +33,26 @@ static bool ok = true;
 static const struct shell *sh;
 static char out[65536];
 
+/* 명령은 실기 셸처럼 4 KiB 스택 스레드에서 친다 */
+static const char *pending;
+static K_SEM_DEFINE(cmd_go, 0, 1);
+static K_SEM_DEFINE(cmd_done, 0, 1);
+static void cmd_fn(void *a, void *b, void *c)
+{
+	ARG_UNUSED(a); ARG_UNUSED(b); ARG_UNUSED(c);
+	for (;;) {
+		k_sem_take(&cmd_go, K_FOREVER);
+		shell_execute_cmd(sh, pending);
+		k_sem_give(&cmd_done);
+	}
+}
+K_THREAD_DEFINE(cmd_thr, 4096, cmd_fn, NULL, NULL, NULL, 5, 0, 0);
 static const char *run(const char *cmd)
 {
 	shell_backend_dummy_clear_output(sh);
-	shell_execute_cmd(sh, cmd);
+	pending = cmd;
+	k_sem_give(&cmd_go);
+	k_sem_take(&cmd_done, K_FOREVER);
 	size_t n;
 	const char *o = shell_backend_dummy_get_output(sh, &n);
 	memcpy(out, o, MIN(n, sizeof out - 1));
@@ -172,6 +188,9 @@ int main(void)
 	snprintf(done, sizeof done, "ledger_done last=%d head=%s total=%d ok=1", nl, prev, nl);
 	CHECK(nl == 2 && chain_ok && strstr(out, done), "ml ledger → %d 줄 b64 · 사슬 다시 계산 · ledger_done head 일치", nl);
 	printk("%s", out);
+	size_t unused = 0;
+	k_thread_stack_space_get(cmd_thr, &unused);
+	CHECK(unused >= 1024, "명령을 친 스레드(4 KiB, 실기 셸과 같음) 남은 스택 %zu B ≥ 1 KiB", unused);
 	printk(ok ? "=== Lm6 PASS\n" : "=== Lm6 FAIL\n");
 	return 0;
 }

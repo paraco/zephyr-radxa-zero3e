@@ -27,10 +27,26 @@ static bool ok = true;
 #define NF 34
 static const struct shell *sh;
 static char out[65536];
+/* 명령은 실기 셸처럼 4 KiB 스택 스레드에서 친다 */
+static const char *pending;
+static K_SEM_DEFINE(cmd_go, 0, 1);
+static K_SEM_DEFINE(cmd_done, 0, 1);
+static void cmd_fn(void *a, void *b, void *c)
+{
+	ARG_UNUSED(a); ARG_UNUSED(b); ARG_UNUSED(c);
+	for (;;) {
+		k_sem_take(&cmd_go, K_FOREVER);
+		shell_execute_cmd(sh, pending);
+		k_sem_give(&cmd_done);
+	}
+}
+K_THREAD_DEFINE(cmd_thr, 4096, cmd_fn, NULL, NULL, NULL, 5, 0, 0);
 static const char *run(const char *cmd)
 {
 	shell_backend_dummy_clear_output(sh);
-	shell_execute_cmd(sh, cmd);
+	pending = cmd;
+	k_sem_give(&cmd_go);
+	k_sem_take(&cmd_done, K_FOREVER);
 	size_t n;
 	const char *o = shell_backend_dummy_get_output(sh, &n);
 	memcpy(out, o, MIN(n, sizeof out - 1));
@@ -139,6 +155,9 @@ int main(void)
 	const int ms = hubml_model_load(UID, "4d50444d000000d7:1", mf, sizeof mf);
 	CHECK(ms > 0 && xmd_parse(mf, (size_t)ms, &md, 1e-5f) == 0, "models/…/1.xmb = kind 3 · 검사 통과 (%d B)", ms);
 	printk("%s\n", lg);
+	size_t unused = 0;
+	k_thread_stack_space_get(cmd_thr, &unused);
+	CHECK(unused >= 1024, "명령을 친 스레드(4 KiB, 실기 셸과 같음) 남은 스택 %zu B ≥ 1 KiB", unused);
 	printk(ok ? "=== Lm7 PASS\n" : "=== Lm7 FAIL\n");
 	return 0;
 }
