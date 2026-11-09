@@ -10,3 +10,4 @@ target_compile_definitions(app PRIVATE HUBML_SHELL_ROOT="/RAM:/ml" HUBML_SHELL_H
 target_include_directories(app PRIVATE ${HUBML_DIR}/testdata)
 set(gen_dir ${ZEPHYR_BINARY_DIR}/include/generated)
 generate_inc_file_for_target(app ${HUBML_DIR}/testdata/golden_kind3.xmb ${gen_dir}/golden_kind3.xmb.inc)
+target_compile_definitions(app PRIVATE "HUBML_QUEUE_BYTES=(512*1024)")	# 실기 hubllm 과 같은 대기열

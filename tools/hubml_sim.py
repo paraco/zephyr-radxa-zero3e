@@ -29,7 +29,11 @@ class Hub:
     def __init__(self, port):
         self.fd = open_raw(port, os.O_RDWR); self.buf = b''
     def cmd(self, c, wait=0.4, until=None, timeout=60):
-        os.write(self.fd, (c + '\r').encode())
+        # ⚠ 64 B 씩 5 ms 간격 — USB CDC 셸의 입력 링이 작아 1.5 KB 한 줄을 한 번에 쓰면 넘쳐 셸이 줄을 잃는다
+        #   (2026-11-09 실기: ml rx FEAT 1,547 자가 전부 사라졌다. hub_chat.py 의 send 와 같은 방식)
+        data = (c + '\r').encode()
+        for k in range(0, len(data), 64):
+            os.write(self.fd, data[k:k + 64]); time.sleep(0.005)
         out, end, last = [], time.time() + timeout, time.time()
         while time.time() < end:
             r, _, _ = select.select([self.fd], [], [], 0.05)

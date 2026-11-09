@@ -63,23 +63,38 @@ static void measure_free(void)
 static void loop_fn(void *a, void *b, void *c)
 {
 	ARG_UNUSED(a); ARG_UNUSED(b); ARG_UNUSED(c);
-	int k = 0;
 	bool measured = false;
+	int64_t next_tick = k_uptime_get() + 500, next_commit = k_uptime_get() + 2000;
 	for (;;) {
-		if (k_sem_take(&job_sem, K_MSEC(500)) == 0) {
+		const int64_t now0 = k_uptime_get();
+		const int64_t wait = next_tick > now0 ? next_tick - now0 : 0;
+		if (k_sem_take(&job_sem, K_MSEC(wait)) == 0) {
 			job_rc = job_fn(job_arg);
 			k_sem_give(&done_sem);
-			continue;
 		}
 		if (!started) {
 			continue;
 		}
+		/* ⚠ 주기 일은 시각으로 — 명령이 쉬지 않고 오면 예전 꼴(일이 오면 continue)은 기록을 영영 건너뛰어
+		 *   대기열이 차고 그 뒤가 창 밖으로 버려졌다 (2026-11-09 실기: FEAT 1,800 중 451) */
+		struct hubml_stats st;
+		hubml_ingest_stats(&st);
+		const int64_t now = k_uptime_get();
+		if (st.queued > HUBML_QUEUE_BYTES / 2) {
+			(void)hubml_ingest_commit();	/* 반 넘게 찼다 — 기다리지 않고 기록 */
+			next_commit = now + 2000;
+		}
+		if (now < next_tick) {
+			continue;
+		}
+		next_tick = now + 500;
 		if (!measured) {
 			measured = true;
 			measure_free();
 		}
 		hubml_deploy_tick();
-		if (++k % 4 == 0) {	/* 2 초마다 기록 → ACK */
+		if (now >= next_commit) {	/* 2 초마다 기록 → ACK */
+			next_commit = now + 2000;
 			(void)hubml_ingest_commit();
 		}
 	}

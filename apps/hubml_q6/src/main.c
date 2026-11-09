@@ -188,6 +188,26 @@ int main(void)
 	snprintf(done, sizeof done, "ledger_done last=%d head=%s total=%d ok=1", nl, prev, nl);
 	CHECK(nl == 3 && chain_ok && strstr(out, done) && strstr((char *)line, "\"kind\":\"alias\""), "ml ledger → %d 줄 b64 · 사슬 다시 계산 · ledger_done head 일치", nl);
 	printk("%s", out);
+	/* 쉬지 않고 들어오는 ml rx — 2 초마다 기록·ACK 가 그래도 돌아야 한다 (실기 2a2edf2: 명령이 몰리면 commit 을
+	 * 건너뛰어 대기열이 차고(qfull) 그 뒤가 창 밖(oow)으로 버려졌다) */
+	{
+		static float x2[8 * 34];
+		for (int i = 0; i < 8 * 34; i++) { x2[i] = 2.0f; }
+		const int64_t t0 = k_uptime_get();
+		for (uint32_t sq = 20; sq < 1520; sq++) {	/* 1,500 × 1.2 KB = 1.8 MB > 대기열 512 KiB */
+			const int L = mcol_feat_put(pl, sizeof pl, 34, 8, x2, NULL);
+			struct mcol_hdr f = { .type = MCOL_T_FEAT, .edge_sid = sid, .stream = MCOL_S_FEAT, .seq = sq, .len = (uint16_t)L };
+			rx(d, (size_t)mcol_encode(d, sizeof d, &f, pl));
+		}
+		const int64_t dt = k_uptime_get() - t0;
+		k_msleep(2600);	/* 마지막 주기 기록 */
+		run("ml status --kv");
+		const char *q = strstr(out, "qfull="), *a = strstr(out, "accepted=");
+		printk("  연속 ml rx 1500 개 %lld ms 동안 · %.140s\n", dt, strstr(out, "accepted="));
+		CHECK(q && a && atoi(q + 6) == 0 && atoi(a + 9) == 1524, "연속 1500 개: 받음 1524(=24+1500) · qfull 0");
+		run("ml dev ls --kv");
+		CHECK(strstr(out, "next_feat=1520") && strstr(out, "oow=0"), "연속 1500 개 뒤 기록 완료 next_feat=1520 · oow 0 (명령 사이 commit 이 돌았다)");
+	}
 	size_t unused = 0;
 	k_thread_stack_space_get(cmd_thr, &unused);
 	CHECK(unused >= 1024, "명령을 친 스레드(4 KiB, 실기 셸과 같음) 남은 스택 %zu B ≥ 1 KiB", unused);
