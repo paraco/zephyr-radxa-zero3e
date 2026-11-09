@@ -15,8 +15,12 @@ extern "C" {
 #endif
 
 #define XMB_MAX_TREE 250	/* MPDM 팩 limits.tree */
+#ifndef XMB_MAX_NODE
 #define XMB_MAX_NODE 6144	/* MPDM 팩 limits.node */
-#define XMB_MAX_FEAT 64
+#endif
+#ifndef XMB_MAX_FEAT
+#define XMB_MAX_FEAT 64	/* Edge(M7·M33)는 -DXMB_MAX_FEAT=34 로 줄여 RAM 을 아낀다 */
+#endif
 #define XMB_NGOLDEN  4
 #define XMB_HDR_LEN  64
 

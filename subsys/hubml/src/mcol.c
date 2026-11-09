@@ -64,6 +64,7 @@ void mcol_hello_put(uint8_t *p, const struct mcol_hello *m)
 	p[14] = m->nfeat;
 	p[15] = 0;
 	sys_put_le32(m->sensor_hash, p + 16);
+	sys_put_le32(m->schema_hash, p + 20);
 }
 
 void mcol_hello_get(const uint8_t *p, struct mcol_hello *m)
@@ -73,6 +74,7 @@ void mcol_hello_get(const uint8_t *p, struct mcol_hello *m)
 	m->contract = sys_get_le16(p + 12);
 	m->nfeat = p[14];
 	m->sensor_hash = sys_get_le32(p + 16);
+	m->schema_hash = sys_get_le32(p + 20);
 }
 
 int mcol_feat_get(const uint8_t *pl, uint16_t len, int i, float *x, int nmax, uint8_t *regime, uint8_t *quality)

@@ -60,7 +60,7 @@ static const struct hubml_xport xp = { .send = nop_send };
 static int fill(void)
 {
 	uint8_t pl[MCOL_MAX_PAYLOAD], out[MCOL_MAX_DGRAM];
-	struct mcol_hello hm = { .uid = UID, .fw = 1, .contract = NF, .nfeat = NF };
+	struct mcol_hello hm = { .uid = UID, .fw = 1, .contract = NF, .nfeat = NF, .schema_hash = 0x4d463334 };
 	mcol_hello_put(pl, &hm);
 	struct mcol_hdr h = { .type = MCOL_T_HELLO, .len = MCOL_HELLO_LEN };
 	int n = mcol_encode(out, sizeof out, &h, pl);
@@ -225,6 +225,51 @@ int main(void)
 	struct pv p = { .from = r.n_train };
 	hubml_feat_each(ROOT, UID, days, c.ndays, pv_cb, &p);
 	printk("PV_END %u\n", p.n);
+
+	/* Studio 3자 시험 씨앗: 작은 저장 파일 하나 (HELLO + FEAT 2 데이터그램 = 16 벡터) */
+	{
+		hubml_ingest_init("/RAM:/sample", &xp);
+		uint8_t pl[MCOL_MAX_PAYLOAD], out[MCOL_MAX_DGRAM];
+		struct mcol_hello hm = { .uid = 0x53414d504c450001ull, .fw = 0x0100, .contract = NF, .nfeat = NF,
+					 .sensor_hash = 0x5e5a0001, .schema_hash = 0x4d463334 };
+		mcol_hello_put(pl, &hm);
+		struct mcol_hdr h = { .type = MCOL_T_HELLO, .len = MCOL_HELLO_LEN, .boot_id = 7 };
+		int n = mcol_encode(out, sizeof out, &h, pl);
+		hubml_ingest_rx(9, out, (size_t)n);
+		static float sx[8 * NF];
+		for (uint32_t sq = 0; sq < 2; sq++) {
+			for (int i = 0; i < 8; i++) {
+				gen_vec(1000 + sq * 8 + i, &sx[i * NF]);
+				printk("MCSV %u %d", sq, i);
+				for (int k = 0; k < NF; k++) { uint32_t b; memcpy(&b, &sx[i * NF + k], 4); printk(" %08x", b); }
+				printk("\n");
+			}
+			const int L = mcol_feat_put(pl, sizeof pl, NF, 8, sx, NULL);
+			struct mcol_hdr f = { .type = MCOL_T_FEAT, .edge_sid = 1, .stream = MCOL_S_FEAT, .seq = sq,
+					      .edge_ms = 1000000ull + sq * 8000, .len = (uint16_t)L, .boot_id = 7 };
+			n = mcol_encode(out, sizeof out, &f, pl);
+			hubml_ingest_rx(9, out, (size_t)n);
+		}
+		hubml_ingest_commit();
+		char d[9], path[96];
+		hubml_day_str(hubml_time_now(), d);
+		snprintf(path, sizeof path, "/RAM:/sample/ds/%016llx/%s/s1.mcs", 0x53414d504c450001ull, d);
+		static uint8_t mb[4096];
+		struct fs_file_t mf;
+		fs_file_t_init(&mf);
+		ssize_t mn = -1;
+		if (!fs_open(&mf, path, FS_O_READ)) { mn = fs_read(&mf, mb, sizeof mb); fs_close(&mf); }
+		printk("MCS64_BEGIN %zd %s\n", mn, path);
+		for (ssize_t o = 0; o < mn; o += 57) {
+			char line[80];
+			size_t ol = 0;
+			base64_encode((uint8_t *)line, sizeof line, &ol, mb + o, (size_t)MIN(57, mn - o));
+			line[ol] = 0;
+			printk("MCS64 %s\n", line);
+		}
+		printk("MCS64_END\n");
+		if (mn <= 0) { ok = false; }
+	}
 
 	printk(ok ? "=== Lm2 PASS\n" : "=== Lm2 FAIL\n");
 	return 0;

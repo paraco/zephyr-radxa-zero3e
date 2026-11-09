@@ -64,15 +64,18 @@ struct mcol_hdr {
 	uint16_t boot_id;
 };
 
-/** HELLO 본문 (20 B) */
+/** HELLO 본문 (24 B): uid u64 · fw u32 · contract u16 · nfeat u8 · rsv u8 · sensor_hash u32 · schema_hash u32
+ *  schema_hash = 특징 정의·순서·샘플링을 묶은 해시 (2026-11-09 Studio MLCC 요청 — 원장이 데이터↔스키마를 잇는다,
+ *  모델에도 같은 값을 고정해 다르면 Edge 가 적재를 거부한다) */
 struct mcol_hello {
 	uint64_t uid;		/* 칩 고유번호 */
 	uint32_t fw;		/* 펌웨어 판 */
 	uint16_t contract;	/* 특징 계약 (MFEAT34 = 34) */
 	uint8_t nfeat;
 	uint32_t sensor_hash;	/* 센서 설정 해시 */
+	uint32_t schema_hash;	/* 특징 스키마 해시 */
 };
-#define MCOL_HELLO_LEN 20
+#define MCOL_HELLO_LEN 24
 
 /** HELLO_ACK 본문 (16 B): sid u16 · rsv u16 · hub_ms u64 · raw_period_s u32 */
 #define MCOL_HELLO_ACK_LEN 16

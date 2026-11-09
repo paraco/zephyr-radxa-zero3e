@@ -125,7 +125,7 @@ static void edge_send_rec(struct sedge *e, int idx, uint8_t s, uint32_t seq)
 static void edge_hello(struct sedge *e, int idx)
 {
 	uint8_t pl[MCOL_HELLO_LEN], out[64];
-	struct mcol_hello m = { .uid = e->uid, .fw = 0x0100, .contract = 34, .nfeat = 34, .sensor_hash = 0xabcd };
+	struct mcol_hello m = { .uid = e->uid, .fw = 0x0100, .contract = 34, .nfeat = 34, .sensor_hash = 0xabcd, .schema_hash = 0x4d463334 };
 	mcol_hello_put(pl, &m);
 	struct mcol_hdr h = { .type = MCOL_T_HELLO, .stream = MCOL_S_CTRL, .len = sizeof pl, .boot_id = 1 };
 	const int n = mcol_encode(out, sizeof out, &h, pl);

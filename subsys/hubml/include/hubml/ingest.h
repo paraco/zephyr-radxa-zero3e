@@ -41,6 +41,7 @@ struct hubml_edge_info {
 	uint16_t boot_id;
 	uint32_t fw;
 	uint16_t contract;
+	uint32_t schema_hash;
 	int64_t last_rx_ms;
 	uint32_t next[MCOL_NSTREAM];	/* 기록 완료(ACK 된) 다음 순번 */
 	uint32_t rx, dup, oow, qfull;

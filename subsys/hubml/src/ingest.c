@@ -45,6 +45,7 @@ struct edge {
 	uint16_t boot_id;
 	uint32_t fw;
 	uint16_t contract;
+	uint32_t schema_hash;
 	int64_t last_rx_ms;
 	struct sstate rcv[MCOL_NSTREAM];	/* 받은 것 */
 	struct sstate dur[MCOL_NSTREAM];	/* 기록 완료 (ACK 하는 값) */
@@ -157,6 +158,7 @@ static void on_hello(uint32_t addr, const struct mcol_hdr *h, const uint8_t *pl)
 	e->boot_id = h->boot_id;
 	e->fw = m.fw;
 	e->contract = m.contract;
+	e->schema_hash = m.schema_hash;
 	e->last_rx_ms = hubml_time_now();
 	e->need_ack = true;	/* 다시 붙은 장비에 지금까지 기록된 곳을 알려 준다 */
 	send_hello_ack(e, (uint16_t)(i + 1));
@@ -561,6 +563,7 @@ int hubml_ingest_edges(struct hubml_edge_info *out, int max)
 		o->boot_id = e->boot_id;
 		o->fw = e->fw;
 		o->contract = e->contract;
+		o->schema_hash = e->schema_hash;
 		o->last_rx_ms = e->last_rx_ms;
 		for (int s = 0; s < MCOL_NSTREAM; s++) {
 			o->next[s] = e->dur[s].next;
