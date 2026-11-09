@@ -4,6 +4,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <zephyr/kernel.h>
+#include <zephyr/fs/fs.h>
 #include <hubml/ingest.h>
 #include <hubml/train.h>
 
@@ -14,7 +15,32 @@ struct each_ctx {
 	hubml_vec_cb cb;
 	void *user;
 	uint32_t idx;
+	/* 관문 (gate == NULL 이면 예전 동작) */
+	const struct hubml_gate *gate;
+	struct hubml_gate_counts cnt;
+	const struct hubml_anchor *anc;	/* 지금 읽는 날짜 폴더의 앵커 (time_set=1 만) */
+	int nanc;
 };
+
+/* 앵커 = boot 같음 · |edge 차| 최소 · 같으면 파일에서 앞 줄 (Studio anchorFor 와 같다) */
+static const struct hubml_anchor *anchor_for(const struct each_ctx *c, uint16_t boot, uint64_t edge_ms)
+{
+	const struct hubml_anchor *best = NULL;
+	uint64_t bd = 0;
+	for (int i = 0; i < c->nanc; i++) {
+		const struct hubml_anchor *a = &c->anc[i];
+		if (a->boot != boot) {
+			continue;
+		}
+		const uint64_t ae = (uint64_t)a->edge_ms;
+		const uint64_t dd = ae > edge_ms ? ae - edge_ms : edge_ms - ae;
+		if (!best || dd < bd) {
+			best = a;
+			bd = dd;
+		}
+	}
+	return best;
+}
 
 static void each_rec(const struct mcol_hdr *h, const uint8_t *pl, void *user)
 {
@@ -23,28 +49,123 @@ static void each_rec(const struct mcol_hdr *h, const uint8_t *pl, void *user)
 		return;
 	}
 	const int n = pl[0];
+	const struct hubml_anchor *an = c->gate ? anchor_for(c, h->boot_id, h->edge_ms) : NULL;
+	int64_t utc = an ? an->hub_ms + ((int64_t)h->edge_ms - an->edge_ms) : 0;
 	for (int i = 0; i < n; i++) {
 		float x[NF];
 		uint8_t reg, q;
-		if (mcol_feat_get(pl, h->len, i, x, NF, &reg, &q) || pl[1] != NF || q != 0) {
+		if (c->gate && i > 0) {
+			uint16_t dt;	/* dt_ms[0] 은 더하지 않는다 — 거른 벡터(quality≠0)의 간격도 누적한다 */
+			if (!mcol_feat_dt(pl, h->len, i, &dt)) {
+				utc += dt;
+			}
+		}
+		if (mcol_feat_get(pl, h->len, i, x, NF, &reg, &q) || pl[1] != NF) {
 			continue;
+		}
+		if (c->gate && q != 0) {
+			c->cnt.bad++;	/* 관문 경로: quality≠0 도 센다 */
+			continue;
+		}
+		if (q != 0) {
+			continue;
+		}
+		if (c->gate) {
+			bool fin = true;	/* 비유한(NaN/Inf) 벡터는 뺀다 — dt 는 위에서 이미 누적했다 (Studio 와 같다) */
+			for (int k = 0; k < NF && fin; k++) {
+				fin = isfinite(x[k]);
+			}
+			if (!fin) {
+				c->cnt.bad++;
+				continue;
+			}
+			if (!an) {
+				c->cnt.unanchored++;
+				continue;
+			}
+			const int g = hubml_gate_check(c->gate, utc);
+			if (g) {
+				if (g == 1) {
+					c->cnt.outside++;
+				} else {
+					c->cnt.excluded++;
+				}
+				continue;
+			}
 		}
 		c->cb(x, c->idx++, c->user);
 	}
 }
 
+/* 날짜 폴더 하나의 anchor.jsonl 을 한 번 읽어 time_set=1 줄만 표에 담는다 (레코드마다 열지 않는다) */
+static struct hubml_anchor anc_tab[HUBML_ANCHOR_MAX];
+static int anchors_load(const char *root, uint64_t uid, const char *day, uint32_t *over)
+{
+	char p[96];
+	snprintf(p, sizeof p, "%s/ds/%016llx/%s/anchor.jsonl", root, (unsigned long long)uid, day);
+	static char buf[512], line[256];
+	int na = 0;
+	struct fs_file_t f;
+	fs_file_t_init(&f);
+	hubml_fs_lock();
+	if (fs_open(&f, p, FS_O_READ) == 0) {
+		size_t ln = 0;
+		ssize_t r;
+		bool skip = false;
+		while ((r = fs_read(&f, buf, sizeof buf)) > 0) {
+			for (ssize_t i = 0; i < r; i++) {
+				if (buf[i] != '\n') {
+					if (ln < sizeof line) {
+						line[ln++] = buf[i];
+					} else {
+						skip = true;
+					}
+					continue;
+				}
+				struct hubml_anchor a;
+				bool ts;
+				if (!skip && ln && !hubml_anchor_parse(line, ln, &a, &ts) && ts) {
+					if (na < HUBML_ANCHOR_MAX) {
+						anc_tab[na++] = a;
+					} else {
+						(*over)++;
+					}
+				}
+				ln = 0;
+				skip = false;
+			}
+		}
+		fs_close(&f);
+	}
+	hubml_fs_unlock();
+	return na;
+}
+
 /* ⚠ hubml_store_scan 은 파일 안 순서로 넘긴다. 같은 파일 안에서 seq 가 뒤섞일 수 있지만
  *   (재전송) 하루 단위 학습·평가 분할에는 영향이 작다 — 시각 순서가 꼭 필요하면 정렬 단계를 더한다. */
-int hubml_feat_each(const char *root, uint64_t uid, const char days[][9], int ndays, hubml_vec_cb cb, void *user)
+int hubml_feat_each_gate(const char *root, uint64_t uid, const char days[][9], int ndays, const struct hubml_gate *gate,
+			 hubml_vec_cb cb, void *user, struct hubml_gate_counts *counts)
 {
-	struct each_ctx c = { .cb = cb, .user = user };
+	struct each_ctx c = { .cb = cb, .user = user, .gate = gate, .anc = anc_tab };
 	for (int d = 0; d < ndays; d++) {
+		if (gate) {
+			/* 앵커는 그 .mcs 파일이 있는 날짜 폴더의 것 */
+			c.nanc = anchors_load(root, uid, days[d], &c.cnt.anchor_over);
+		}
 		const int rc = hubml_store_scan(root, uid, days[d], MCOL_S_FEAT, each_rec, &c, NULL);
 		if (rc < 0 && rc != -ENOENT) {
 			return rc;
 		}
 	}
+	if (counts) {
+		*counts = c.cnt;
+	}
 	return (int)c.idx;
+}
+
+int hubml_feat_each(const char *root, uint64_t uid, const char days[][9], int ndays, hubml_vec_cb cb, void *user)
+{
+	return hubml_feat_each_gate(root, uid, days, ndays, NULL, cb, user, NULL);
 }
 
 /* ── 작은 난수 (결정적) ───────────────────────────────────────────────── */
@@ -69,7 +190,7 @@ static int cholesky(double *A, int n)
 		for (int k = 0; k < j; k++) {
 			s -= A[j * n + k] * A[j * n + k];
 		}
-		if (s <= 0) {
+		if (!(s > 0)) {	/* NaN 도 실패 */
 			return -EDOM;
 		}
 		A[j * n + j] = sqrt(s);
@@ -293,11 +414,12 @@ int hubml_train(const char *root, const struct hubml_train_cfg *c, struct hubml_
 
 	/* 0) 개수 */
 	uint32_t n = 0;
-	int rc = hubml_feat_each(root, c->uid, c->days, c->ndays, count_cb, &n);
+	int rc = hubml_feat_each_gate(root, c->uid, c->days, c->ndays, c->gate, count_cb, &n, &r->gate_cnt);
 	if (rc < 0) {
 		return rc;
 	}
-	if (n < 1000) {
+	r->n_total = n;
+	if (n < HUBML_TRAIN_MIN) {
 		return -ENODATA;
 	}
 	r->n_total = n;
@@ -322,7 +444,7 @@ int hubml_train(const char *root, const struct hubml_train_cfg *c, struct hubml_
 	}
 	*p = (struct p1){ .c = c, .n_train = r->n_train, .bl = bl, .sxx = sxx, .res = res, .nres = nres,
 			  .seed = c->seed ^ 0x9e3779b9u };
-	rc = hubml_feat_each(root, c->uid, c->days, c->ndays, p1_cb, p);
+	rc = hubml_feat_each_gate(root, c->uid, c->days, c->ndays, c->gate, p1_cb, p, NULL);
 	if (rc < 0) {
 		goto out;
 	}
@@ -422,7 +544,7 @@ int hubml_train(const char *root, const struct hubml_train_cfg *c, struct hubml_
 	for (int g = 0; g < XMB_NGOLDEN; g++) {
 		q2->gold_at[g] = (uint32_t)((uint64_t)r->n_train * (2 * g + 1) / (2 * XMB_NGOLDEN));
 	}
-	rc = hubml_feat_each(root, c->uid, c->days, c->ndays, p2_cb, q2);
+	rc = hubml_feat_each_gate(root, c->uid, c->days, c->ndays, c->gate, p2_cb, q2, NULL);
 	if (rc >= 0) {
 		rc = 0;
 		for (int g = 0; g < HUBML_NREG; g++) {
@@ -502,7 +624,7 @@ int hubml_eval_holdout(const char *root, const struct hubml_train_cfg *c, const 
 		       hubml_xform xf, void *xu, struct hubml_eval_out *o)
 {
 	struct ev e = { .from = r->n_train, .bl = bl, .xm = xm, .xd = xd, .xf = xf, .xu = xu };
-	const int rc = hubml_feat_each(root, c->uid, c->days, c->ndays, ev_cb, &e);
+	const int rc = hubml_feat_each_gate(root, c->uid, c->days, c->ndays, c->gate, ev_cb, &e, NULL);
 	if (rc < 0) {
 		return rc;
 	}

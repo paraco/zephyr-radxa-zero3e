@@ -104,6 +104,8 @@ struct mcol_hello {
 static inline size_t mcol_feat_vec_len(int contract) { return (size_t)contract * 4 + 4; }
 /** i 번째 벡터를 꺼낸다. 0 = 정상 */
 int mcol_feat_get(const uint8_t *pl, uint16_t len, int i, float *x, int nmax, uint8_t *regime, uint8_t *quality);
+/** i 번째 벡터의 dt_ms (앞 벡터와의 간격). 0 = 정상 */
+int mcol_feat_dt(const uint8_t *pl, uint16_t len, int i, uint16_t *dt_ms);
 /** 묶음 만들기 (Edge·시험용). 반환 = 본문 길이 */
 int mcol_feat_put(uint8_t *pl, size_t cap, int contract, int n, const float *xs, const uint8_t *quality);
 

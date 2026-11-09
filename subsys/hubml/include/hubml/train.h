@@ -14,6 +14,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <hubml/xmb.h>
+#include <hubml/gate.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -23,11 +24,16 @@ extern "C" {
 #define HUBML_NREG       4
 #define HUBML_REG_FEAT   27	/* load_ratio (0 기준 번호) */
 #define HUBML_MAX_DAYS   64
+#define HUBML_TRAIN_MIN  1000	/* 학습 최소 벡터 수 (거른 뒤) — 미만이면 -ENODATA */
 
 /** 특징 벡터 하나를 받는 콜백. idx = 0 부터의 순서 번호 */
 typedef void (*hubml_vec_cb)(const float *x, uint32_t idx, void *user);
 /** 장비 uid 의 날짜들(yyyymmdd)에 있는 FEAT 를 순서대로 넘긴다 (quality != 0 은 뺀다). 반환 = 개수 */
 int hubml_feat_each(const char *root, uint64_t uid, const char days[][9], int ndays, hubml_vec_cb cb, void *user);
+/** 위와 같되 gate 가 있으면 관문(include/exclude, 측정 UTC)으로 거른다. gate = NULL 이면 hubml_feat_each 와 같다.
+ *  counts(있으면)에 이 패스의 셈. ⚠ 정적 앵커 표를 쓴다 — 동시에 두 번 부르지 않는다(hubml 스레드 하나) */
+int hubml_feat_each_gate(const char *root, uint64_t uid, const char days[][9], int ndays, const struct hubml_gate *gate,
+			 hubml_vec_cb cb, void *user, struct hubml_gate_counts *counts);
 
 struct hubml_train_cfg {
 	uint64_t uid;
@@ -40,6 +46,7 @@ struct hubml_train_cfg {
 	float k;		/* 잎 값 배율 (예 1.0) */
 	uint32_t seed;
 	uint32_t train_ts;
+	const struct hubml_gate *gate;	/* NULL = 관문 없음(예전 동작). 있으면 days/ndays 는 gate->fdays/nfdays */
 };
 
 struct hubml_baseline {
@@ -61,6 +68,7 @@ struct hubml_train_result {
 	float far_stats, far_tree;	/* holdout 오경보율 */
 	float thr_prob;
 	uint32_t nodes;
+	struct hubml_gate_counts gate_cnt;	/* 관문이 있을 때 한 패스 기준 셈 (n_total 은 거른 뒤 수) */
 };
 
 /** 학습. bl·xm 을 채운다. 0 = 정상 */

@@ -9,7 +9,11 @@
  *   ml rx b64=<MCOL 데이터그램> [addr=<n>]   → 수집 엔진. 허브가 보낼 것은 `HUBML/1 tx addr= b64=` 줄
  *   ml time set <epoch_ms>              허브 UTC 시각 (Studio 가 맞춘다)
  * 쓰기(허브 운영자용 — Studio 는 사용자 승인 전엔 보내지 않는다):
- *   ml train uid=<hex16> days=<d1[,d2…]> [q=0.995]   학습 → dataset(merkle) · model · eval 사건 + challenger 제안
+ *   ml train uid=<hex16> [gate=<seq> | days=<d1[,d2…]>] [q=0.995]   학습 → dataset(merkle) · model · eval 사건 + challenger 제안
+ *       gate=<seq>  원장의 승인된 normal_gate(decision=accept · sig 있음 · ds_id 의 uid 일치)의 include/exclude 구간(측정 UTC,
+ *                   [시작,끝))으로 데이터를 거른다. gate·days 둘 다 없으면 그 uid 의 가장 최근 승인 normal_gate 를 자동으로 고른다
+ *                   (없으면 err code=no_gate). days= 는 관문 없는 예전 경로(동작 그대로). gate 와 days 를 같이 주면 bad_arg.
+ *                   관문 실패 = `HUBML/1 err code=<not_found|bad_arg> msg=gate_<이유>`. 응답 끝에 gate= unanchored= excluded= outside=
  *   ml model ls uid=<hex16>                           원장의 별칭
  * approve · deploy · model put 은 서명 검증(ed25519)과 함께 붙인다.
  * SPDX-License-Identifier: Apache-2.0
@@ -28,6 +32,7 @@
 #include <hubml/ingest.h>
 #include <hubml/ledger.h>
 #include <hubml/train.h>
+#include <hubml/gate.h>
 #include <hubml/approve.h>
 #include <hubml/mfeat34.h>
 #include <hubml/sha256.h>
@@ -284,7 +289,7 @@ static void hex32(const uint8_t *d, char *o)
 }
 
 /* merkle (mlledger/1 dataset): 날짜마다 "ds/<uid>/<day>/s1.mcs\t<sha256>\n" — 날짜 정렬 순 — 을 이은 것의 sha256 */
-static int ds_merkle(const char *u, const char days[][9], int nd, char out[65])
+static int ds_merkle(const char *u, const char days[][9], int nd, bool skip_missing, char out[65])
 {
 	struct sha256 top;
 	sha256_init(&top);
@@ -297,6 +302,10 @@ static int ds_merkle(const char *u, const char days[][9], int nd, char out[65])
 		fs_file_t_init(&f);
 		hubml_fs_lock();
 		int rc = fs_open(&f, p, FS_O_READ);
+		if (rc == -ENOENT && skip_missing) {	/* 관문 경로: 파일 없는 include 날짜는 건너뛴다 */
+			hubml_fs_unlock();
+			continue;
+		}
 		struct sha256 s;
 		sha256_init(&s);
 		ssize_t n;
@@ -332,21 +341,50 @@ static int cmd_train(const struct shell *sh, size_t argc, char **argv)
 	if (ready(sh)) {
 		return -EIO;
 	}
-	const char *u = arg(argc, argv, "uid"), *ds = arg(argc, argv, "days"), *qs = arg(argc, argv, "q");
-	if (!u || strlen(u) != 16 || !ds) {
-		shell_print(sh, "HUBML/1 err code=bad_arg msg=uid=<hex16>_days=<yyyymmdd,…>");
+	const char *u = arg(argc, argv, "uid"), *ds = arg(argc, argv, "days"), *qs = arg(argc, argv, "q"),
+		   *gs = arg(argc, argv, "gate");
+	if (!u || strlen(u) != 16) {
+		shell_print(sh, "HUBML/1 err code=bad_arg msg=uid=<hex16>_[gate=<seq>|days=<yyyymmdd,…>]");
+		return -EINVAL;
+	}
+	if (gs && ds) {
+		shell_print(sh, "HUBML/1 err code=bad_arg msg=gate_and_days_are_exclusive");
 		return -EINVAL;
 	}
 	static char days[HUBML_MAX_DAYS][9];
+	static struct hubml_gate gate;
 	int nd = 0;
-	for (const char *p = ds; *p && nd < HUBML_MAX_DAYS;) {
-		if (strlen(p) < 8) { break; }
-		memcpy(days[nd], p, 8);
-		days[nd++][8] = 0;
-		p += 8;
-		if (*p == ',') { p++; }
+	bool use_gate = !ds;	/* days= 가 없으면 관문 경로 (gate= 명시, 없으면 자동 선택) */
+	if (use_gate) {
+		uint32_t gseq = 0;
+		if (gs) {
+			char *e;
+			const unsigned long v = strtoul(gs, &e, 10);
+			if (!*gs || *e || v == 0 || v > UINT32_MAX) {
+				shell_print(sh, "HUBML/1 err code=bad_arg msg=gate_seq");
+				return -EINVAL;
+			}
+			gseq = (uint32_t)v;
+		} else if (hubml_gate_latest(u, &gseq)) {
+			shell_print(sh, "HUBML/1 err code=no_gate msg=uid=%s", u);
+			return -ENOENT;
+		}
+		const char *code, *why;
+		const int grc = hubml_gate_load(gseq, u, &gate, &code, &why);
+		if (grc) {
+			shell_print(sh, "HUBML/1 err code=%s msg=%s", code, why);
+			return grc;
+		}
+	} else {
+		for (const char *p = ds; *p && nd < HUBML_MAX_DAYS;) {
+			if (strlen(p) < 8) { break; }
+			memcpy(days[nd], p, 8);
+			days[nd++][8] = 0;
+			p += 8;
+			if (*p == ',') { p++; }
+		}
+		qsort(days, (size_t)nd, sizeof days[0], day_cmp);
 	}
-	qsort(days, (size_t)nd, sizeof days[0], day_cmp);
 	const uint64_t uid = strtoull(u, NULL, 16);
 	uint32_t schema = 0;
 	{
@@ -360,13 +398,19 @@ static int cmd_train(const struct shell *sh, size_t argc, char **argv)
 	static struct xmb_model tm;
 	static struct xmd_model md;
 	static uint8_t file[16384];
-	const struct hubml_train_cfg c = { .uid = uid, .days = days, .ndays = nd, .holdout = 0.2f,
+	const struct hubml_train_cfg c = { .uid = uid, .days = use_gate ? gate.fdays : days, .ndays = use_gate ? gate.nfdays : nd,
+					   .holdout = 0.2f,
 					   .q = qs ? strtof(qs, NULL) : 0.995f, .trees = 45, .psi = 64, .k = 1.0f,
-					   .seed = 20261109, .train_ts = (uint32_t)(hubml_time_now() / 1000) };
+					   .seed = 20261109, .train_ts = (uint32_t)(hubml_time_now() / 1000),
+					   .gate = use_gate ? &gate : NULL };
 	struct hubml_train_result r;
 	int rc = hubml_train(hubml_root(), &c, &bl, &tm, &r);
 	if (rc) {
-		shell_print(sh, "HUBML/1 err code=train msg=%d", rc);
+		if (use_gate && rc == -ENODATA) {
+			shell_print(sh, "HUBML/1 err code=train msg=gate_too_few n=%u min=%d", r.n_total, HUBML_TRAIN_MIN);
+		} else {
+			shell_print(sh, "HUBML/1 err code=train msg=%d", rc);
+		}
 		return rc;
 	}
 	/* Edge 모델 = kind 3 (통계 기준선). 골든은 학습 구간 벡터 4 개 */
@@ -387,19 +431,33 @@ static int cmd_train(const struct shell *sh, size_t argc, char **argv)
 		pass = pass && rate[i] >= 0.9f;
 	}
 	/* 원장: dataset → model → eval → challenger 제안 */
-	char mk[65], fl[1500], dsid[96], mid[25];
-	rc = ds_merkle(u, days, nd, mk);
+	static char mk[65], fl[1500], dsid[96];
+	char mid[25];
+	/* 관문 경로: days = include 날짜 · merkle = 그 날짜들의 s1.mcs 만 (D+1·D+2 넘침 파일은 해시하지 않는다) */
+	const char (*ldays)[9] = use_gate ? gate.idays : days;
+	const int lnd = use_gate ? gate.nidays : nd;
+	rc = ds_merkle(u, ldays, lnd, use_gate, mk);
 	struct hubml_ledger_head h;
 	hubml_ledger_head(&h);
-	snprintf(dsid, sizeof dsid, "ds-%s-%s-%s-%u", u, days[0], days[nd - 1], h.next_seq);
+	snprintf(dsid, sizeof dsid, "ds-%s-%s-%s-%u", u, ldays[0], ldays[lnd - 1], h.next_seq);
 	int o = snprintf(fl, sizeof fl, "\"ds_id\":\"%s\",\"uid\":\"%s\",\"days\":[", dsid, u);
-	for (int i = 0; i < nd; i++) { o += snprintf(fl + o, sizeof fl - o, "%s\"%s\"", i ? "," : "", days[i]); }
-	o += snprintf(fl + o, sizeof fl - o, "],\"contract\":34,\"schema_hash\":\"%08x\",\"counts\":{\"vectors\":%u,\"bad_quality\":0,"
-		      "\"dup\":0,\"gaps\":0},\"merkle\":\"%s\",\"regimes\":[%u,%u,%u,%u]",
-		      schema, r.n_total, rc ? "-" : mk, bl.reg[0].n, bl.reg[1].n, bl.reg[2].n, bl.reg[3].n);
+	for (int i = 0; i < lnd; i++) { o += snprintf(fl + o, sizeof fl - o, "%s\"%s\"", i ? "," : "", ldays[i]); }
+	o += snprintf(fl + o, sizeof fl - o, "],\"contract\":34,\"schema_hash\":\"%08x\",\"counts\":{\"vectors\":%u,\"bad_quality\":%u,"
+		      "\"dup\":0,\"gaps\":0", schema, r.n_total, use_gate ? r.gate_cnt.bad : 0u);
+	if (use_gate) {
+		o += snprintf(fl + o, sizeof fl - o, ",\"excluded\":%u,\"outside\":%u,\"unanchored\":%u",
+			      r.gate_cnt.excluded, r.gate_cnt.outside, r.gate_cnt.unanchored);
+	}
+	o += snprintf(fl + o, sizeof fl - o, "},\"merkle\":\"%s\",\"regimes\":[%u,%u,%u,%u]", rc ? "-" : mk, bl.reg[0].n,
+		      bl.reg[1].n, bl.reg[2].n, bl.reg[3].n);
+	if (use_gate) {
+		o += snprintf(fl + o, sizeof fl - o, ",\"gate_seq\":%u,\"gate_ds_id\":\"%s\"", gate.seq, gate.ds_id);
+	}
 	rc = hubml_ledger_append("dataset", "hub", fl, NULL, NULL);
-	snprintf(fl, sizeof fl, "\"train_ds\":\"%s\",\"schema_hash\":\"%08x\",\"params\":{\"q\":%.4f,\"holdout\":0.2,"
-		 "\"nreg\":4,\"reg_feat\":\"load_ratio\"},\"generation\":0", dsid, schema, (double)c.q);
+	char gsq[32] = "";
+	if (use_gate) { snprintf(gsq, sizeof gsq, "\"gate_seq\":%u,", gate.seq); }
+	snprintf(fl, sizeof fl, "\"train_ds\":\"%s\",%s\"schema_hash\":\"%08x\",\"params\":{\"q\":%.4f,\"holdout\":0.2,"
+		 "\"nreg\":4,\"reg_feat\":\"load_ratio\"},\"generation\":0", dsid, gsq, schema, (double)c.q);
 	if (!rc && sz > 0) {
 		rc = hubml_model_register(uid, file, (size_t)sz, "hub", fl, mid);
 	}
@@ -416,10 +474,18 @@ static int cmd_train(const struct shell *sh, size_t argc, char **argv)
 	if (!rc) {
 		rc = hubml_alias_set(uid, HUBML_A_CHALLENGER, mid, "propose", "hub", NULL);
 	}
+	char gtail[128] = "";
+	if (use_gate) {
+		int gl = snprintf(gtail, sizeof gtail, " gate=%u unanchored=%u excluded=%u outside=%u", gate.seq, r.gate_cnt.unanchored,
+				  r.gate_cnt.excluded, r.gate_cnt.outside);
+		if (r.gate_cnt.anchor_over) {
+			snprintf(gtail + gl, sizeof gtail - (size_t)gl, " anchor_over=%u", r.gate_cnt.anchor_over);
+		}
+	}
 	shell_print(sh, "HUBML/1 train uid=%s ds_id=%s model_id=%s vectors=%u train=%u hold=%u far=%.4f inject=%.3f,%.3f,%.3f "
-		    "size=%d ms=%u verdict=%s rc=%d", u, dsid, rc ? "-" : mid, r.n_total, r.n_train, r.n_hold,
+		    "size=%d ms=%u verdict=%s rc=%d%s", u, dsid, rc ? "-" : mid, r.n_total, r.n_train, r.n_hold,
 		    (double)r.far_stats, (double)rate[0], (double)rate[1], (double)rate[2], sz, r.ms_total,
-		    pass ? "pass" : "review", rc);
+		    pass ? "pass" : "review", rc, gtail);
 	return rc;
 }
 
@@ -577,7 +643,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_ml,
 	SHELL_CMD_ARG(rx, NULL, "rx b64=<MCOL> [addr=<n>] — USB 운반 수신", cmd_rx_t, 2, 1),
 	SHELL_CMD(time, &sub_ml_time, "시각", NULL),
 	SHELL_CMD(commit, NULL, "지금 기록·ACK (시험용)", cmd_commit_t),
-	SHELL_CMD_ARG(train, NULL, "train uid=<hex16> days=<d1,…> [q=] — 학습 → 원장 + challenger 제안", cmd_train_t, 3, 1),
+	SHELL_CMD_ARG(train, NULL, "train uid=<hex16> [gate=<seq>|days=<d1,…>] [q=] — 학습(관문 구간으로 거름, 없으면 최근 승인 관문) → 원장 + challenger 제안", cmd_train_t, 2, 2),
 	SHELL_CMD(model, &sub_ml_model, "모델 · 별칭", NULL),
 	SHELL_CMD_ARG(drift, NULL, "drift uid=<hex16> days=<d1,…> [model=<id>] — v0 대비 날짜별 변화 (보고만)", cmd_drift_t, 3, 1),
 	SHELL_CMD_ARG(approve, NULL, "approve b64=<본문> sig=<ed25519> key=<id> — 사람 승인 (mlledger/1 §4)", cmd_approve_t, 4, 0),

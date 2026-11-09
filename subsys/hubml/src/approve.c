@@ -26,10 +26,12 @@
 #include <hubml/sha256.h>
 #include <hubml/ed25519.h>
 #include <hubml/approve.h>
+#include <hubml/gate.h>
 
 /* ── 정규 JSON 검사기: 공백 없음 · 객체 키 사전순(엄격) · 숫자는 정수 ─────────────── */
 struct jp {
 	const char *s, *e;
+	bool loose;	/* true = 키 사전순 검사를 건너뛴다 (원장 줄·앵커 줄은 사전순이 아니다 — gate 읽기용) */
 };
 static int j_val(struct jp *p, int depth);
 static int j_str(struct jp *p, const char **b, size_t *n)
@@ -63,7 +65,7 @@ static int j_obj(struct jp *p, int depth, void (*member)(const char *k, size_t k
 		const char *k;
 		size_t kn;
 		if (j_str(p, &k, &kn) || p->s >= p->e || *p->s != ':') { return -1; }
-		if (pk && keycmp(pk, pkn, k, kn) >= 0) { return -2; }	/* 사전순이 아니거나 겹침 */
+		if (!p->loose && pk && keycmp(pk, pkn, k, kn) >= 0) { return -2; }	/* 사전순이 아니거나 겹침 */
 		pk = k;
 		pkn = kn;
 		p->s++;
@@ -325,5 +327,296 @@ int hubml_approve(const char *b64, const char *sig64, const char *key, struct hu
 	if (!strcmp(kind, "alias") && !strcmp(name, "champion")) {
 		res->deploy = hubml_deploy_start(uid, model, 0);
 	}
+	return 0;
+}
+
+/* ══ 정상 관문 읽기 (hubml/gate.h) — 위 스캐너(j_str · j_obj · j_val)를 loose 모드로 재사용한다 ═══════════════════ */
+struct gmem {
+	const char *kind, *dec, *ds, *inc, *exc;
+	size_t kindn, decn, dsn, incn, excn;
+	char sigc;	/* sig 값의 첫 글자 ('{' = 객체) */
+};
+static void gmem_cb(const char *k, size_t kn, const char *v, size_t vn, void *u)
+{
+	struct gmem *m = u;
+#define K(name) (kn == sizeof(name) - 1 && !memcmp(k, name, kn))
+	if (K("kind")) { m->kind = v; m->kindn = vn; }
+	else if (K("decision")) { m->dec = v; m->decn = vn; }
+	else if (K("ds_id")) { m->ds = v; m->dsn = vn; }
+	else if (K("include")) { m->inc = v; m->incn = vn; }
+	else if (K("exclude")) { m->exc = v; m->excn = vn; }
+	else if (K("sig")) { m->sigc = vn ? v[0] : 0; }
+#undef K
+}
+/* 따옴표 문자열 값 == lit ? */
+static bool qeq(const char *v, size_t vn, const char *lit)
+{
+	const size_t n = strlen(lit);
+	return v && vn == n + 2 && v[0] == '"' && v[vn - 1] == '"' && !memcmp(v + 1, lit, n);
+}
+
+/* 머리: kind · decision · sig · uid 까지만 본다. 0 = 통과, 아니면 사유 */
+static const char *gate_head(const char *line, size_t n, const char *uid16, struct gmem *m)
+{
+	memset(m, 0, sizeof *m);
+	struct jp p = { line, line + n, true };
+	if (j_obj(&p, 0, gmem_cb, m) || p.s != p.e) { return "gate_json"; }
+	if (!qeq(m->kind, m->kindn, "normal_gate")) { return "gate_kind"; }
+	if (!qeq(m->dec, m->decn, "accept")) { return "gate_decision"; }
+	if (m->sigc != '{') { return "gate_nosig"; }
+	/* ds_id = "ds-<16hex>-…" */
+	if (!m->ds || m->dsn < 2 + 3 + 16 + 1 || memcmp(m->ds, "\"ds-", 4) || m->ds[4 + 16] != '-' || memchr(m->ds, '\\', m->dsn)) {
+		return "gate_uid";
+	}
+	for (int i = 0; i < 16; i++) {
+		char a = m->ds[4 + i], b = uid16[i];
+		a = (a >= 'A' && a <= 'F') ? (char)(a + 32) : a;
+		b = (b >= 'A' && b <= 'F') ? (char)(b + 32) : b;
+		if (!b || a != b) { return "gate_uid"; }
+	}
+	return NULL;
+}
+
+/* ── 날짜 ── */
+static int32_t days_from_civil(int y, int m, int d)
+{
+	y -= m <= 2;
+	const int era = (y >= 0 ? y : y - 399) / 400;
+	const int yoe = y - era * 400;
+	const int doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+	const int doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+	return era * 146097 + doe - 719468;
+}
+static void civil_from_days(int32_t z, int *y, int *m, int *d)
+{
+	z += 719468;
+	const int era = (z >= 0 ? z : z - 146096) / 146097;
+	const int doe = z - era * 146097;
+	const int yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+	const int doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+	const int mp = (5 * doy + 2) / 153;
+	*d = doy - (153 * mp + 2) / 5 + 1;
+	*m = mp + (mp < 10 ? 3 : -9);
+	*y = yoe + era * 400 + (*m <= 2);
+}
+static void day_str(int32_t dn, char out[9])
+{
+	int y, m, d;
+	civil_from_days(dn, &y, &m, &d);
+	snprintf(out, 9, "%04d%02d%02d", y, m, d);
+}
+/* yyyymmdd 8 자리 숫자 + 실제 있는 날짜 → 일 수. 오류 = INT32_MIN */
+static int32_t day_num(const char *s, size_t n)
+{
+	if (n != 8) { return INT32_MIN; }
+	int v[8];
+	for (int i = 0; i < 8; i++) {
+		if (s[i] < '0' || s[i] > '9') { return INT32_MIN; }
+		v[i] = s[i] - '0';
+	}
+	const int y = v[0] * 1000 + v[1] * 100 + v[2] * 10 + v[3], m = v[4] * 10 + v[5], d = v[6] * 10 + v[7];
+	if (m < 1 || m > 12 || d < 1 || d > 31) { return INT32_MIN; }
+	const int32_t z = days_from_civil(y, m, d);
+	int yy, mm, dd;
+	civil_from_days(z, &yy, &mm, &dd);
+	return (yy == y && mm == m && dd == d) ? z : INT32_MIN;
+}
+/* "HH:MM" → 분. 끝이면 "24:00" 허용. 오류 -1 */
+static int hhmm(const char *s, size_t n, bool is_end)
+{
+	if (n != 5 || s[2] != ':') { return -1; }
+	for (int i = 0; i < 5; i++) {
+		if (i != 2 && (s[i] < '0' || s[i] > '9')) { return -1; }
+	}
+	const int h = (s[0] - '0') * 10 + (s[1] - '0'), m = (s[3] - '0') * 10 + (s[4] - '0');
+	if (m > 59) { return -1; }
+	if (h == 24) { return (is_end && m == 0) ? 1440 : -1; }
+	return h > 23 ? -1 : h * 60 + m;
+}
+
+/* [[날짜,시작,끝(,사유)],…] → iv. 0 = 정상, 아니면 사유 */
+static const char *parse_ivs(const char *v, size_t vn, bool is_exc, struct hubml_gate_iv *out, int *cnt)
+{
+	*cnt = 0;
+	if (!v) { return is_exc ? NULL : "gate_include_empty"; }
+	struct jp p = { v, v + vn, true };
+	if (p.s >= p.e || *p.s != '[') { return "gate_shape"; }
+	p.s++;
+	if (p.s < p.e && *p.s == ']') { return is_exc ? NULL : "gate_include_empty"; }
+	for (;;) {
+		if (p.s >= p.e || *p.s != '[') { return "gate_shape"; }
+		p.s++;
+		const char *sv[4];
+		size_t sn[4];
+		int ns = 0;
+		for (;;) {
+			if (ns >= 4 || j_str(&p, &sv[ns], &sn[ns])) { return "gate_shape"; }
+			ns++;
+			if (p.s < p.e && *p.s == ',') { p.s++; continue; }
+			if (p.s < p.e && *p.s == ']') { p.s++; break; }
+			return "gate_shape";
+		}
+		if (ns != (is_exc ? 4 : 3)) { return is_exc && ns == 3 ? "gate_reason" : "gate_shape"; }
+		if (is_exc && sn[3] == 0) { return "gate_reason"; }
+		if (*cnt >= HUBML_GATE_MAX_IV) { return "gate_too_many"; }
+		struct hubml_gate_iv *iv = &out[*cnt];
+		iv->dn = day_num(sv[0], sn[0]);
+		if (iv->dn == INT32_MIN) { return "gate_date"; }
+		memcpy(iv->day, sv[0], 8);
+		iv->day[8] = 0;
+		const int a = hhmm(sv[1], sn[1], false), b = hhmm(sv[2], sn[2], true);
+		if (a < 0 || b < 0) { return "gate_time"; }
+		if (a >= b) { return "gate_range"; }
+		iv->a = (uint16_t)a;
+		iv->b = (uint16_t)b;
+		(*cnt)++;
+		if (p.s < p.e && *p.s == ',') { p.s++; continue; }
+		if (p.s < p.e && *p.s == ']') { p.s++; break; }
+		return "gate_shape";
+	}
+	return p.s == p.e ? NULL : "gate_shape";
+}
+
+static int day_cmp9(const void *a, const void *b) { return strcmp((const char *)a, (const char *)b); }
+static int uniq9(char (*d)[9], int n)
+{
+	qsort(d, (size_t)n, 9, day_cmp9);
+	int m = 0;
+	for (int i = 0; i < n; i++) {
+		if (!m || strcmp(d[m - 1], d[i])) { memcpy(d[m++], d[i], 9); }
+	}
+	return m;
+}
+
+int hubml_gate_parse(const char *line, size_t n, const char *uid16, struct hubml_gate *g, const char **code,
+		     const char **why)
+{
+	struct gmem m;
+	const char *w = gate_head(line, n, uid16, &m);
+	*code = "bad_arg";
+	if (!w) {
+		memset(g, 0, sizeof *g);
+		w = parse_ivs(m.inc, m.incn, false, g->inc, &g->ninc);
+		if (!w) { w = parse_ivs(m.exc, m.excn, true, g->exc, &g->nexc); }
+		if (!w && m.dsn - 2 < sizeof g->ds_id) {
+			memcpy(g->ds_id, m.ds + 1, m.dsn - 2);
+		} else if (!w) {
+			w = "gate_uid";
+		}
+	}
+	if (w) {
+		*why = w;
+		return -EINVAL;
+	}
+	/* include 날짜(정렬·중복 없음) · 읽을 파일 날짜 = 각 D 의 D · D+1 · D+2 의 합집합 */
+	for (int i = 0; i < g->ninc; i++) { memcpy(g->idays[i], g->inc[i].day, 9); }
+	g->nidays = uniq9(g->idays, g->ninc);
+	int nf = 0;
+	for (int i = 0; i < g->nidays; i++) {
+		const int32_t dn = day_num(g->idays[i], 8);
+		for (int k = 0; k < 3; k++) { day_str(dn + k, g->fdays[nf++]); }
+	}
+	g->nfdays = uniq9(g->fdays, nf);
+	return 0;
+}
+
+struct gl_ctx {
+	uint32_t want;
+	const char *uid;
+	struct hubml_gate *g;
+	const char *code, *why;
+	bool seen;
+};
+static void gl_cb(uint32_t seq, const char *line, size_t n, void *u)
+{
+	struct gl_ctx *c = u;
+	if (c->seen || seq != c->want) { return; }
+	c->seen = true;
+	hubml_gate_parse(line, n, c->uid, c->g, &c->code, &c->why);
+	if (!c->why) { c->g->seq = seq; }
+}
+int hubml_gate_load(uint32_t seq, const char *uid16, struct hubml_gate *g, const char **code, const char **why)
+{
+	struct gl_ctx c = { .want = seq, .uid = uid16, .g = g };
+	if (seq > 0) { hubml_ledger_read(seq, 1, gl_cb, &c); }
+	if (!c.seen) {
+		*code = "not_found";
+		*why = "gate_not_found";
+		return -ENOENT;
+	}
+	if (c.why) {
+		*code = c.code;
+		*why = c.why;
+		return -EINVAL;
+	}
+	return 0;
+}
+
+struct gla_ctx {
+	const char *uid;
+	uint32_t best;
+};
+static void gla_cb(uint32_t seq, const char *line, size_t n, void *u)
+{
+	struct gla_ctx *c = u;
+	bool hit = false;	/* 싼 걸러내기: "normal_gate" 글자가 있는 줄만 */
+	for (size_t i = 0; !hit && i + 13 <= n; i++) { hit = !memcmp(line + i, "\"normal_gate\"", 13); }
+	if (!hit) { return; }
+	struct gmem m;
+	if (!gate_head(line, n, c->uid, &m)) { c->best = seq; }
+}
+int hubml_gate_latest(const char *uid16, uint32_t *seq)
+{
+	struct gla_ctx c = { .uid = uid16 };
+	hubml_ledger_read(1, 0x7fffffff, gla_cb, &c);
+	if (!c.best) { return -ENOENT; }
+	*seq = c.best;
+	return 0;
+}
+
+int hubml_gate_check(const struct hubml_gate *g, int64_t utc_ms)
+{
+	int64_t dn = utc_ms / 86400000LL, ms = utc_ms % 86400000LL;
+	if (ms < 0) { ms += 86400000LL; dn--; }
+	bool in = false;
+	for (int i = 0; i < g->ninc && !in; i++) {
+		in = g->inc[i].dn == dn && ms >= g->inc[i].a * 60000LL && ms < g->inc[i].b * 60000LL;
+	}
+	if (!in) { return 1; }
+	for (int i = 0; i < g->nexc; i++) {
+		if (g->exc[i].dn == dn && ms >= g->exc[i].a * 60000LL && ms < g->exc[i].b * 60000LL) { return 2; }
+	}
+	return 0;
+}
+
+/* ── anchor.jsonl 한 줄: {"seq":n,"stream":1,"boot_id":B,"edge_ms":E,"hub_ms":H,"time_set":0|1} ── */
+struct amem {
+	int have;
+	int64_t boot, edge, hub, ts;
+};
+static void amem_cb(const char *k, size_t kn, const char *v, size_t vn, void *u)
+{
+	struct amem *m = u;
+	char t[24];
+	if (vn == 0 || vn >= sizeof t || (v[0] != '-' && (v[0] < '0' || v[0] > '9'))) { return; }
+	memcpy(t, v, vn);
+	t[vn] = 0;
+	const int64_t x = strtoll(t, NULL, 10);
+#define K(name) (kn == sizeof(name) - 1 && !memcmp(k, name, kn))
+	if (K("boot_id")) { m->boot = x; m->have |= 1; }
+	else if (K("edge_ms")) { m->edge = x; m->have |= 2; }
+	else if (K("hub_ms")) { m->hub = x; m->have |= 4; }
+	else if (K("time_set")) { m->ts = x; m->have |= 8; }
+#undef K
+}
+int hubml_anchor_parse(const char *line, size_t n, struct hubml_anchor *a, bool *time_set)
+{
+	struct amem m = { 0 };
+	struct jp p = { line, line + n, true };
+	if (j_obj(&p, 0, amem_cb, &m) || m.have != 15 || m.boot < 0 || m.boot > 0xffff) { return -EBADMSG; }
+	a->boot = (uint16_t)m.boot;
+	a->edge_ms = m.edge;
+	a->hub_ms = m.hub;
+	*time_set = m.ts != 0;
 	return 0;
 }

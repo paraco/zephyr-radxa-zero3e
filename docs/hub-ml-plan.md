@@ -60,6 +60,27 @@ HaLow(NRC7394 BridgeRPC 위 UDP, ≤ 1,200 B/데이터그램, TCP 없음) 한 �
 **정본 규격: MoruLab_MLOps `design/MLCC_LEDGER_SPEC.md` (`mlledger/1`)** — `subsys/hubml/src/ledger.c` 가 따른다.
 읽기 응답: `HUBML/1 ledger seq=<n> b64=<줄>` … `HUBML/1 ledger_done last= head= total=`.
 
+### 5.1 정상 관문(normal_gate)으로 학습 데이터 거르기 — `ml train gate=<seq>` (2026-11-09, QEMU Lm11)
+
+`ml train uid=<hex16> [gate=<seq> | days=<d1,…>] [q=]`. 원장의 **승인된** normal_gate(decision=accept · sig 객체 있음 · ds_id 의
+`ds-<uid16>-` 가 uid 와 같음)의 include/exclude 구간으로 학습·평가 데이터를 거른다. `gate`·`days` 둘 다 없으면 그 uid 의 **가장 최근**
+승인 관문을 자동으로 고른다(없으면 `err code=no_gate msg=uid=…`). `days=` 는 관문 없는 예전 경로(동작·원장 줄 그대로), 둘 다 주면 `bad_arg`.
+- 검사 실패 = `HUBML/1 err code=<not_found|bad_arg> msg=gate_<이유>`(decision · kind · nosig · uid · range · time · date · reason · include_empty · too_many …).
+  구간은 `[날짜 yyyymmdd, "HH:MM", "HH:MM")`(끝 제외, 끝에만 `24:00`, 시작<끝, exclude 는 사유 필수), include·exclude 각 32 개 상한.
+- 벡터 측정 UTC(Studio `readDaySeries` 와 같은 규칙): 앵커 = **그 .mcs 가 있는 날짜 폴더** `anchor.jsonl` 중 time_set=1 · boot_id 같음 · |edge_ms 차| 최소(같으면 앞 줄);
+  `utc0 = hub_ms + (레코드 edge_ms − 앵커 edge_ms)`, 벡터 i>0 이면 `utc += dt_ms[i]`(dt_ms[0] 은 더하지 않고, quality≠0 벡터의 dt 도 누적).
+  **Studio 와 다른 점: 앵커 없는 벡터는 뺀다(unanchored)** — Studio 는 수집 순서로 시각을 추정한다.
+- 남기는 조건: (UTC 날짜, 하루 안 ms) 가 어떤 include 안이고 어떤 exclude 안도 아님. 밖 = `outside`, include 안이지만 exclude = `excluded`.
+- 읽는 파일 = include 날짜 D 마다 D·D+1·D+2 의 합집합(밀린 데이터가 늦은 날짜 파일에 들어온다). 앵커는 폴더마다 한 번 읽어 캐시(폴더당 1024 줄 상한).
+  `hubml_train` 3 패스와 `hubml_eval_holdout` 이 같은 걸러진 흐름을 본다(`struct hubml_train_cfg.gate`; NULL 이면 예전 동작).
+- 원장: `dataset` 은 `days` = include 날짜, merkle = 그 날짜들의 s1.mcs 만(넘침 파일은 해시하지 않음), `gate_seq` · `gate_ds_id` 추가, counts 에
+  `excluded` · `outside` · `unanchored` 추가(counts.vectors = 거른 뒤 수). `model` 의 extra 에는 `train_ds` 뒤에 `gate_seq`. 응답 끝 ` gate=<seq> unanchored= excluded= outside=`.
+- 학습 최소 1000 벡터(거른 뒤 기준) — 관문 경로에서 모자라면 `err code=train msg=gate_too_few n=<수> min=1000`(days= 경로는 `msg=-61` 그대로).
+- 관문 경로에서는 특징에 비유한(NaN/Inf) 값이 있는 벡터도 뺀다(dt 는 시각에 누적). dataset `counts.bad_quality` = quality≠0 수 + 비유한 수(days= 경로는 상수 0). 앵커 상한 초과분이 있으면 응답 끝에 ` anchor_over=<n>`(원장에는 싣지 않음).
+- ⚠ merkle 은 include 날짜의 s1.mcs 만 해시한다 — 실제로 읽은 D+1·D+2 넘침 파일은 빠지므로 그 파일이 나중에 바뀌면 같은 dataset 이 재현되지 않는다(재현성 한계).
+- ⚠ 자동 선택은 가장 최근 승인 관문을 고르고, 그 줄이 깨져 있으면(모양 위반 등) 이전 관문으로 내려가지 않고 실패한다.
+- 시험: `apps/hubml_q11`(`=== Lm11 PASS`) — 기대값은 `tools/hubml_testdata.py --gate-inc`(Studio 규칙을 옮긴 두 번째 구현 `gate_ref`)가 만든 `gate_scenario.inc`.
+
 ## 6. 진행 (실기 없이 QEMU 로, 실기는 마지막 한 번)
 
 | 단계 | 상태 | 시험 |

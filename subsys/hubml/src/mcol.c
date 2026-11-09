@@ -101,6 +101,20 @@ int mcol_feat_get(const uint8_t *pl, uint16_t len, int i, float *x, int nmax, ui
 	return 0;
 }
 
+int mcol_feat_dt(const uint8_t *pl, uint16_t len, int i, uint16_t *dt_ms)
+{
+	if (len < MCOL_FEAT_HDR) {
+		return -EBADMSG;
+	}
+	const int n = pl[0], c = pl[1];
+	const size_t vl = mcol_feat_vec_len(c);
+	if (i < 0 || i >= n || MCOL_FEAT_HDR + (size_t)n * vl > len) {
+		return -EINVAL;
+	}
+	*dt_ms = sys_get_le16(pl + MCOL_FEAT_HDR + (size_t)i * vl + 4 * c + 2);
+	return 0;
+}
+
 int mcol_feat_put(uint8_t *pl, size_t cap, int contract, int n, const float *xs, const uint8_t *quality)
 {
 	const size_t vl = mcol_feat_vec_len(contract);
