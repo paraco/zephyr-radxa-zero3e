@@ -279,8 +279,10 @@ static int seg_open(struct fs_file_t *f, uint64_t uid, const char *day, uint8_t 
 	return 0;
 }
 
-/* 상태 파일: 'MLS1' · n · { uid u64 · boot u16 · fw u32 · contract u16 · next[5] u32 · bits[5] u64 } */
-#define ST_REC (8 + 2 + 4 + 2 + 4 * MCOL_NSTREAM + 8 * MCOL_NSTREAM)
+/* 상태 파일: 'MLS2' · n · rsv · n × { sid u16 · uid u64 · boot u16 · fw u32 · contract u16 · next[5] u32 · bits[5] u64 ·
+ *   schema_hash u32 }   ('MLS1' 은 schema 없이 — 읽을 수 있다. 2026-11-09 실기: 재시작 뒤 schema 가 0 으로 보였다) */
+#define ST_REC1 (8 + 2 + 4 + 2 + 4 * MCOL_NSTREAM + 8 * MCOL_NSTREAM)
+#define ST_REC (ST_REC1 + 4)
 static int state_save(const struct edge *snap)
 {
 	static uint8_t b[8 + HUBML_MAX_EDGES * (2 + ST_REC)];
@@ -300,10 +302,11 @@ static int state_save(const struct edge *snap)
 			sys_put_le32(snap[i].dur[s].next, b + o + 16 + 4 * s);
 			sys_put_le64(snap[i].dur[s].bits, b + o + 16 + 4 * MCOL_NSTREAM + 8 * s);
 		}
+		sys_put_le32(snap[i].schema_hash, b + o + ST_REC1);
 		o += ST_REC;
 		n++;
 	}
-	memcpy(b, "MLS1", 4);
+	memcpy(b, "MLS2", 4);
 	sys_put_le16(n, b + 4);
 	sys_put_le16(0, b + 6);
 	char p[64];
@@ -334,17 +337,19 @@ static int state_load(void)
 	}
 	const ssize_t n = fs_read(&f, b, sizeof b);
 	fs_close(&f);
-	if (n < 8 || memcmp(b, "MLS1", 4)) {
+	const bool v2 = n >= 8 && !memcmp(b, "MLS2", 4);
+	const size_t rec = v2 ? ST_REC : ST_REC1;
+	if (n < 8 || (!v2 && memcmp(b, "MLS1", 4))) {
 		LOG_ERR("상태 파일이 깨졌다 — 처음부터 (데이터 파일은 그대로)");
 		return -EBADMSG;
 	}
 	const uint16_t cnt = sys_get_le16(b + 4);
 	size_t o = 8;
-	for (int k = 0; k < cnt && o + 2 + ST_REC <= (size_t)n; k++) {
+	for (int k = 0; k < cnt && o + 2 + rec <= (size_t)n; k++) {
 		const uint16_t sid = sys_get_le16(b + o);
 		o += 2;
 		if (sid == 0 || sid > HUBML_MAX_EDGES) {
-			o += ST_REC;
+			o += rec;
 			continue;
 		}
 		struct edge *e = &edges[sid - 1];
@@ -359,7 +364,8 @@ static int state_load(void)
 			e->dur[s].bits = sys_get_le64(b + o + 16 + 4 * MCOL_NSTREAM + 8 * s);
 			e->rcv[s] = e->dur[s];
 		}
-		o += ST_REC;
+		e->schema_hash = v2 ? sys_get_le32(b + o + ST_REC1) : 0;
+		o += rec;
 	}
 	LOG_INF("상태 파일에서 장비 %u 대를 이어 받았다", cnt);
 	return 0;
@@ -420,6 +426,9 @@ static void send_acks(const struct edge *snap)
 		k_mutex_unlock(&st_mtx);
 		if (!need && !memcmp(before[i].dur, snap[i].dur, sizeof snap[i].dur)) {
 			continue;
+		}
+		if (addr == 0) {
+			continue;	/* 재시작 뒤 아직 말이 없는 장비 — 주소를 모른다(실기: addr=0 으로 보냈다). 다음에 말하면 보낸다 */
 		}
 		uint8_t pl[MCOL_ACK_ENTRY_LEN * MCOL_NSTREAM];
 		size_t o = 0;
