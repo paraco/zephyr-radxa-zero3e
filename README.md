@@ -38,9 +38,9 @@ suspend/resume · 일반 엔드포인트의 실사용 검증(설정까지만 확
 - Zephyr 워크스페이스 + SDK
 
 ```
-~/zephyrproject       Zephyr v4.4.0 계열
+~/zephyrproject-4.5   Zephyr v4.5.0 (기본, 2026-11-23 전환 — docs/zephyr-4.5-migration.md)
 ~/zephyr-sdk-1.0.1    aarch64-zephyr-elf 툴체인
-~/.zephyr-venv        west 용 venv
+~/zephyrproject-4.5/.venv   west 용 venv (4.5 가 요구하는 natsort 등 포함)
 ```
 
 경로가 다르면 `PIZZA_ZEPHYR_WS` · `PIZZA_ZEPHYR_SDK` · `PIZZA_ZEPHYR_VENV`

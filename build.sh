@@ -16,9 +16,10 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ZEPHYR_WS="${PIZZA_ZEPHYR_WS:-$HOME/zephyrproject}"
+ZEPHYR_WS="${PIZZA_ZEPHYR_WS:-$HOME/zephyrproject-4.5}"
 SDK="${PIZZA_ZEPHYR_SDK:-$HOME/zephyr-sdk-1.0.1}"
-VENV="${PIZZA_ZEPHYR_VENV:-$HOME/.zephyr-venv}"
+# Zephyr 기본 = v4.5.0 (2026-11-23 전환). 작업 공간의 .venv(4.5 가 요구하는 natsort 등 포함)를 먼저 쓴다
+VENV="${PIZZA_ZEPHYR_VENV:-$ZEPHYR_WS/.venv}"
 
 APP="${1:-$ZEPHYR_WS/zephyr/samples/hello_world}"
 BUILD_DIR="${2:-/tmp/claude-501/rz3e-build}"

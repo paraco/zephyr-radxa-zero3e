@@ -6,7 +6,7 @@
 set -uo pipefail
 APP=${1:?사용법: $0 apps/hubml_edge_q [제한초]}; LIMIT=${2:-60}
 OUT=/tmp/claude-501/q-$(basename "${APP%/}"); LOG=$OUT.log
-export ZEPHYR_BASE="${PIZZA_ZEPHYR_WS:-$HOME/zephyrproject}/zephyr"
+export ZEPHYR_BASE="${PIZZA_ZEPHYR_WS:-$HOME/zephyrproject-4.5}/zephyr"
 export ZEPHYR_TOOLCHAIN_VARIANT=zephyr ZEPHYR_SDK_INSTALL_DIR="${PIZZA_ZEPHYR_SDK:-$HOME/zephyr-sdk-1.0.1}"
 [[ -f "$HOME/.zephyr-venv/bin/activate" ]] && source "$HOME/.zephyr-venv/bin/activate"
 mkdir -p /tmp/claude-501

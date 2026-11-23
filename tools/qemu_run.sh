@@ -22,9 +22,10 @@ LOG=$OUT.log
 command -v qemu-system-aarch64 >/dev/null || { echo "qemu-system-aarch64 없음" >&2; exit 3; }
 
 # build.sh 와 같은 규칙으로 작업공간·SDK·venv 를 잡는다
-ZEPHYR_WS="${PIZZA_ZEPHYR_WS:-$HOME/zephyrproject}"
+ZEPHYR_WS="${PIZZA_ZEPHYR_WS:-$HOME/zephyrproject-4.5}"
 SDK="${PIZZA_ZEPHYR_SDK:-$HOME/zephyr-sdk-1.0.1}"
-VENV="${PIZZA_ZEPHYR_VENV:-$HOME/.zephyr-venv}"
+# Zephyr 기본 = v4.5.0 (2026-11-23 전환). 작업 공간의 .venv(4.5 가 요구하는 natsort 등 포함)를 먼저 쓴다
+VENV="${PIZZA_ZEPHYR_VENV:-$ZEPHYR_WS/.venv}"
 export ZEPHYR_BASE="$ZEPHYR_WS/zephyr"
 # ⚠ QEMU 사다리는 **SDK 툴체인**으로 짓는다. cross-compile 로는
 # TOOLCHAIN_HAS_GLIBCXX=n 이 되어 C++ 앱이 <vector> 를 못 찾는다
