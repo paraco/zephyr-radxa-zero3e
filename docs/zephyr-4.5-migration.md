@@ -33,7 +33,9 @@ qemu_cortex_a53 기본 `KERNEL_VM_SIZE` 8 MiB 로는 32 MiB RAM 디스크가 들
   걸리게 바뀌어 꺼졌다(빌드 경고 한 줄). 보드 DTS uart2 에 호환을 더함(7437239) → 경고 0 · 설정 y.
 - **2차 7437239 (build 74372394feb0): 통과.** 부팅 슬롯 try · Zephyr 4.5.0 · 4코어 기동 · OTP 칩 ID · SD(FatFs, ml 상태 e1~e4 복원,
   e4 schema 4d463334) · LLM 적재 8809 ms(4.4 8791 ms) · `hub_chat` "대한민국의 수도는?" → 서울, ttft 1400 ms · tg 4.27 tok/s(1104 MHz)
-  · `ml status` · `kernel heap` 정상. 영구 적용은 하지 않았다(재부팅하면 4.4 영구판 6dccf09).
+  · `ml status` · `kernel heap` 정상.
+- **영구 적용 (19:31, 사용자 지시):** 같은 판 CRC 0x319d7cfb · `moru ota apply` → 부팅 슬롯 main · build 74372394feb0 · LLM 8817 ms.
+  이전 영구판 6dccf09(4.4)는 카드의 `zephyr.bin.old`.
 - 같은 날 4.4 영구판에서 재부팅·USB 끊김이 여러 번 있었다(18:08~18:23). 보드가 USB-C 7-in-1 어댑터 아래였고, 맥 본체에 직접
   꽂은 뒤로는 재현되지 않았다 — 전원 공급으로 본다(확정 아님).
 
