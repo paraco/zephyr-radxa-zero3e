@@ -1,5 +1,6 @@
 /* hubml Edge 쪽 모델 받기 — include/hubml/edge.h. SPDX-License-Identifier: Apache-2.0 */
 #include <errno.h>
+#include <math.h>
 #include <string.h>
 #include <zephyr/sys/byteorder.h>
 #include <hubml/mcol.h>
@@ -133,4 +134,46 @@ void hubml_edge_score(const struct hubml_edge *e, const float *x, float *champ, 
 {
 	*champ = e->slot[0].valid ? xmd_score(&e->slot[0].m, x, NULL) : -1.0f;
 	*chall = e->slot[1].valid ? xmd_score(&e->slot[1].m, x, NULL) : -1.0f;
+}
+
+int hubml_edge_score_batch(const struct hubml_edge *e, const uint8_t *feat_pl, uint16_t len, uint32_t feat_seq,
+			   uint8_t *out, size_t cap)
+{
+	if (len < MCOL_FEAT_HDR) {
+		return -EINVAL;
+	}
+	const int n = feat_pl[0], c = feat_pl[1];
+	if (n < 1 || n > MCOL_FEAT_MAX_N || c != e->contract || c > XMB_MAX_FEAT) {
+		return -EINVAL;
+	}
+	struct mcol_score_hdr h = { .feat_seq = feat_seq, .n = (uint8_t)n,
+				    .champ_num = e->slot[0].valid ? e->slot[0].num : 0,
+				    .chal_num = e->slot[1].valid ? e->slot[1].num : 0 };
+	struct mcol_score_ent ent[MCOL_FEAT_MAX_N];
+	for (int i = 0; i < n; i++) {
+		float x[XMB_MAX_FEAT];
+		uint8_t q = 0;
+		if (mcol_feat_get(feat_pl, len, i, x, XMB_MAX_FEAT, NULL, &q)) {
+			return -EINVAL;
+		}
+		ent[i] = (struct mcol_score_ent){ 0 };
+		if (q != 0) {
+			continue;	/* 점수 무의미 — 두 valid 0 */
+		}
+		for (int s = 0; s < 2; s++) {
+			if (!e->slot[s].valid) {
+				continue;
+			}
+			const float sc = xmd_score(&e->slot[s].m, x, NULL);
+			if (!isfinite(sc)) {
+				continue;
+			}
+			(s ? &ent[i].chal : &ent[i].champ)[0] = sc;
+			ent[i].vflags |= s ? MCOL_SV_CHAL_VALID : MCOL_SV_CHAMP_VALID;
+			if (sc >= 1.0f) {
+				ent[i].vflags |= s ? MCOL_SV_CHAL_ALARM : MCOL_SV_CHAMP_ALARM;
+			}
+		}
+	}
+	return mcol_score_put(out, cap, &h, ent);
 }

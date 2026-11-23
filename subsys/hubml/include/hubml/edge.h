@@ -48,6 +48,12 @@ void hubml_edge_init(struct hubml_edge *e, uint16_t contract);
 int hubml_edge_on_cmd(struct hubml_edge *e, const uint8_t *pl, uint16_t len, uint8_t *reply);
 /** 점수: champion · challenger (슬롯이 비었으면 -1) */
 void hubml_edge_score(const struct hubml_edge *e, const float *x, float *champ, float *chall);
+/** FEAT 본문 한 묶음의 SCORE 본문(mcol.h)을 out 에 쓰고 길이를 반환한다. 음수 = 오류
+ *  (-EINVAL: FEAT 의 n 이 1..8 밖 · 계약 다름 · 본문이 모자람 / -EMSGSIZE: cap 부족).
+ *  빈 슬롯·quality≠0 벡터·점수가 NaN/inf 면 그 슬롯 valid 0 + 점수칸 0.0f (-1 을 전선에 내보내지 않는다).
+ *  경보 = valid && score >= 1.0f (kind 3 점수 = d²/thr). champ_num/chal_num = 슬롯의 num (빈 슬롯 0). */
+int hubml_edge_score_batch(const struct hubml_edge *e, const uint8_t *feat_pl, uint16_t len, uint32_t feat_seq,
+			   uint8_t *out, size_t cap);
 
 #ifdef __cplusplus
 }

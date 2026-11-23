@@ -4,6 +4,7 @@
  *  2) 시험 벡터 64 개의 점수가 허브(A55)·파이썬 값과 같은가 (허용 1e-5, 몇 개가 비트까지 같은지도 센다)
  *  3) MCOL/1 HELLO·FEAT 를 만들고 다시 풀기 (32비트에서 u64 · 정렬)
  *  4) 모델 RAM 크기 (XMB_MAX_FEAT=34)
+ *  5) 시범 운영 SCORE 본문 (hubml_edge_score_batch) 이 Python 기준 바이트와 같은가
  * SPDX-License-Identifier: Apache-2.0
  */
 #include <zephyr/kernel.h>
@@ -25,6 +26,7 @@ static const uint8_t k1[] = {
 static const uint32_t PV[][36] = {
 #include "pv_vectors.inc"
 };
+#include "score_edge_expected.inc"	/* tools/hubml_testdata.py --score-inc — Python 기준 SCORE 본문 (허브 A55 쪽 hubml_q12 도 같은 바이트를 대조) */
 
 static struct xmd_model md;
 static struct xmb_model tm;
@@ -153,6 +155,54 @@ int main(void)
 		       end_st, act_st, E.slot[0].valid && !memcmp(E.slot[0].sha, d, 32) ? "예" : "아니오", same, n,
 		       (unsigned)sizeof(E));
 		if (end_st || act_st || same != n) { ok = false; }
+	}
+	/* SCORE 본문 (시범 운영 보고): 같은 입력 → Python 기준 바이트와 같은가 (M33 float32) */
+	{
+		static struct hubml_edge E;
+		static float xs2[8 * 34];
+		uint8_t fp[MCOL_MAX_PAYLOAD], got[MCOL_SCORE_HDR + 9 * 8];
+		int nsame = 0;
+		for (int c = 0; c < (int)ARRAY_SIZE(ES_CASE); c++) {
+			const struct es_case *k = &ES_CASE[c];
+			hubml_edge_init(&E, 34);
+			for (int s = 0; s < 2; s++) {
+				if (!(k->slots & (1 << s))) { continue; }
+				uint8_t b[MCOL_CMD_HDR + 44 + 4 + MCOL_CHUNK], r[MCOL_CMD_ACK_LEN], d[32];
+				struct sha256 sh;
+				sha256_init(&sh);
+				sha256_update(&sh, k3, sizeof k3);
+				sha256_final(&sh, d);
+				b[0] = MCOL_OP_BEGIN; b[1] = 0; sys_put_le16((uint16_t)(1 + s), b + 2);
+				memset(b + 4, 0, 44);
+				b[4] = (uint8_t)s; b[5] = 3;
+				sys_put_le32(sizeof k3, b + 8);
+				sys_put_le32(s ? k->chal_num : k->champ_num, b + 12);
+				memcpy(b + 16, d, 32);
+				hubml_edge_on_cmd(&E, b, MCOL_CMD_HDR + 44, r);
+				for (uint32_t off = 0; off < sizeof k3; off += MCOL_CHUNK) {
+					const uint32_t nn = MIN((uint32_t)MCOL_CHUNK, (uint32_t)sizeof k3 - off);
+					b[0] = MCOL_OP_CHUNK;
+					sys_put_le32(off, b + 4);
+					memcpy(b + 8, k3 + off, nn);
+					hubml_edge_on_cmd(&E, b, (uint16_t)(8 + nn), r);
+				}
+				b[0] = MCOL_OP_END;
+				hubml_edge_on_cmd(&E, b, MCOL_CMD_HDR, r);
+			}
+			for (int i = 0; i < k->n; i++) {
+				for (int j = 0; j < 34; j++) { xs2[i * 34 + j] = f_of(PV[k->first + i][j]); }
+			}
+			const int fl = mcol_feat_put(fp, sizeof fp, 34, k->n, xs2, k->q);
+			const int sl = hubml_edge_score_batch(&E, fp, (uint16_t)fl, k->feat_seq, got, sizeof got);
+			nsame += (sl == k->len && !memcmp(got, k->body, (size_t)k->len));
+		}
+		uint8_t bad[MCOL_FEAT_HDR + 4] = { 9, 34, 0, 0 };
+		const bool rej = hubml_edge_score_batch(&E, bad, sizeof bad, 0, got, sizeof got) < 0;
+		bad[0] = 0;
+		const bool rej0 = hubml_edge_score_batch(&E, bad, sizeof bad, 0, got, sizeof got) < 0;
+		printk("SCORE 본문: Python 기준 바이트 일치 %d/%d · FEAT n=9 거부 %s · n=0 거부 %s\n", nsame, (int)ARRAY_SIZE(ES_CASE),
+		       rej ? "예" : "아니오", rej0 ? "예" : "아니오");
+		if (nsame != (int)ARRAY_SIZE(ES_CASE) || !rej || !rej0) { ok = false; }
 	}
 	printk(ok ? "=== Lm3 PASS\n" : "=== Lm3 FAIL\n");
 	return 0;

@@ -312,10 +312,21 @@ static K_SEM_DEFINE(lw_kick, 0, 1);
 
 const char *hub_fs_log_name(void) { return lw_state == LW_ON ? lname : "-"; }
 
+/* 이미 있으면 만들지 않는다 — fs_mkdir 는 EEXIST 도 `<err> fs: failed to create directory (-17)` 로
+ * 찍어 부팅 로그에 가짜 오류가 남았다(2026-11-23). */
+static int mkdir_once(const char *p)
+{
+	struct fs_dirent de;
+	if (fs_stat(p, &de) == 0) {
+		return de.type == FS_DIR_ENTRY_DIR ? 0 : -ENOTDIR;
+	}
+	const int rc = fs_mkdir(p);
+	return (rc == -EEXIST) ? 0 : rc;
+}
+
 static int mkdir_logs(void)
 {
-	const int rc = fs_mkdir("/0:/logs");
-	return (rc == -EEXIST) ? 0 : rc;
+	return mkdir_once("/0:/logs");
 }
 
 /* io_lock 을 쥔 채 */
@@ -653,8 +664,7 @@ int hubml_storage_ready(void)
 	if (rc) {
 		return rc;
 	}
-	const int m = fs_mkdir("/0:/ml");
-	return (m == 0 || m == -EEXIST) ? 0 : m;
+	return mkdir_once("/0:/ml");
 }
 const char *hubml_default_hub_id(void)
 {

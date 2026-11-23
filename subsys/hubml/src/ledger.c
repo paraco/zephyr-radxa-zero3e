@@ -309,17 +309,27 @@ int hubml_ledger_read(uint32_t since, int max, hubml_ledger_cb cb, void *user)
 	return cnt;
 }
 
+/* 있으면 만들지 않는다 — fs_mkdir 는 EEXIST 도 `<err> fs: failed to create directory (-17)` 로 찍는다 */
+static int mkdir_once(const char *p)
+{
+	struct fs_dirent de;
+	if (fs_stat(p, &de) == 0) {
+		return de.type == FS_DIR_ENTRY_DIR ? 0 : -ENOTDIR;
+	}
+	const int rc = fs_mkdir(p);
+	return (rc == -EEXIST) ? 0 : rc;
+}
+
 static int mkdirs(uint64_t uid)
 {
 	char p[80];
 	snprintf(p, sizeof p, "%s/models", root);
-	int rc = fs_mkdir(p);
-	if (rc && rc != -EEXIST) {
+	int rc = mkdir_once(p);
+	if (rc) {
 		return rc;
 	}
 	snprintf(p, sizeof p, "%s/models/%016llx", root, (unsigned long long)uid);
-	rc = fs_mkdir(p);
-	return (rc == -EEXIST) ? 0 : rc;
+	return mkdir_once(p);
 }
 
 int hubml_model_register(uint64_t uid, const uint8_t *xmb, size_t n, const char *actor, const char *extra,

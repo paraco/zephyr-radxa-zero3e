@@ -137,3 +137,67 @@ int mcol_feat_put(uint8_t *pl, size_t cap, int contract, int n, const float *xs,
 	}
 	return (int)(MCOL_FEAT_HDR + (size_t)n * vl);
 }
+
+static void put_f32(uint8_t *p, float f)
+{
+	uint32_t u;
+	memcpy(&u, &f, 4);
+	sys_put_le32(u, p);
+}
+
+static float get_f32(const uint8_t *p)
+{
+	const uint32_t u = sys_get_le32(p);
+	float f;
+	memcpy(&f, &u, 4);
+	return f;
+}
+
+int mcol_score_put(uint8_t *pl, size_t cap, const struct mcol_score_hdr *h, const struct mcol_score_ent *ent)
+{
+	if (h->n < 1 || h->n > MCOL_SCORE_MAX_N) {
+		return -EINVAL;
+	}
+	const size_t L = mcol_score_len(h->n);
+	if (L > cap) {
+		return -EMSGSIZE;
+	}
+	sys_put_le32(h->feat_seq, pl);
+	pl[4] = h->n;
+	pl[5] = 0;
+	sys_put_le16(0, pl + 6);
+	sys_put_le32(h->champ_num, pl + 8);
+	sys_put_le32(h->chal_num, pl + 12);
+	for (int i = 0; i < h->n; i++) {
+		uint8_t *v = pl + MCOL_SCORE_HDR + (size_t)i * MCOL_SCORE_ENT;
+		put_f32(v, ent[i].champ);
+		put_f32(v + 4, ent[i].chal);
+		v[8] = ent[i].vflags & 0x0f;
+	}
+	return (int)L;
+}
+
+int mcol_score_get(const uint8_t *pl, uint16_t len, struct mcol_score_hdr *h)
+{
+	if (len < MCOL_SCORE_HDR) {
+		return -EBADMSG;
+	}
+	const int n = pl[4];
+	if (n < 1 || n > MCOL_SCORE_MAX_N || len != mcol_score_len(n)) {
+		return -EBADMSG;
+	}
+	h->feat_seq = sys_get_le32(pl);
+	h->n = (uint8_t)n;
+	h->flags = pl[5];
+	h->champ_num = sys_get_le32(pl + 8);
+	h->chal_num = sys_get_le32(pl + 12);
+	return 0;
+}
+
+void mcol_score_ent_get(const uint8_t *pl, int i, struct mcol_score_ent *e)
+{
+	const uint8_t *v = pl + MCOL_SCORE_HDR + (size_t)i * MCOL_SCORE_ENT;
+	e->champ = get_f32(v);
+	e->chal = get_f32(v + 4);
+	e->vflags = v[8];
+}

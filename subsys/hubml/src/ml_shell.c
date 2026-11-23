@@ -15,11 +15,22 @@
  *                   (없으면 err code=no_gate). days= 는 관문 없는 예전 경로(동작 그대로). gate 와 days 를 같이 주면 bad_arg.
  *                   관문 실패 = `HUBML/1 err code=<not_found|bad_arg> msg=gate_<이유>`. 응답 끝에 gate= unanchored= excluded= outside=
  *   ml model ls uid=<hex16>                           원장의 별칭
+ *   ml shadow ls uid=<hex16> days=<d1,…> [--kv]       시범 운영(shadow) 날별·쌍별 비교 요약 (--kv 는 있어도 없어도 출력이 같다)
+ *       날마다 먼저  HUBML/1 shadow_day uid= day= pairs=<그날 쌍 수> pairs_over=<0|1> bad=<깨진 SCORE 수> [err=<rc>]
+ *       이어서 쌍(champ_num,chal_num)마다(벡터 수 많은 순, 같으면 먼저 나온 쌍)
+ *         HUBML/1 shadow uid= day= champ=<uid:num|-> chal=<uid:num|-> n= valid_both= alarm_champ= alarm_chal= both=
+ *           champ_only= chal_only= agree=<4자리|-> mean_champ= mean_chal=<%.4f|-> corr=<%.4f|->     (통계는 쌍별로 따로 누적)
+ *       끝에 `HUBML/1 shadow_done n=<일수>`. Edge 가 FEAT 묶음마다 보낸 SCORE(MCOL_T_SCORE, EVT 흐름 — mcol.h)를 그날 받은 파일에서 읽는다.
+ *       깨진 SCORE(길이 어긋남 · n 이 1..8 밖)는 bad 로만 센다. 점수가 NaN/inf 면 valid 비트가 켜져 있어도 무효(경보 비트도 무시).
+ *       both/champ_only/chal_only/agree 는 두 슬롯이 모두 유효한 벡터 안에서만 센다. 쌍이 하루 32 개(SH_MAX_PAIRS)를 넘으면 넘은 쌍의
+ *       벡터는 어느 shadow 줄에도 넣지 않고 pairs=32 pairs_over=1. 저장소 읽기 오류(rc<0, ENOENT 제외)는 shadow_day 끝에 err=<rc>
+ *       (부분 합계는 그대로). 쌍이 없는 날(장비·파일 없음 포함)은 shadow_day 줄만(pairs=0).
  * approve · deploy · model put 은 서명 검증(ed25519)과 함께 붙인다.
  * SPDX-License-Identifier: Apache-2.0
  */
 #include <errno.h>
 #include <math.h>
+#include <hubml/mcol.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -615,7 +626,145 @@ static int cmd_approve(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+
+/* ── ml shadow ls — SCORE 날별·쌍별 요약 (누적은 double, 버퍼는 static — 실기 셸 스레드 스택이 작다) ────────────────── */
+#define SH_MAX_PAIRS 32
+struct sh_pair {
+	uint32_t cn, hn;	/* (champ_num, chal_num) */
+	uint32_t n, vb, ac, ah, both, co, ho, same, nc, nh;
+	double sc, sh, sx, sy, sxx, syy, sxy;
+};
+struct sh_day {
+	uint32_t bad;
+	int np;			/* 본 쌍 수 (SH_MAX_PAIRS 에서 멈춘다) */
+	bool over;		/* SH_MAX_PAIRS 를 넘는 쌍이 있었다 — 그 쌍의 벡터는 어느 줄에도 안 넣는다 */
+	struct sh_pair p[SH_MAX_PAIRS];
+};
+static struct sh_day shd;
+
+static void shadow_cb(const struct mcol_hdr *h, const uint8_t *pl, void *user)
+{
+	struct sh_day *a = user;
+	struct mcol_score_hdr sh;
+	if (h->type != MCOL_T_SCORE) {
+		return;
+	}
+	if (mcol_score_get(pl, h->len, &sh)) {
+		a->bad++;
+		return;
+	}
+	int k = 0;
+	while (k < a->np && !(a->p[k].cn == sh.champ_num && a->p[k].hn == sh.chal_num)) {
+		k++;
+	}
+	if (k == a->np) {
+		if (a->np >= SH_MAX_PAIRS) {
+			a->over = true;
+			return;
+		}
+		a->p[k].cn = sh.champ_num;
+		a->p[k].hn = sh.chal_num;
+		a->np++;
+	}
+	struct sh_pair *q = &a->p[k];
+	for (int i = 0; i < sh.n; i++) {
+		struct mcol_score_ent e;
+		mcol_score_ent_get(pl, i, &e);
+		const bool cv = (e.vflags & MCOL_SV_CHAMP_VALID) && isfinite(e.champ);
+		const bool hv = (e.vflags & MCOL_SV_CHAL_VALID) && isfinite(e.chal);
+		const bool ca = cv && (e.vflags & MCOL_SV_CHAMP_ALARM);
+		const bool ha = hv && (e.vflags & MCOL_SV_CHAL_ALARM);
+		const double c = (double)e.champ, hh = (double)e.chal;
+		q->n++;
+		if (cv) { q->nc++; q->sc += c; q->ac += ca; }
+		if (hv) { q->nh++; q->sh += hh; q->ah += ha; }
+		if (cv && hv) {
+			q->vb++;
+			q->both += ca && ha;
+			q->co += ca && !ha;
+			q->ho += ha && !ca;
+			q->same += (ca == ha);
+			q->sx += c; q->sy += hh; q->sxx += c * c; q->syy += hh * hh; q->sxy += c * hh;
+		}
+	}
+}
+
+static void sh_tag(char *o, size_t cap, const char *u, uint32_t num)
+{
+	if (num) {
+		snprintf(o, cap, "%s:%u", u, (unsigned)num);
+	} else {
+		snprintf(o, cap, "-");
+	}
+}
+
+static int cmd_shadow_ls(const struct shell *sh, size_t argc, char **argv)
+{
+	if (ready(sh)) {
+		return -EIO;
+	}
+	const char *u = arg(argc, argv, "uid"), *ds = arg(argc, argv, "days");
+	if (!u || strlen(u) != 16 || !ds) {
+		shell_print(sh, "HUBML/1 err code=bad_arg msg=uid=<hex16>_days=<yyyymmdd,…>");
+		return -EINVAL;
+	}
+	const uint64_t uid = strtoull(u, NULL, 16);
+	static char line[640];
+	int nd = 0;
+	for (const char *p = ds; *p && nd < HUBML_MAX_DAYS;) {
+		if (strlen(p) < 8) { break; }
+		char day[9];
+		memcpy(day, p, 8);
+		day[8] = 0;
+		p += 8;
+		if (*p == ',') { p++; }
+		nd++;
+		struct sh_day *a = &shd;
+		memset(a, 0, sizeof *a);
+		const int src = hubml_store_scan(hubml_root(), uid, day, MCOL_S_EVT, shadow_cb, a, NULL);
+		char err[24] = "";
+		if (src < 0 && src != -ENOENT) {
+			snprintf(err, sizeof err, " err=%d", src);	/* 부분 합계는 그대로 내되 표시 */
+		}
+		shell_print(sh, "HUBML/1 shadow_day uid=%s day=%s pairs=%d pairs_over=%d bad=%u%s", u, day, a->np, a->over ? 1 : 0,
+			    a->bad, err);
+		uint8_t ord[SH_MAX_PAIRS];	/* 벡터 수 많은 순, 같으면 먼저 나온 쌍 (안정 삽입 정렬) */
+		for (int i = 0; i < a->np; i++) {
+			int j = i;
+			while (j > 0 && a->p[ord[j - 1]].n < a->p[i].n) {
+				ord[j] = ord[j - 1];
+				j--;
+			}
+			ord[j] = (uint8_t)i;
+		}
+		for (int oi = 0; oi < a->np; oi++) {
+			const struct sh_pair *q = &a->p[ord[oi]];
+			char ct[40], ht[40], ag[48], mc[48], mh[48], cr[48];
+			sh_tag(ct, sizeof ct, u, q->cn);
+			sh_tag(ht, sizeof ht, u, q->hn);
+			snprintf(ag, sizeof ag, "-");
+			snprintf(mc, sizeof mc, "-");
+			snprintf(mh, sizeof mh, "-");
+			snprintf(cr, sizeof cr, "-");
+			if (q->vb) { snprintf(ag, sizeof ag, "%.4f", (double)q->same / (double)q->vb); }
+			if (q->nc) { snprintf(mc, sizeof mc, "%.4f", q->sc / (double)q->nc); }
+			if (q->nh) { snprintf(mh, sizeof mh, "%.4f", q->sh / (double)q->nh); }
+			if (q->vb >= 2) {
+				const double nb = (double)q->vb, vx = nb * q->sxx - q->sx * q->sx, vy = nb * q->syy - q->sy * q->sy;
+				if (vx > 0 && vy > 0) { snprintf(cr, sizeof cr, "%.4f", (nb * q->sxy - q->sx * q->sy) / sqrt(vx * vy)); }
+			}
+			snprintf(line, sizeof line, "HUBML/1 shadow uid=%s day=%s champ=%s chal=%s n=%u valid_both=%u alarm_champ=%u "
+				 "alarm_chal=%u both=%u champ_only=%u chal_only=%u agree=%s mean_champ=%s mean_chal=%s corr=%s",
+				 u, day, ct, ht, q->n, q->vb, q->ac, q->ah, q->both, q->co, q->ho, ag, mc, mh, cr);
+			shell_print(sh, "%s", line);
+		}
+	}
+	shell_print(sh, "HUBML/1 shadow_done n=%d", nd);
+	return 0;
+}
+
 THIN(cmd_approve)
+THIN(cmd_shadow_ls)
 THIN(cmd_drift)
 THIN(cmd_status)
 THIN(cmd_dev_ls)
@@ -635,6 +784,8 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_ml_time, SHELL_CMD_ARG(set, NULL, "set <epoch
 			       SHELL_SUBCMD_SET_END);
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_ml_model, SHELL_CMD_ARG(ls, NULL, "ls uid=<hex16> — 별칭", cmd_model_ls_t, 2, 0),
 			       SHELL_SUBCMD_SET_END);
+SHELL_STATIC_SUBCMD_SET_CREATE(sub_ml_shadow, SHELL_CMD_ARG(ls, NULL, "ls uid=<hex16> days=<d1,…> [--kv] — 시범 운영 날별 비교", cmd_shadow_ls_t, 3, 1),
+			       SHELL_SUBCMD_SET_END);
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_ml,
 	SHELL_CMD_ARG(status, NULL, "status [--kv] — 허브 ML 상태", cmd_status_t, 1, 1),
 	SHELL_CMD(dev, &sub_ml_dev, "장비", NULL),
@@ -645,6 +796,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_ml,
 	SHELL_CMD(commit, NULL, "지금 기록·ACK (시험용)", cmd_commit_t),
 	SHELL_CMD_ARG(train, NULL, "train uid=<hex16> [gate=<seq>|days=<d1,…>] [q=] — 학습(관문 구간으로 거름, 없으면 최근 승인 관문) → 원장 + challenger 제안", cmd_train_t, 2, 2),
 	SHELL_CMD(model, &sub_ml_model, "모델 · 별칭", NULL),
+	SHELL_CMD(shadow, &sub_ml_shadow, "시범 운영(shadow) 점수 요약", NULL),
 	SHELL_CMD_ARG(drift, NULL, "drift uid=<hex16> days=<d1,…> [model=<id>] — v0 대비 날짜별 변화 (보고만)", cmd_drift_t, 3, 1),
 	SHELL_CMD_ARG(approve, NULL, "approve b64=<본문> sig=<ed25519> key=<id> — 사람 승인 (mlledger/1 §4)", cmd_approve_t, 4, 0),
 	SHELL_SUBCMD_SET_END);

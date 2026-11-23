@@ -6,6 +6,8 @@
   ml status → ml time set(지금 UTC) → ml rx(HELLO) → tx HELLO_ACK 에서 sid → FEAT(8 벡터 묶음, 1 Hz 가짜 정상,
   부하 0.4/0.8 이 2 시간마다) + HB 를 ml rx 로 → tx ACK 로 받은 수 확인 → ml commit → ml dev ls · ml ds ls →
   ml train → ml model ls → ml ledger 를 받아 사슬 검사(tools/ledger_verify.py 규칙).
+  --score <champ.xmb> [--chal <chal.xmb>] 를 주면 FEAT 묶음마다 SCORE(MCOL_T_SCORE=11, EVT 흐름 — mcol.h)도 보낸다
+  (kind 3 점수 = tools/xmb_ref.py score_md, 경보 = 점수 >= 1.0). 끝에 `ml shadow ls` 로 날별 요약을 받아 보인다.
   운반은 USB 셸(MLCC 합의 1단계). 실제 Edge(HaLow)는 같은 MCOL/1 데이터그램을 UDP 로 보낸다.
 """
 import argparse, base64, glob, os, re, select, struct, sys, time, zlib, hashlib, json
@@ -13,6 +15,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(__file__))
 from ota_test import open_raw                     # noqa: E402
 from ledger_verify import verify                  # noqa: E402
+from xmb_ref import parse_md, score_md            # noqa: E402
 
 HDR = 24
 def mcol(typ, sid, stream, seq, pl, edge_ms=0, boot=1):
@@ -68,11 +71,30 @@ def gen(t, rng):
     x[26] = 1.0 + 0.005 * rng.standard_normal(); x[27] = load
     return x.astype(np.float32)
 
+def score_pl(seq, xs, champ, chal, cnum, hnum):
+    """SCORE 본문 (mcol.h): 머리 16 B + n × 9 B. 빈 슬롯(None) → valid 0 · num 0 · 점수칸 0.0"""
+    b = struct.pack('<IBBHII', seq, len(xs), 0, 0, cnum if champ else 0, hnum if chal else 0)
+    for x in xs:
+        v, c, h = 0, 0.0, 0.0
+        if champ:
+            c = float(score_md(champ, x)); v |= 1 | (4 if c >= 1.0 else 0)
+        if chal:
+            h = float(score_md(chal, x)); v |= 2 | (8 if h >= 1.0 else 0)
+        b += struct.pack('<ffB', c, h, v)
+    return b
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--hours', type=float, default=4); ap.add_argument('--uid', default='4d50444d000000e1')
     ap.add_argument('--port', default=None)
+    ap.add_argument('--score', default=None, help='champion .xmb (kind 3) — 있으면 SCORE 도 보낸다')
+    ap.add_argument('--chal', default=None, help='challenger .xmb (kind 3, --score 와 함께)')
+    ap.add_argument('--champ-num', type=int, default=1); ap.add_argument('--chal-num', type=int, default=2)
     a = ap.parse_args()
+    if a.chal and not a.score:
+        ap.error('--chal 은 --score 와 함께')
+    champ = parse_md(open(a.score, 'rb').read()) if a.score else None
+    chal = parse_md(open(a.chal, 'rb').read()) if a.chal else None
     port = a.port or sorted(glob.glob('/dev/cu.usbmodem*'))[0]
     hub, uid = Hub(port), int(a.uid, 16)
     print(f'셸 {port} · 장비 {a.uid} · {a.hours} 시간치')
@@ -92,6 +114,8 @@ def main():
         xs = [gen(sq * 8 + i, rng) for i in range(8)]
         pl = bytes([8, 34, 0, 0]) + b''.join(x.tobytes() + bytes([0, 0]) + struct.pack('<H', 1000) for x in xs)
         lines = hub.cmd('ml rx b64=' + base64.b64encode(mcol(3, sid, 1, sq, pl, sq * 8000)).decode(), wait=0.0, timeout=0.05)
+        if champ or chal:     # 기본 동작은 그대로 — 옵션을 줄 때만 SCORE (EVT 흐름 seq = 묶음 번호)
+            lines += hub.cmd('ml rx b64=' + base64.b64encode(mcol(11, sid, 3, sq, score_pl(sq, xs, champ, chal, a.champ_num, a.chal_num), sq * 8000)).decode(), wait=0.0, timeout=0.05)
         if sq % 5 == 0:
             lines += hub.cmd('ml rx b64=' + base64.b64encode(mcol(7, sid, 4, sq // 5, bytes(24))).decode(), wait=0.0, timeout=0.05)
         for r in tx(lines, 8):
@@ -104,6 +128,8 @@ def main():
         for o in range(0, len(r[4]), 9): acks[r[4][o]] = struct.unpack_from('<I', r[4], o + 1)[0]
     print(f'보냄 FEAT {ndg} 데이터그램({nvec} 벡터) · {dt:.1f} s ({ndg * 1180 / dt / 1024:.0f} KiB/s) · 마지막 ACK feat={acks.get(1)} hb={acks.get(4)}')
     for l in hub.cmd('ml dev ls --kv', wait=1.0): print(' ', l)
+    if champ or chal:
+        for l in hub.cmd(f"ml shadow ls uid={a.uid} days={time.strftime('%Y%m%d', time.gmtime(now / 1000))}", until='shadow_done', timeout=30): print(' ', l)
     for l in hub.cmd(f'ml ds ls uid={a.uid} --kv', wait=1.0): print(' ', l)
     day = time.strftime('%Y%m%d', time.gmtime(now / 1000))
     tr = hub.cmd(f'ml train uid={a.uid} days={day}', until='HUBML/1 train', timeout=300)

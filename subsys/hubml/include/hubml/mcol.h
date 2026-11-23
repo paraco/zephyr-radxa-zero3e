@@ -41,7 +41,24 @@ enum mcol_type {
 	MCOL_T_ACK,
 	MCOL_T_CMD,
 	MCOL_T_CMD_ACK,		/* Edge → 허브: CMD 의 결과 (제어 흐름, 순번 추적 없음 — 허브가 다시 보낸다) */
+	MCOL_T_SCORE,		/* Edge → 허브: 시범 운영(shadow) 점수 — 흐름 MCOL_S_EVT (= 11) */
 };
+
+/* SCORE 본문 (LE) — FEAT 묶음마다 두 슬롯(0 champion = 경보 · 1 challenger = 시범, 점수만)의 점수. 흐름 MCOL_S_EVT.
+ *   머리 16 B: feat_seq u32 · n u8 · flags u8(0) · rsv u16 · champ_num u32 · chal_num u32
+ *   그 뒤 n × 9 B: { champ f32 · chal f32 · vflags u8 }       n = 1..8 (FEAT 묶음 상한), 본문 길이 = 16 + 9n 정확히
+ *   vflags bit0 champ_valid · bit1 chal_valid · bit2 champ_alarm · bit3 chal_alarm   (bit4~7 은 앞으로 늘 비트 — 읽을 때 무시)
+ *   빈 슬롯 → valid 0 · num 0 · 점수칸 0.0f. quality≠0 벡터 → 두 valid 0 (점수 무의미).
+ *   데이터그램 머리 edge_ms · boot_id 는 그 FEAT 묶음의 값. feat_seq 는 짝 확인용(허브 요약은 짝을 따지지 않는다).
+ *   읽는 쪽 규칙: n 이 0·9 이상이거나 길이가 어긋나면 깨진 레코드(mcol_score_get 이 거부) · flags·rsv 는 무시 ·
+ *   점수가 NaN/inf 면 valid 비트가 켜져 있어도 무효(경보 비트도 무시). */
+#define MCOL_SCORE_HDR   16
+#define MCOL_SCORE_ENT   9
+#define MCOL_SCORE_MAX_N 8
+#define MCOL_SV_CHAMP_VALID 0x01
+#define MCOL_SV_CHAL_VALID  0x02
+#define MCOL_SV_CHAMP_ALARM 0x04
+#define MCOL_SV_CHAL_ALARM  0x08
 
 /* CMD 본문: op u8 · rsv u8 · xfer u16 · … (허브 → Edge, 모델 배포)
  *   BEGIN    slot u8 · kind u8 · rsv u16 · size u32 · num u32 · sha256[32]          (44 B)
@@ -108,6 +125,24 @@ int mcol_feat_get(const uint8_t *pl, uint16_t len, int i, float *x, int nmax, ui
 int mcol_feat_dt(const uint8_t *pl, uint16_t len, int i, uint16_t *dt_ms);
 /** 묶음 만들기 (Edge·시험용). 반환 = 본문 길이 */
 int mcol_feat_put(uint8_t *pl, size_t cap, int contract, int n, const float *xs, const uint8_t *quality);
+
+struct mcol_score_hdr {
+	uint32_t feat_seq;
+	uint8_t n;
+	uint8_t flags;		/* 읽을 때만 — 쓸 때는 0 */
+	uint32_t champ_num, chal_num;
+};
+struct mcol_score_ent {
+	float champ, chal;
+	uint8_t vflags;
+};
+static inline size_t mcol_score_len(int n) { return MCOL_SCORE_HDR + (size_t)n * MCOL_SCORE_ENT; }
+/** SCORE 본문 만들기. n = h->n (1..8), vflags 는 하위 4 비트만 쓴다. 반환 = 본문 길이, 음수 = 오류(-EINVAL n · -EMSGSIZE cap) */
+int mcol_score_put(uint8_t *pl, size_t cap, const struct mcol_score_hdr *h, const struct mcol_score_ent *ent);
+/** 머리를 읽고 길이를 검사한다. 0 = 정상, -EBADMSG = 깨짐(n 이 1..8 밖이거나 len != 16 + 9n) */
+int mcol_score_get(const uint8_t *pl, uint16_t len, struct mcol_score_hdr *h);
+/** i 번째 항목 (mcol_score_get 이 0 을 준 본문에서). 점수는 그대로 — NaN/inf 판정은 부르는 쪽 */
+void mcol_score_ent_get(const uint8_t *pl, int i, struct mcol_score_ent *e);
 
 /** 반환 = 데이터그램 길이 (머리+본문+CRC), 음수 = 오류 */
 int mcol_encode(uint8_t *out, size_t cap, const struct mcol_hdr *h, const void *payload);

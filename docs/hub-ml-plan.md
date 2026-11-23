@@ -81,6 +81,22 @@ HaLow(NRC7394 BridgeRPC 위 UDP, ≤ 1,200 B/데이터그램, TCP 없음) 한 �
 - ⚠ 자동 선택은 가장 최근 승인 관문을 고르고, 그 줄이 깨져 있으면(모양 위반 등) 이전 관문으로 내려가지 않고 실패한다.
 - 시험: `apps/hubml_q11`(`=== Lm11 PASS`) — 기대값은 `tools/hubml_testdata.py --gate-inc`(Studio 규칙을 옮긴 두 번째 구현 `gate_ref`)가 만든 `gate_scenario.inc`.
 
+### 5.2 시범 운영(shadow) 점수 보고 — MCOL SCORE · `ml shadow ls` (2026-11-23, QEMU Lm12 · Lm3)
+
+Edge 는 슬롯 2 개(0 champion = 경보, 1 challenger = 시범, 점수만)를 갖는다. FEAT 묶음마다 두 슬롯 점수를 허브로 보내고, 허브는 저장하고 날별 비교 요약을 준다. Studio 와 합의한 형식(`hubml/mcol.h` 가 정본):
+
+- **전송:** `MCOL_T_SCORE = 11`, 흐름 `MCOL_S_EVT`(3). 데이터그램 머리 `edge_ms`·`boot_id` 는 그 FEAT 묶음과 같다. FEAT 형식·흐름 수·상태 파일(MLS2)은 그대로. 수집 엔진은 흐름 안의 type 을 가리지 않고 저장하므로(`ingest.c` 변경 없음) EVT 흐름의 기존 동작이 유지된다.
+- **본문(LE):** 머리 16 B = `feat_seq u32 · n u8 · flags u8(0) · rsv u16 · champ_num u32 · chal_num u32`, 뒤에 `n × 9 B { champ f32 · chal f32 · vflags u8 }`. vflags bit0/1 = champ/chal valid, bit2/3 = champ/chal alarm. 빈 슬롯 = valid 0 · num 0 · 점수 0.0f. quality≠0 벡터 = 두 valid 0.
+- **읽기 규칙:** n 은 1~8, 본문 길이는 정확히 16+9n — 아니면 깨짐(`mcol_score_get` 거부, 요약은 `bad=` 로만 센다). 점수가 NaN/inf 면 valid 비트가 켜져 있어도 무효(경보 비트도 무시). flags·rsv·vflags bit4~7 은 거부하지 않고 무시. `feat_seq` 는 짝 확인용 — 허브 요약은 짝을 따지지 않는다.
+- **Edge 참조 구현:** `hubml_edge_score_batch()` (`edge.c`) — 경보 = valid && score ≥ 1.0f (kind 3 점수 = d²/thr). FEAT n 이 1~8 밖이면 오류.
+- **허브 명령:** `ml shadow ls uid=<hex16> days=<d1,…> [--kv]` (`--kv` 는 있어도 없어도 출력이 같다). 날마다 먼저 `HUBML/1 shadow_day uid= day= pairs=<그날 쌍 수> pairs_over=<0|1> bad=<깨진 SCORE 수>`, 이어서 그날 쌍(champ_num, chal_num)마다 `HUBML/1 shadow uid= day= champ=<uid:num|-> chal=<uid:num|-> n= valid_both= alarm_champ= alarm_chal= both= champ_only= chal_only= agree= mean_champ= mean_chal= corr=` 한 줄(벡터 수 많은 순, 같으면 먼저 나온 쌍). 통계는 쌍별로 따로 누적한다. 끝에 `HUBML/1 shadow_done n=<일수>`.
+  - 받은 날 파일의 SCORE 만 읽는다. 중복은 수집 엔진 `win_check` 가 먼저 거르고(같은 흐름·seq 재전송은 저장되지 않는다), 전원 차단 등으로 파일에 물리적으로 두 번 남은 것은 `hubml_store_scan` 이 거른다.
+  - `both`·`champ_only`·`chal_only`·`agree` 는 두 슬롯이 모두 유효한 벡터 안에서 센다. `alarm_*` 는 상대 슬롯이 무효여도 센다.
+  - **쌍 상한 = 하루 32 쌍(`SH_MAX_PAIRS`).** 더 세지 못하므로 넘으면 `pairs=32 pairs_over=1` 이고, 넘은 쌍(33 번째부터)의 벡터는 어느 shadow 줄에도 넣지 않는다(이미 있는 쌍은 계속 누적). Python 기준도 같게 정했다.
+  - 저장소 읽기 오류(`hubml_store_scan` rc<0 이고 -ENOENT 가 아님. 예: 파일 끝 레코드가 잘림)는 그날 `shadow_day` 끝에 ` err=<rc>` 를 붙인다. 부분 합계는 그대로 낸다. 장비·날 파일이 없으면 `shadow_day ... pairs=0` 한 줄뿐이다.
+- **시험:** Python 기준 = `tools/hubml_testdata.py --score-inc subsys/hubml/testdata`(`shadow_lines`, `score_scenario.inc`·`score_edge_expected.inc` 를 만든다. numpy 는 이 모드에서만 쓴다). `apps/hubml_q12`(Lm12, A55)가 여러 날 시나리오(같은 날 두 쌍 · 동률 쌍 · 1e12 대 점수 · 34 쌍 · 잘린 꼬리 · 깨진 SCORE · NaN/inf)의 출력을 글자 그대로 대조하고, 같은 기대 바이트를 `apps/hubml_edge_q`(Lm3, M33)와 q12 가 각각 `hubml_edge_score_batch` 결과와 대조한다. `ml_shell.c` 는 Pearson 비트 일치를 위해 `-ffp-contract=off` 로 짓는다(`cmake/hubml.cmake`). 실기 1 회용 시뮬레이터: `tools/hubml_sim.py --score <champ.xmb> [--chal <chal.xmb>]`.
+- **범위 밖:** v0(거리) 점수 · challenger 슬롯 배포를 쓰는 허브 명령 · 실펌웨어(Cortex-M7·M33) 이식.
+
 ## 6. 진행 (실기 없이 QEMU 로, 실기는 마지막 한 번)
 
 | 단계 | 상태 | 시험 |
@@ -92,7 +108,8 @@ HaLow(NRC7394 BridgeRPC 위 UDP, ≤ 1,200 B/데이터그램, TCP 없음) 한 �
 | M5b Edge 배포 전송 | ✅ | Lm5 (A55): MCOL CMD BEGIN·CHUNK(1 KiB, 창 4, go-back-N)·END·ACTIVATE ↔ Edge `edge.c` · 손실 10 %·중복 5 % → 11 KB 41 틱 · champion 슬롯·ACTIVATE 는 champion 별칭(서명) 없이 거부 · 변조(CRC 다시 맞춤) → Edge sha256 거부 −3 · kind 1 → −4 · 계약 다름 → −5 · 무응답 → 시간 초과 · 원장 deploy 사건 · Edge 점수 = 허브 비트 일치. Lm3(M33)에 같은 edge.c 받기·ACTIVATE 시험 추가 — `struct hubml_edge` 39 KB |
 | 승인 서명 (ed25519 · `ml approve`) | ✅ | Lm8: ed25519 검증·SHA-512 = Mac cryptography/hashlib, 변조·s+L 거부 · Lm9: `ml approve`(mlledger/1 v0.2 §4) 실패 11 가지 거부·원장 무변화 · alias champion·normal_gate 기록 · stale(재사용) · 원장 줄 서명을 Mac 에서 재구성·검증 2/2 |
 | M6 변화 감시 (`ml drift`) | ✅ | Lm10: 날 A 학습 → 날 B 1X 1.0→1.5 배 → 경보율 0.47 % → 81 %, 주범 ord_1x(z 6.29), verdict alarm. 보고만(재학습 계기 아님) |
-| 시범 점수(champion/challenger 병행 보고) · LLM 주간 보고 | 다음 | |
+| 시범 점수(champion/challenger 병행 보고) | ✅ QEMU | §5.2 — Lm12 (A55): SCORE 왕복 · 깨짐 거부 · `ml shadow ls` 날·쌍별 줄 Python 기준과 글자 일치 · Lm3 (M33): Edge SCORE 본문 Python 바이트 일치 |
+| LLM 주간 보고 | 다음 | |
 | M2 데이터 관리 · 정상 관문 · M6 감시 | | |
 | hubllm 통합 (`ml` 읽기 명령 · USB 운반) | ✅ 빌드 | Lm6 (A55 가짜 셸): `ml time set` · `ml rx b64=`(HELLO → `HUBML/1 tx` HELLO_ACK) · FEAT 20·HB 4 → commit → tx ACK · `ml status/dev ls/ds ls --kv` · `ml ledger` b64 사슬 다시 계산 = `ledger_done head`. hubllm 빌드(root `/0:/ml`, hub_fs io_lock 공유, 칩 ID, 대기열 512 KiB×2, RAM 98.7 %) — **실기 확인 전** |
 | 실기 (apply try) | ✅ 3차 통과 (cb268b0) | 1차 6e9ebf6 셸 스택 넘침 → c28b551 고침. 2차 2a2edf2: 첫 ml status 0.026 s ✓, 그러나 FEAT 1,800 중 451 (명령이 몰리면 기록이 안 돌았다) → cb268b0 고침(Lm6 1,500 연속으로 재현·검증). **3차 cb268b0: Mac 가짜 Edge 4 시간치 USB → FEAT 1,800 · HB 360 모두 기록·ACK, dup·oow·qfull 0 · 재부팅 뒤 장비 표·기록 위치 복원 · ml train 14,400 벡터 3.3 s far 0.35 % inject 1.0×3 pass · 원장 11 줄 사슬·head 일치 · ml drift 1.1 s stable · ml approve 거부 경로 · UART 오류 0.** 남은 작은 것(재시작 뒤 schema 0 · addr 0 ACK)은 d9a671c 에서 고침. **6dccf09 영구 적용(2026-11-09): 부팅 슬롯 main · LLM ready · ml status 0.011 s · 15 분치 112/112 기록 · 시각 앵커 anchor.jsonl(time_set 1, UTC hub_ms) · 셸 재부팅 뒤 e4 schema 4d463334·next_feat 112 유지(MLS2). 이전 영구판 b19d4d2 는 zephyr.bin.old** | 이전 기록: 6e9ebf6: 첫 `ml status` 에서 셸 멈춤(셸 스택 4 KiB 넘침) → c28b551 에서 ml 본체를 16 KiB 스레드로, QEMU 를 4 KiB 명령 스레드로 맞춰 재현·검증. 재시험 대기(허브 셸 포트를 MoruLab Studio 앱이 쥐고 있음) |
