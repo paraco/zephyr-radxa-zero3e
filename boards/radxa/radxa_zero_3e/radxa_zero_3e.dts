@@ -135,6 +135,15 @@
 	status = "okay";
 
 	/*
+	 * ⚠ Zephyr 4.5: DW8250(busy detect 인터럽트 정리) 설정이 이제 DT 호환 "snps,dw-apb-uart" 에
+	 *   걸려 있다(drivers/serial/Kconfig.ns16550 `depends on DT_HAS_SNPS_DW_APB_UART_ENABLED`).
+	 *   인트리 rk3568.dtsi 에는 이 호환이 없어 prj.conf 의 CONFIG_UART_NS16550_DW8250_DW_APB=y 가
+	 *   **경고 한 줄만 남기고 꺼졌고**, 4.5 hubllm 이 USB 전에 무음으로 멈췄다(2026-11-23 apply try).
+	 *   RK3566 UART 는 DW_apb_uart 이므로 호환을 더한다. 4.4 는 이 바인딩이 없어 ns16550 으로 그대로 매칭한다.
+	 */
+	compatible = "rockchip,rk3568-uart", "snps,dw-apb-uart", "ns16550";
+
+	/*
 	 * ✅ 클럭을 24 MHz 로 고친다 — 인트리 rk3568.dtsi 의 12000000 은
 	 *    이 SoC 에 맞지 않는다. 근거는 분주비 계산이다
 	 *    (NS16550 divisor = clk / (16 * baud), 정수여야 한다):
