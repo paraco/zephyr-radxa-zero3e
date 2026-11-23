@@ -28,7 +28,15 @@ qemu_cortex_a53 기본 `KERNEL_VM_SIZE` 8 MiB 로는 32 MiB RAM 디스크가 들
 **4.5 때문에 새로 생긴 실패는 RAM 디스크 매핑 하나뿐**이고 위 설정으로 고쳤다.
 4코어(SMP) 동작은 QEMU 가 4.4 에서도 못 보여 주므로 **실기(hubllm, 4코어)로 확인한다.**
 
+## 실기 (2026-11-23, apply try)
+- **1차 fd55929: USB 전에 무음 멈춤.** 4.5 에서 `CONFIG_UART_NS16550_DW8250_DW_APB` 가 DT 호환 `snps,dw-apb-uart` 에
+  걸리게 바뀌어 꺼졌다(빌드 경고 한 줄). 보드 DTS uart2 에 호환을 더함(7437239) → 경고 0 · 설정 y.
+- **2차 7437239 (build 74372394feb0): 통과.** 부팅 슬롯 try · Zephyr 4.5.0 · 4코어 기동 · OTP 칩 ID · SD(FatFs, ml 상태 e1~e4 복원,
+  e4 schema 4d463334) · LLM 적재 8809 ms(4.4 8791 ms) · `hub_chat` "대한민국의 수도는?" → 서울, ttft 1400 ms · tg 4.27 tok/s(1104 MHz)
+  · `ml status` · `kernel heap` 정상. 영구 적용은 하지 않았다(재부팅하면 4.4 영구판 6dccf09).
+- 같은 날 4.4 영구판에서 재부팅·USB 끊김이 여러 번 있었다(18:08~18:23). 보드가 USB-C 7-in-1 어댑터 아래였고, 맥 본체에 직접
+  꽂은 뒤로는 재현되지 않았다 — 전원 공급으로 본다(확정 아님).
+
 ## 남은 일
-- 실기: 4.5 hubllm OTA `apply try` → 4코어 기동 · LLM 적재 · `ml` · SD.
 - L1 BUILD_ASSERT 를 576 MiB 로 고치고 `tools/l1_golden.py` 로 골든 CRC 재생성(별도).
 - `tools/qemu_run.sh` 의 제한시간이 걸리지 않는 경우가 있었다(L8k · L9a 가 600 초 넘게 남음) — 별도 확인.
